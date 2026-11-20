@@ -1,0 +1,208 @@
+// Minimal PNG writer — pure FC, no external compression library.
+// Emits uncompressed "stored" deflate blocks wrapped in a zlib stream.
+// Supports 8-bit RGB color (PNG color type 2) and an optional tEXt
+// metadata chunk. Color type 2 means every output pixel takes 3 bytes
+// (R, G, B) — alpha bytes from the input ARGB framebuffer are dropped.
+
+module png =
+    import io from std::
+
+    // Build the 256-entry CRC-32 (IEEE 802.3) byte table. Filled once
+    // per `write` into a caller-owned buffer — a module-level `let` can
+    // only hold a constant expression, and the alternative (a literal
+    // 256-word table) is a generated blob nobody can eyeball. The
+    // per-byte loop below then costs one xor + shift + lookup instead
+    // of eight branches, which matters: a screenshot CRCs its whole
+    // multi-MB IDAT, and the `s` key writes three of them.
+    let crc32_fill_table = (tab: u32[]) ->
+        for i in 0..256 do
+            let mut c = (u32) i
+            for k in 0..8 do
+                c = if (c & 1u32) != 0u32 then 0xEDB88320u32 ^ (c >> 1)
+                    else c >> 1
+            tab[i] = c
+
+    // CRC-32 (IEEE 802.3) over buf[start..start+len], table-driven.
+    let crc32 = (tab: const u32[], buf: const u8[], start: i64, len: i64) ->
+        let mut c = 0xFFFFFFFFu32
+        for i in 0..len do
+            c = tab[(i32) ((c ^ buf[start + i]) & 0xFFu32)] ^ (c >> 8)
+        c ^ 0xFFFFFFFFu32
+
+    // Adler-32 checksum over buf[start..start+len] (for zlib wrapper).
+    // The modulo is deferred: s1 stays below 65521 + 255*n and s2 below
+    // n*(65521+255), so 5552 bytes is the largest run that cannot
+    // overflow u32 — the standard zlib NMAX. Reducing per block instead
+    // of per byte drops two divides off every pixel byte.
+    let adler32 = (buf: const u8[], start: i64, len: i64) ->
+        let mut s1 = 1u32
+        let mut s2 = 0u32
+        let mut i = 0i64
+        loop
+            if i >= len then break
+            let remaining = len - i
+            let run = if remaining > 5552 then 5552i64 else remaining
+            for k in 0..run do
+                s1 = s1 + buf[start + i + k]
+                s2 = s2 + s1
+            s1 = s1 % 65521u32
+            s2 = s2 % 65521u32
+            i = i + run
+        (s2 << 16) | s1
+
+    // Write a big-endian u32 to buf[pos..pos+4].
+    let put_be32 = (buf: u8[], pos: i64, v: u32) ->
+        buf[pos] = (u8) (v >> 24)
+        buf[pos + 1] = (u8) (v >> 16)
+        buf[pos + 2] = (u8) (v >> 8)
+        buf[pos + 3] = (u8) v
+
+    // Write an ARGB framebuffer as a PNG file.
+    //
+    // `fb` holds width*height u32 values; the low 24 bits are used as
+    // R (bits 16–23), G (bits 8–15), B (bits 0–7). The alpha byte is
+    // ignored (PNG color type 2 is RGB-only).
+    //
+    // `metadata`, if non-empty, is embedded as a tEXt chunk with keyword
+    // `"doom-fc"`. Pass `""` to skip metadata.
+    let write = (path: const str, fb: const u32[], w: i32, h: i32,
+                 metadata: const str) ->
+        let crc_tab = u32[] { len = 256 }
+        crc32_fill_table(crc_tab)
+        let row_bytes = 1i64 + (i64) w * 3
+        let raw_size = h * row_bytes
+
+        // Build raw scanline data: 1 filter byte (0 = None) + RGB per pixel.
+        let raw = alloc(u8[] { len = raw_size })!
+        defer free(raw)
+        for y in 0..h do
+            raw[y * row_bytes] = 0u8
+            for x in 0..w do
+                let c = fb[(i64) y * w + x]
+                let o = y * row_bytes + 1 + (i64) x * 3
+                raw[o] = (u8) (c >> 16)
+                raw[o + 1] = (u8) (c >> 8)
+                raw[o + 2] = (u8) c
+
+        let adler = adler32(raw, 0, raw_size)
+
+        // Deflate stored blocks: each holds up to 65535 bytes, prefixed with
+        // a 5-byte header (BFINAL bit + BTYPE=00 + LEN + NLEN).
+        let block_count = (raw_size + 65534) / 65535
+        let deflate_size = block_count * 5 + raw_size
+        let idat_data_size = 2 + deflate_size + 4   // zlib hdr + deflate + adler
+
+        // Optional tEXt chunk: "<keyword>\0<text>" (no final null).
+        let meta_key = "doom-fc"
+        let has_meta = metadata.len > 0
+        let text_data_size = if has_meta then
+            meta_key.len + 1 + metadata.len
+        else 0i64
+
+        let total_size = 8                            // signature
+                       + (12 + 13)                    // IHDR
+                       + (if has_meta then 12 + text_data_size else 0i64)
+                       + (12 + idat_data_size)        // IDAT
+                       + 12                           // IEND
+
+        let out = alloc(u8[] { len = total_size })!
+        defer free(out)
+        let mut pos = 0i64
+
+        // PNG signature
+        out[0] = 0x89u8
+        out[1] = 0x50u8
+        out[2] = 0x4Eu8
+        out[3] = 0x47u8
+        out[4] = 0x0Du8
+        out[5] = 0x0Au8
+        out[6] = 0x1Au8
+        out[7] = 0x0Au8
+        pos = 8
+
+        // IHDR chunk (13 bytes: width, height, bit depth, color type, 3 zeros)
+        put_be32(out, pos, 13u32)
+        pos = pos + 4
+        let ihdr_type_start = pos
+        put_be32(out, pos, 0x49484452u32)    // "IHDR"
+        pos = pos + 4
+        put_be32(out, pos, (u32) w)
+        pos = pos + 4
+        put_be32(out, pos, (u32) h)
+        pos = pos + 4
+        out[pos] = 8u8        // bit depth
+        out[pos + 1] = 2u8    // color type: 2 = RGB
+        out[pos + 2] = 0u8    // compression method
+        out[pos + 3] = 0u8    // filter method
+        out[pos + 4] = 0u8    // interlace method
+        pos = pos + 5
+        put_be32(out, pos, crc32(crc_tab, out, ihdr_type_start, 17))
+        pos = pos + 4
+
+        // tEXt chunk (optional): "Wolf-FC\0<metadata>"
+        if has_meta then
+            put_be32(out, pos, (u32) text_data_size)
+            pos = pos + 4
+            let text_type_start = pos
+            put_be32(out, pos, 0x74455874u32)    // "tEXt"
+            pos = pos + 4
+            for i in 0..meta_key.len do
+                out[pos + i] = meta_key[i]
+            pos = pos + meta_key.len
+            out[pos] = 0u8    // keyword/text separator
+            pos = pos + 1
+            for i in 0..metadata.len do
+                out[pos + i] = metadata[i]
+            pos = pos + metadata.len
+            put_be32(out, pos, crc32(crc_tab, out, text_type_start, 4 + text_data_size))
+            pos = pos + 4
+
+        // IDAT chunk
+        put_be32(out, pos, (u32) idat_data_size)
+        pos = pos + 4
+        let idat_type_start = pos
+        put_be32(out, pos, 0x49444154u32)    // "IDAT"
+        pos = pos + 4
+        // zlib header: 0x78 0x01 (deflate, 32K window, no preset dict).
+        out[pos] = 0x78u8
+        out[pos + 1] = 0x01u8
+        pos = pos + 2
+        // Stored-block deflate stream.
+        let mut raw_pos = 0i64
+        for b in 0..block_count do
+            let remaining = raw_size - raw_pos
+            let block_size = if remaining > 65535 then 65535i64 else remaining
+            out[pos] = if b == block_count - 1 then 1u8 else 0u8
+            pos = pos + 1
+            // LEN (little-endian)
+            out[pos] = (u8) block_size
+            out[pos + 1] = (u8) (block_size >> 8)
+            pos = pos + 2
+            // NLEN = ~LEN (little-endian)
+            let nlen = ((u16) block_size) ^ 0xFFFFu16
+            out[pos] = (u8) nlen
+            out[pos + 1] = (u8) (nlen >> 8)
+            pos = pos + 2
+            // Raw data
+            for i in 0..block_size do
+                out[pos + i] = raw[raw_pos + i]
+            pos = pos + block_size
+            raw_pos = raw_pos + block_size
+        put_be32(out, pos, adler)
+        pos = pos + 4
+        put_be32(out, pos, crc32(crc_tab, out, idat_type_start, 4 + idat_data_size))
+        pos = pos + 4
+
+        // IEND chunk (empty data)
+        put_be32(out, pos, 0u32)
+        pos = pos + 4
+        let iend_type_start = pos
+        put_be32(out, pos, 0x49454E44u32)    // "IEND"
+        pos = pos + 4
+        put_be32(out, pos, crc32(crc_tab, out, iend_type_start, 4))
+        pos = pos + 4
+
+        // Flush to file
+        let f = io.open(path, "wb")!
+        io.write(out[0i64..pos], f)
+        io.close(f)

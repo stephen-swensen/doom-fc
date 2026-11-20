@@ -1,0 +1,1918 @@
+// A General MIDI player for the emulated OPL2 next door.
+//
+// Three things live here, in order: a Standard MIDI File parser, a patch bank
+// (the register data behind a GM program number, which the file itself does
+// not carry), and a player that turns the one into sound through the other.
+// The chip is opl2.fc; a bank of instruments to start from is opl_bank_gm.fc.
+//
+// ```fc
+// let bytes = io.read_all("song.mid")?
+// let tune  = opl_midi.parse(bytes)?
+// let p     = opl_midi.init(44100, tune, opl_bank_gm.make())
+// opl_midi.start(p)
+// // then, once per output sample:
+// opl_midi.advance(p)
+// let s = opl2.sample(p.chip)
+// ```
+//
+// `advance` moves the clock and dispatches whatever is due; it does not
+// produce a sample. Keeping the two apart is what lets a caller interleave
+// several chips in one mixing loop, and lets a headless renderer drive the
+// same code with no audio device attached.
+//
+// ------------------------------------------------------------------
+// What a 1982 chip can and cannot do with a 1983 file format
+// ------------------------------------------------------------------
+//
+// MIDI has sixteen independent polyphonic channels. The OPL2 has nine
+// two-operator voices, full stop. So a MIDI channel is *not* an OPL channel,
+// and the mapping between them is a voice allocator: notes are handed a
+// physical voice at key-on and give it back at key-off, and when all nine are
+// busy the next note steals one. Every real OPL driver worked this way. A
+// typical GM file wants more simultaneous notes than nine, so stealing runs
+// more or less continuously — that thinning is what an AdLib card sounded
+// like, and the stealing policy in `alloc_voice` is the single biggest lever
+// on how good this comes out.
+//
+// The other hard limit is stereo: there isn't any. The chip sums its nine
+// voices to one mono signal, so CC10 pan has nowhere to go and is ignored
+// rather than approximated. Both limits are OPL2 limits rather than design
+// choices — an OPL3 has eighteen voices and per-channel L/R bits, and is a
+// strict register superset, so this file would grow rather than change.
+//
+// Everything else in a MIDI file maps: velocity, volume and expression fold
+// into the carrier's total level, program changes pick a patch out of the
+// bank, pitch bend recomputes the F-number, the sustain pedal defers
+// note-offs, and tempo changes retime the clock.
+
+namespace shared::
+
+// opl2 is a sibling in `shared::`, so it needs no import here.
+import math from std::
+
+// A General MIDI player for the emulated OPL2: a Standard MIDI File parser, a
+// patch bank, and a sequencer that drives nine voices from sixteen channels.
+//
+// The parser takes bytes rather than a path and this module imports no I/O, so
+// a song can come off disk, out of a static array, or over a socket. The bank
+// is a plain value: `opl_bank_gm.fc` supplies one as source data and
+// `load_bank` reads the `.op2` / `.wopl` / `.ibk` / `.sbi` formats into the
+// same type, so a program can ship a bank, load one, or offer both.
+//
+// ```fc
+// let tune = opl_midi.parse(bytes)?
+// let p    = opl_midi.init(44100, tune, opl_bank_gm.make())
+// opl_midi.start(p)
+// ```
+//
+// A player owns its chip (`p.chip`) and does not sample it — call
+// `opl_midi.advance` once per output sample for the clock, then
+// `opl2.sample(p.chip)` for the audio. See the file header for what the chip
+// can and cannot do with the format.
+module opl_midi =
+
+    // Failure conditions for the two things here that read bytes somebody
+    // else wrote: `parse` and the `load_*` bank readers.
+    error smf =
+        | bad_header            // not an SMF, or a malformed MThd
+        | bad_track             // a track's event stream doesn't decode
+        | unsupported_format    // SMF format 2 — independent sequences
+        | no_tracks             // a well-formed file with nothing to play
+        | truncated             // a chunk claims more bytes than the file has
+        | bad_bank              // a bank file that isn't one
+
+    // ============================================================
+    // Songs
+    // ============================================================
+
+    // A note-on or note-off. Note-ons with velocity 0 are normalised to
+    // note-offs at parse time, per spec, so nothing downstream has to know
+    // that convention exists.
+    struct note_msg =
+        chan: i32       // 0..15; 9 is percussion
+        note: i32       // 0..127
+        vel: i32        // 0..127
+
+    // A control change.
+    struct ctrl_msg =
+        chan: i32
+        cc: i32
+        val: i32
+
+    // A one-value channel message: program change, or pitch bend.
+    struct chan_msg =
+        chan: i32
+        val: i32        // program 0..127, or bend -8192..8191
+
+    // Everything the player acts on. The messages a file may contain and this
+    // does not — aftertouch, sysex, key signature, lyrics — are dropped by the
+    // parser rather than carried and ignored, so an event in a song is always
+    // an event that will be played.
+    union msg =
+        | note_on(note_msg)
+        | note_off(note_msg)
+        | program(chan_msg)
+        | control(ctrl_msg)
+        | bend(chan_msg)
+        | tempo(i32)            // microseconds per quarter note
+
+    // One event at one moment. `tick` is absolute from the start of the song
+    // rather than a delta, which is what lets the tracks merge into a single
+    // list and the player hold one index instead of one cursor per track.
+    struct event =
+        tick: i32
+        m: msg
+
+    // A parsed file: every track's events merged into one time-ordered list.
+    //
+    // `division` is the file's own time base. Positive is ticks per quarter
+    // note, and tempo events scale it. Negative is SMPTE — the low byte is
+    // ticks per frame and the negated high byte is frames per second — where
+    // a tick is an absolute duration and tempo events do not apply.
+    //
+    // `length` is the end-of-track tick, which is where a loop wraps. It can
+    // sit past the last event, and often does: that gap is the tail the
+    // composer left at the end of the piece.
+    struct song =
+        events: event[]
+        division: i32
+        length: i32
+
+    // Release a parsed song. A `player` does not own the song it was given,
+    // so this is the caller's to call once nothing is playing it.
+    let free_song = (s: song) ->
+        free(s.events)
+
+    // ============================================================
+    // Patches and banks
+    // ============================================================
+
+    // One OPL voice program: the eleven AdLib register bytes, plus the two
+    // things a GM patch needs that the register set has no room for.
+    //
+    // Each register field is named for where it lands. In FM connection only
+    // the carrier's TL is loudness — the modulator's is depth of modulation,
+    // which is brightness — so velocity scales `c_scale` alone. In additive
+    // connection both operators reach the output and both scale.
+    struct patch =
+        m_char: i32     // 0x20  AM | VIB | EGT | KSR | MULT
+        m_scale: i32    // 0x40  KSL<<6 | TL
+        m_atk: i32      // 0x60  AR<<4 | DR
+        m_sus: i32      // 0x80  SL<<4 | RR
+        m_wave: i32     // 0xE0  waveform 0..3
+        c_char: i32
+        c_scale: i32
+        c_atk: i32
+        c_sus: i32
+        c_wave: i32
+        n_conn: i32     // 0xC0  FB<<1 | connection (0 = FM, 1 = additive)
+        // Semitones added to every note played on this patch. Voices whose
+        // most natural OPL register settings land an octave off get it back
+        // here rather than by rewriting the multipliers.
+        transpose: i32
+        // 0 for a pitched instrument. For percussion, the note the patch
+        // always sounds — a drum's pitch belongs to the drum, not to the note
+        // number that selected it, and pitch bend does not apply.
+        //
+        // Zero rather than -1 as the sentinel so that a zeroed `patch` is a
+        // valid pitched one, which is what lets a bank written as source omit
+        // these last two fields from every melodic entry it declares. MIDI
+        // note 0 is a C five octaves below the piano and no percussion map
+        // has ever named it, so nothing is given up.
+        fixed_note: i32
+
+        // A dual-voice instrument: the index in `patches` of a second voice
+        // sounded alongside this one, slightly detuned, for a thickness two
+        // operators cannot reach. 0 means the ordinary single voice.
+        //
+        // Zero is the sentinel here for the same reason it is for
+        // `fixed_note` — a zeroed `patch` must be a valid plain one — and it
+        // costs nothing because a loader appends second voices after every
+        // primary, so a second voice is never index 0. `bank_from_wopl` and
+        // `load_genmidi` are the two that build them.
+        //
+        // It costs a whole extra chip channel per sounding note, which is why
+        // the player gives one up only when a voice is free (see `start_note`).
+        second: i32
+        // Detune, in 1/32 of a semitone, applied to this patch's pitch. Only a
+        // second voice has one — detuning both halves would just transpose the
+        // note. The odd unit is the one both formats that carry the field
+        // already use, so neither needs converting.
+        detune: i32
+
+    // A whole instrument set: the distinct patches, and two tables that index
+    // them by MIDI meaning.
+    //
+    // "Patch" throughout, never "voice": a patch is a written description of how
+    // to program a channel, and a voice is a channel with a note on it. One
+    // patch is played by any number of voices over a piece, and a dual-voice
+    // patch takes two at once.
+    //
+    // The indirection is what keeps 128 GM programs from meaning 128
+    // hand-authored patches. A bank collapses each GM family onto a handful of
+    // voices and points the whole family at them, so the source stays a
+    // readable table; a bank read from a file fills `melodic` with an identity
+    // mapping and loses nothing.
+    //
+    // The three slices are the bank's own storage, and a bank owns them
+    // however it was built — which is why `opl_bank_gm` hands its bank out
+    // through a `make()` rather than as module-level data, and why one
+    // `free_bank` releases either kind. The player only ever reads them.
+    struct bank =
+        name: const str
+        patches: patch[]
+        melodic: i32[]          // 128 entries: GM program -> index into patches
+        drums: i32[]            // 128 entries: note number -> index, -1 silent
+
+        // The five voices of the chip's rhythm mode, if this bank has them:
+        // bass drum, snare, tom, cymbal, hi-hat, in that order. Empty means
+        // the bank has none and every drum plays on a melodic voice — which
+        // is what a bank read from a file gets, since none of the three file
+        // formats has anywhere to put them.
+        //
+        // Four of the five are single-operator voices and use only the
+        // modulator half of a `patch`, `m_char` through `m_wave`. The bass
+        // drum is a whole two-operator channel and uses all of it. Two of the
+        // `fixed_note`s tune a shared channel rather than one voice: the
+        // hi-hat's tunes channel 7, which it shares with the snare, and the
+        // tom's tunes channel 8, which it shares with the cymbal. The other
+        // three are ignored.
+        rhythm: patch[]
+        // 128 entries: note number -> 0..4 into `rhythm`, or -1 to fall
+        // through to `drums` and play on a melodic voice.
+        //
+        // Rhythm mode does the core kit very well and the rest not at all —
+        // it has one hi-hat, so open and closed would be the same sound, and
+        // no cowbell, conga or tambourine whatever. Leaving those at -1 is
+        // what makes the two paths a hybrid instead of a choice: the kick,
+        // snare, toms, closed hat and crash get the chip's real noise
+        // generator, and everything else keeps a melodic voice and stays
+        // distinct. It also means the drums that play on nearly every beat
+        // stop competing for the nine melodic voices at all.
+        rhythm_map: i32[]
+
+    // ============================================================
+    // Byte reading
+    // ============================================================
+
+    // A cursor over the input with a stickiness that matters: `good` goes false
+    // on the first read past the end or first structural surprise and never
+    // goes back, and every read returns 0 once it is false. That is what lets
+    // the decoders below read straight through without a check per byte —
+    // a truncated file produces zeros and one check at the end catches it.
+    struct reader =
+        data: const u8[]
+        pos: i64
+        good: bool
+
+    private let make_reader = (data: const u8[]) ->
+        reader { data = data, pos = 0i64, good = true }
+
+    private let fail = (r: reader*) ->
+        r.good = false
+        0
+
+    // The next byte without consuming it.
+    private let peek_u8 = (r: reader*) ->
+        if !r.good || r.pos >= r.data.len then fail(r)
+        else (i32) r.data[r.pos]
+
+    private let read_u8 = (r: reader*) ->
+        if !r.good || r.pos >= r.data.len then fail(r)
+        else
+            let v = (i32) r.data[r.pos]
+            r.pos = r.pos + 1i64
+            v
+
+    private let read_u16 = (r: reader*) ->
+        let hi = read_u8(r)
+        let lo = read_u8(r)
+        (hi << 8) | lo
+
+    // Big-endian, as everything in an SMF is. Returned as i64 because a chunk
+    // length is a u32 and the top bit is not ours to reinterpret as a sign.
+    private let read_u32 = (r: reader*) ->
+        let a = (i64) read_u8(r)
+        let b = (i64) read_u8(r)
+        let c = (i64) read_u8(r)
+        let d = (i64) read_u8(r)
+        (a << 24) | (b << 16) | (c << 8) | d
+
+    private let skip = (r: reader*, n: i64) ->
+        if n < 0i64 then r.good = false
+        else if r.pos + n > r.data.len then
+            r.pos = r.data.len
+            r.good = false
+        else r.pos = r.pos + n
+
+    // A variable-length quantity: seven bits per byte, high bit set on every
+    // byte but the last. The spec caps these at four bytes, and a fifth
+    // continuation byte means the stream has desynchronised rather than that
+    // we have met a very large number — so it fails rather than reading on.
+    private let read_vlq = (r: reader*) ->
+        let mut v = 0
+        let mut n = 0
+        loop
+            let b = read_u8(r)
+            v = (v << 7) | (b & 127)
+            n = n + 1
+            if (b & 128) == 0 then break
+            if !r.good then break
+            if n >= 4 then
+                r.good = false
+                break
+        v
+
+    // Whether the bytes at the cursor spell `tag`. Consumes nothing. The
+    // length comes from the tag, so a magic longer than the usual four-byte
+    // chunk id (GENMIDI's eight) is checked in full rather than by prefix.
+    private let tag_is = (r: reader*, tag: const str) ->
+        if r.pos + tag.len > r.data.len then false
+        else
+            let mut same = true
+            for i in 0i64..tag.len do
+                if r.data[r.pos + i] != tag[i] then same = false
+            same
+
+    // ============================================================
+    // Standard MIDI File parsing
+    // ============================================================
+
+    // Decode one track's event stream into `out` starting at `base`, and
+    // return the number of events written. `limit` is the byte offset one past
+    // the track's data, so a track whose internal structure disagrees with its
+    // declared length cannot walk into the next one.
+    //
+    // The caller sizes `out` from the track's byte length (see `parse`): the
+    // shortest encoding that produces an event is a running-status program
+    // change at two bytes, so half the track's length always suffices. `cap`
+    // enforces that rather than trusting it — this is a parser for bytes
+    // somebody else wrote, and the failure mode of a wrong bound here would
+    // be a heap overrun rather than a wrong answer.
+    //
+    // Running status is not optional — a file where every note-on after the
+    // first omits its status byte is normal, not exotic. A data byte where a
+    // status byte was expected means the previous status repeats; a system
+    // message (0xF0 and up) clears it, per spec, so a meta event in the middle
+    // of a run of notes does not leave a stale status behind.
+    private let scan_track = (r: reader*, limit: i64,
+                              out: event[], base: i64, cap: i64,
+                              end_tick: i32*) ->
+        let mut n = 0i64
+        let mut tick = 0
+        let mut status = 0
+        let mut done = false
+        *end_tick = 0
+        loop
+            if done || !r.good || r.pos >= limit then break
+            if n >= cap then
+                r.good = false
+                break
+            tick = tick + read_vlq(r)
+            // Status byte, or running status if a data byte turns up here.
+            let first = peek_u8(r)
+            let mut st = status
+            if first >= 0x80 then
+                skip(r, 1i64)
+                st = first
+                status = if first < 0xF0 then first else 0
+            if st == 0 then
+                r.good = false
+                break
+            let hi = st & 0xF0
+            let ch = st & 0x0F
+            if st == 0xFF then
+                // Meta event: type, length, payload. Only end-of-track and
+                // set-tempo mean anything to a player; the rest is text,
+                // notation and housekeeping, and is skipped by its length so
+                // an unknown one costs nothing.
+                let mtype = read_u8(r)
+                let mlen = (i64) read_vlq(r)
+                if mtype == 0x2F then
+                    done = true
+                    *end_tick = tick
+                else if mtype == 0x51 && mlen == 3i64 then
+                    let a = read_u8(r)
+                    let b = read_u8(r)
+                    let c = read_u8(r)
+                    out[base + n] = event {
+                        tick = tick, m = msg.tempo((a << 16) | (b << 8) | c) }
+                    n = n + 1i64
+                else skip(r, mlen)
+            else if st == 0xF0 || st == 0xF7 then
+                // SysEx, in either the leading-F0 or the escaped form. Both
+                // carry their own length, so both are skipped whole.
+                let slen = (i64) read_vlq(r)
+                skip(r, slen)
+            else if hi == 0x80 then
+                let note = read_u8(r)
+                let vel = read_u8(r)
+                out[base + n] = event { tick = tick,
+                    m = msg.note_off(note_msg { chan = ch, note = note, vel = vel }) }
+                n = n + 1i64
+            else if hi == 0x90 then
+                let note = read_u8(r)
+                let vel = read_u8(r)
+                // Velocity 0 is a note-off wearing a note-on's status byte.
+                let nm = note_msg { chan = ch, note = note, vel = vel }
+                out[base + n] = event { tick = tick,
+                    m = if vel == 0 then msg.note_off(nm) else msg.note_on(nm) }
+                n = n + 1i64
+            else if hi == 0xB0 then
+                let cc = read_u8(r)
+                let val = read_u8(r)
+                out[base + n] = event { tick = tick,
+                    m = msg.control(ctrl_msg { chan = ch, cc = cc, val = val }) }
+                n = n + 1i64
+            else if hi == 0xC0 then
+                let prog = read_u8(r)
+                out[base + n] = event { tick = tick,
+                    m = msg.program(chan_msg { chan = ch, val = prog }) }
+                n = n + 1i64
+            else if hi == 0xE0 then
+                // 14 bits, low seven first, centred on 8192.
+                let lo = read_u8(r)
+                let bhi = read_u8(r)
+                out[base + n] = event { tick = tick,
+                    m = msg.bend(chan_msg { chan = ch, val = ((bhi << 7) | lo) - 8192 }) }
+                n = n + 1i64
+            else if hi == 0xA0 then skip(r, 2i64)      // poly aftertouch
+            else if hi == 0xD0 then skip(r, 1i64)      // channel aftertouch
+            else r.good = false
+        // A track that ran off the end of its own data without an
+        // end-of-track meta event still has a last tick worth honouring.
+        if *end_tick < tick then *end_tick = tick
+        n
+
+    // Parse a Standard MIDI File.
+    //
+    // Formats 0 (one track) and 1 (parallel tracks of one piece) both come out
+    // as a single merged event list, which is the whole of the difference
+    // between them once the tracks are merged. Format 2 is a sequence of
+    // *independent* pieces sharing a file, so merging them would be wrong and
+    // playing only the first would be a guess; it is refused instead.
+    //
+    // The caller owns the returned song — `free_song` releases it.
+    let parse = (bytes: const u8[]) ->
+        let mut r = make_reader(bytes)
+        if !tag_is(&r, "MThd") then err(song, smf.bad_header)
+        else
+            skip(&r, 4i64)
+            let hlen = read_u32(&r)
+            if hlen < 6i64 then err(song, smf.bad_header)
+            else
+                let format = read_u16(&r)
+                ignore read_u16(&r)             // track count; the chunks are authoritative
+                let division = read_u16(&r)
+                // Any header longer than six bytes has extensions we don't
+                // know; the spec says to skip the excess rather than object.
+                skip(&r, hlen - 6i64)
+                if !r.good then err(song, smf.bad_header)
+                else if format == 2 then err(song, smf.unsupported_format)
+                else if division == 0 then err(song, smf.bad_header)
+                else
+                    // Division is a signed 16-bit quantity: the SMPTE form
+                    // sets the top bit and the whole value is read as
+                    // negative. Widen it here, once.
+                    let div = if division >= 32768 then division - 65536 else division
+                    parse_tracks(&r, div)
+
+    // The chunk walk and the merge, split out so `parse` stays a readable
+    // ladder of header checks. `r` is positioned just past the MThd chunk.
+    private let parse_tracks = (r: reader*, division: i32) ->
+        // Pass one: find the tracks. Chunks that aren't MTrk are skipped by
+        // their own declared length, which is how the format says to treat a
+        // chunk type you don't recognise.
+        let start_pos = r.pos
+        let mut ntracks = 0i64
+        let mut short = false
+        loop
+            if r.pos + 8i64 > r.data.len then break
+            let is_track = tag_is(r, "MTrk")
+            skip(r, 4i64)
+            let clen = read_u32(r)
+            if !r.good || clen < 0i64 then break
+            // A chunk that declares more bytes than the file holds is the
+            // signature of a truncated download, and it is worth saying so.
+            // Playing the tracks that did survive would be friendlier only
+            // until someone wondered why the music stopped after two bars.
+            if r.pos + clen > r.data.len then
+                short = true
+                break
+            if is_track then ntracks = ntracks + 1i64
+            skip(r, clen)
+        if short then err(song, smf.truncated)
+        else if ntracks == 0i64 then err(song, smf.no_tracks)
+        else
+            // offs[i] is where track i's events land in the scratch buffer,
+            // and caps[i] bounds how many can land there. The shortest
+            // encoding that yields an event is two bytes — a running-status
+            // program change — so half a track's byte length, plus one, can
+            // never be exceeded.
+            let offs = alloc(i64[] { len = ntracks })!
+            let caps = alloc(i64[] { len = ntracks })!
+            let cnts = alloc(i64[] { len = ntracks })!
+            let starts = alloc(i64[] { len = ntracks })!
+            let lens = alloc(i64[] { len = ntracks })!
+            defer free(lens)
+            defer free(starts)
+            defer free(cnts)
+            defer free(caps)
+            defer free(offs)
+            r.pos = start_pos
+            let mut ti = 0i64
+            let mut total_cap = 0i64
+            loop
+                if ti >= ntracks then break
+                if r.pos + 8i64 > r.data.len then break
+                let is_track = tag_is(r, "MTrk")
+                skip(r, 4i64)
+                let clen = read_u32(r)
+                if !r.good || clen < 0i64 || r.pos + clen > r.data.len then break
+                if is_track then
+                    starts[ti] = r.pos
+                    lens[ti] = clen
+                    offs[ti] = total_cap
+                    caps[ti] = clen / 2i64 + 1i64
+                    total_cap = total_cap + caps[ti]
+                    ti = ti + 1i64
+                skip(r, clen)
+            // Pass two: decode. One scratch buffer, laid out track by track.
+            let scratch = alloc(event[] { len = total_cap })!
+            defer free(scratch)
+            let mut length = 0
+            let mut bad = false
+            for i in 0i64..ntracks do
+                r.pos = starts[i]
+                r.good = true
+                let mut et = 0
+                cnts[i] = scan_track(r, starts[i] + lens[i], scratch, offs[i],
+                    caps[i], &et)
+                if !r.good then bad = true
+                if et > length then length = et
+            if bad then err(song, smf.bad_track)
+            else
+                // Pass three: merge. Each track is already in tick order, so
+                // one cursor per track and a smallest-first pick produces the
+                // whole list in a single sweep. Ties go to the lower track
+                // index, which keeps file order — a program change and the
+                // note that needs it are routinely on the same tick, and the
+                // wrong order there plays the note on the wrong instrument.
+                let mut total = 0i64
+                for i in 0i64..ntracks do
+                    total = total + cnts[i]
+                let events = alloc(event[] { len = total })!
+                let cur = alloc(i64[] { len = ntracks })!
+                defer free(cur)
+                for k in 0i64..total do
+                    let mut pick = -1i64
+                    let mut best = 0
+                    for i in 0i64..ntracks do
+                        if cur[i] < cnts[i] then
+                            let t = scratch[offs[i] + cur[i]].tick
+                            if pick < 0i64 || t < best then
+                                pick = i
+                                best = t
+                    events[k] = scratch[offs[pick] + cur[pick]]
+                    cur[pick] = cur[pick] + 1i64
+                ok(song { events = events, division = division, length = length })
+
+    // ============================================================
+    // Bank files
+    // ============================================================
+
+    // Read a bank file, whichever of the three legacy formats it is. All three
+    // describe an instrument with the same eleven register bytes, but they
+    // agree on nothing beyond that: `.sbi` and `.ibk` interleave the two
+    // operators, GENMIDI groups them, orders each operator's bytes
+    // differently, and splits one register across two bytes. So each gets its
+    // own reader — see `patch_interleaved` and `patch_genmidi`.
+    //
+    // A caution rather than a limitation: most bank files in circulation were
+    // extracted from commercial games and their redistribution terms are
+    // unclear. Loading one a user supplies is a different thing from shipping
+    // one, which is why `opl_bank_gm.fc` exists.
+    let load_bank = (bytes: const u8[]) ->
+        let mut r = make_reader(bytes)
+        if tag_is(&r, "#OPL_II#") then load_genmidi(bytes)
+        // The magic is "WOPL3-BANK" and a terminating zero; ten characters
+        // pick it out, and the loader checks the rest of the header anyway.
+        else if tag_is(&r, "WOPL3-BANK") then load_wopl(bytes)
+        else if tag_is(&r, "IBK\x1A") then load_ibk(bytes)
+        else if tag_is(&r, "SBI\x1A") then
+            match load_sbi(bytes) with
+            | ok(pt) -> ok(bank_of_one(pt))
+            | err(e) -> err(bank, e)
+        else err(bank, smf.bad_bank)
+
+    // The two formats disagree about how eleven register bytes are arranged,
+    // and the disagreement is total — neither the grouping nor the order
+    // within a group is shared — so each gets its own reader rather than one
+    // parameterised by offsets.
+    //
+    // `.sbi` and `.ibk` interleave: the pair of bytes for one register, then
+    // the pair for the next, modulator first, with the shared
+    // feedback/connection byte last.
+    //
+    //     char char scale scale atk atk sus sus wave wave conn
+    private let patch_interleaved = (r: reader*, v: i64) ->
+        patch {
+            m_char  = r.data[v],        c_char  = r.data[v + 1i64],
+            m_scale = r.data[v + 2i64], c_scale = r.data[v + 3i64],
+            m_atk   = r.data[v + 4i64], c_atk   = r.data[v + 5i64],
+            m_sus   = r.data[v + 6i64], c_sus   = r.data[v + 7i64],
+            m_wave  = r.data[v + 8i64], c_wave  = r.data[v + 9i64],
+            n_conn  = r.data[v + 10i64],
+            transpose = 0, fixed_note = 0 }
+
+    // GENMIDI groups instead — six bytes per operator with the shared byte
+    // between them — and orders those six differently again, ending with the
+    // 0x40 register split across two bytes: key scale level in the top two
+    // bits of one, output level in the low six of the next.
+    //
+    //     char atk sus wave scale level | conn | (the same six for the carrier)
+    private let genmidi_op40 = (r: reader*, o: i64) ->
+        (r.data[o + 4i64] & 0xC0) | (r.data[o + 5i64] & 0x3F)
+
+    private let patch_genmidi = (r: reader*, v: i64) ->
+        let c = v + 7i64
+        patch {
+            m_char  = r.data[v],
+            m_atk   = r.data[v + 1i64], m_sus = r.data[v + 2i64],
+            m_wave  = r.data[v + 3i64], m_scale = genmidi_op40(r, v),
+            c_char  = r.data[c],
+            c_atk   = r.data[c + 1i64], c_sus = r.data[c + 2i64],
+            c_wave  = r.data[c + 3i64], c_scale = genmidi_op40(r, c),
+            n_conn  = r.data[v + 6i64],
+            transpose = 0, fixed_note = 0 }
+
+    // Note offsets are the one thing in these formats that can be negative,
+    // and the two that carry one disagree about its width: GENMIDI stores a
+    // signed 16-bit little-endian, IBK a signed byte.
+    private let s16_at = (bytes: const u8[], off: i64) ->
+        let raw = bytes[off] | ((i32) bytes[off + 1i64] << 8)
+        if raw >= 32768 then raw - 65536 else raw
+
+    private let s8_at = (bytes: const u8[], off: i64) ->
+        let raw = (i32) bytes[off]
+        if raw >= 128 then raw - 256 else raw
+
+    // WOPL is big-endian for its multi-byte numbers, alone among these
+    // formats — it was written long after the DOS-era ones and did not
+    // inherit their habits.
+    private let u16be_at = (bytes: const u8[], off: i64) ->
+        ((i32) bytes[off] << 8) | bytes[off + 1i64]
+
+    private let s16be_at = (bytes: const u8[], off: i64) ->
+        let raw = u16be_at(bytes, off)
+        if raw >= 32768 then raw - 65536 else raw
+
+    // A second voice's detune, in the 1/32-semitone units `patch.detune`
+    // keeps. Takes the file's value already centred on zero — WOPL stores a
+    // signed byte and needs no adjusting, GENMIDI an unsigned one whose
+    // neutral is 128, so its caller subtracts that first. Past the centring
+    // the two formats compute the same thing, and this is that computation,
+    // integer truncation included: half a unit is a fifth of a cent.
+    private let detune_units = (centred: i32) ->
+        ((centred + 128) >> 1) - 64
+
+    // An empty rhythm section. `.op2`, `.ibk` and `.sbi` have nowhere to
+    // describe one at all, and a `.wopl` need not use the fields it has, so
+    // such a bank plays its whole kit on melodic voices — correctly, just
+    // without the chip's noise generator. Allocated rather than left null so
+    // that `free_bank` needs no special case.
+    private let no_rhythm = () -> alloc(patch[] { })!
+    private let no_rhythm_map = () ->
+        let m = alloc(i32[] { len = 128 })!
+        for i in 0..128 do
+            m[i] = -1
+        m
+
+    // A one-patch bank, for `.sbi`: every program and every drum note plays
+    // the single voice the file contained. Auditioning one patch is what that
+    // format is for.
+    private let bank_of_one = (pt: patch) ->
+        let ps = alloc(patch[] { pt })!
+        let mel = alloc(i32[] { len = 128 })!
+        let drm = alloc(i32[] { len = 128 })!
+        for i in 0..128 do
+            mel[i] = 0
+            drm[i] = 0
+        bank { name = "sbi", patches = ps, melodic = mel, drums = drm,
+               rhythm = no_rhythm(), rhythm_map = no_rhythm_map() }
+
+    // GENMIDI (`.op2`), the lump DOOM shipped its instruments in: an eight
+    // byte magic, then 175 records of 36 bytes — 128 melodic programs
+    // followed by 47 percussion voices for notes 35..81 — then 175 names of
+    // 32 bytes each, which we don't need.
+    //
+    // A record is a flags word, a fine-tune byte, a note byte, and then two
+    // 16-byte voices. The second voice sounds alongside the first when the
+    // record asks for it — flag 0x04 — detuned by the fine-tune byte; those
+    // records become dual-voice patches, the second half appended after all
+    // 175 primaries.
+    let load_genmidi = (bytes: const u8[]) ->
+        if bytes.len < 8i64 + 175i64 * 36i64 then err(bank, smf.bad_bank)
+        else
+            let mut r = make_reader(bytes)
+            // Count the double voices first so the array can be sized once.
+            let mut extra = 0
+            for i in 0..175 do
+                if (bytes[8i64 + i * 36i64] & 4) != 0 then
+                    extra = extra + 1
+            let ps = alloc(patch[] { len = 175i64 + (i64) extra })!
+            let mel = alloc(i32[] { len = 128 })!
+            let drm = alloc(i32[] { len = 128 })!
+            let mut nx = 175
+            for i in 0..175 do
+                let rec = 8i64 + i * 36i64
+                let flags = bytes[rec] | ((i32) bytes[rec + 1i64] << 8)
+                // The note byte carries the pitch of a fixed-pitch voice —
+                // every percussion entry, and the odd melodic sound effect.
+                let note = (i32) bytes[rec + 3i64]
+                let v = rec + 4i64        // first voice: 16 bytes from here
+                let mut pt = patch_genmidi(&r, v)
+                if (flags & 1) != 0 then
+                    // Fixed pitch: the note offset is meaningless and DMX
+                    // ignores it, so it stays out of `transpose`.
+                    pt.fixed_note = note
+                else
+                    pt.transpose = s16_at(bytes, v + 14i64)
+                if (flags & 4) != 0 then
+                    let v2 = rec + 20i64  // second voice: the next 16 bytes
+                    let mut p2 = patch_genmidi(&r, v2)
+                    p2.fixed_note = pt.fixed_note
+                    if (flags & 1) == 0 then
+                        p2.transpose = s16_at(bytes, v2 + 14i64)
+                    // Fine tuning is unsigned with 128 for "no detune".
+                    p2.detune = detune_units(bytes[rec + 2i64] - 128)
+                    ps[nx] = p2
+                    pt.second = nx
+                    nx = nx + 1
+                ps[i] = pt
+            for i in 0..128 do
+                mel[i] = i
+                // Percussion records cover notes 35..81 in order.
+                drm[i] = if i >= 35 && i <= 81 then 128 + (i - 35) else -1
+            ok(bank { name = "genmidi", patches = ps, melodic = mel, drums = drm,
+                      rhythm = no_rhythm(), rhythm_map = no_rhythm_map() })
+
+    // `.ibk`: a four-byte magic, 128 sixteen-byte instruments, then 128 names
+    // of nine bytes. Melodic only — a caller wanting drums keeps the ones from
+    // whatever bank it started with.
+    //
+    // Past the eleven register bytes an instrument carries a transpose, which
+    // we honour, and two fields describing how to play it on the chip's own
+    // rhythm voices, which we don't: a file bank's `rhythm` section is empty
+    // (see `no_rhythm`), so there is nowhere yet to put them.
+    let load_ibk = (bytes: const u8[]) ->
+        if bytes.len < 4i64 + 128i64 * 16i64 then err(bank, smf.bad_bank)
+        else
+            let mut r = make_reader(bytes)
+            let ps = alloc(patch[] { len = 128 })!
+            let mel = alloc(i32[] { len = 128 })!
+            let drm = alloc(i32[] { len = 128 })!
+            for i in 0..128 do
+                let v = 4i64 + i * 16i64
+                let mut pt = patch_interleaved(&r, v)
+                pt.transpose = s8_at(bytes, v + 12i64)
+                ps[i] = pt
+                mel[i] = i
+                drm[i] = -1
+            ok(bank { name = "ibk", patches = ps, melodic = mel, drums = drm,
+                      rhythm = no_rhythm(), rhythm_map = no_rhythm_map() })
+
+    // `.sbi`: a four-byte magic, a 32-byte name, and one instrument laid out
+    // exactly as an `.ibk` entry is. One patch, not a bank — the caller
+    // decides where it goes. The five bytes past the eleven are sometimes
+    // absent, so 47 bytes is the real minimum and the nominal 52 is not
+    // required.
+    let load_sbi = (bytes: const u8[]) ->
+        if bytes.len < 47i64 then err(patch, smf.bad_bank)
+        else
+            let mut r = make_reader(bytes)
+            ok(patch_interleaved(&r, 36i64))
+
+    // ------------------------------------------------------------
+    // WOPL
+    // ------------------------------------------------------------
+    //
+    // The modern one, from the OPL3BankEditor / libADLMIDI family, and the
+    // only format here that can say *which* of the chip's rhythm voices an
+    // instrument is. That makes it the one a bank can be dropped in as and
+    // still get a real drum kit off the noise generator rather than an
+    // impression of one played on melodic voices.
+    //
+    // It is an OPL3 format and we are an OPL2, so two things are given up
+    // deliberately. A true four-operator instrument has no OPL2 equivalent
+    // and falls back to its first two operators. Only bank 0 of each kind is
+    // read — the extra melodic and percussion banks are the GS and XG
+    // variations a bank-select would choose between, and we have no bank
+    // select. Two more fields are read and ignored for want of anywhere to
+    // put them: the per-instrument velocity offset, and the sounding delays.
+    //
+    // Byte order is big-endian, and the operators are stored **carrier
+    // first** — the reverse of `.sbi` and `.ibk`. Both are the kind of thing
+    // that reads fine and sounds wrong, so both are pinned to the reference
+    // reader (`WOPL_parseInstrument`, and the WOPL_OP_* constants beside it).
+
+    // Whether an instrument sounds as two 2-operator voices at once. The
+    // reference reader tests both bits: 4-op *and* pseudo-4-op means two
+    // paired voices, 4-op alone means a true OPL3 four-operator instrument,
+    // which is not something this chip can do.
+    private let wopl_is_dual = (flags: i32) -> (flags & 1) != 0 && (flags & 2) != 0
+
+    // One of the two voices in a WOPL instrument, as a patch. Voice 1 is
+    // operators 0 (carrier) and 1 (modulator) with the first feedback byte;
+    // voice 2 is operators 2 and 3 with the second. Within an operator the
+    // five bytes run char, level, attack, sustain, waveform — the same order
+    // this struct keeps them in.
+    private let wopl_voice = (bytes: const u8[], o: i64, second: bool) ->
+        let car = o + 42i64 + (if second then 10i64 else 0i64)
+        let mo = car + 5i64
+        patch {
+            m_char  = bytes[mo],        m_scale = bytes[mo + 1i64],
+            m_atk   = bytes[mo + 2i64], m_sus   = bytes[mo + 3i64],
+            m_wave  = bytes[mo + 4i64],
+            c_char  = bytes[car],       c_scale = bytes[car + 1i64],
+            c_atk   = bytes[car + 2i64], c_sus  = bytes[car + 3i64],
+            c_wave  = bytes[car + 4i64],
+            n_conn  = bytes[o + 40i64 + (if second then 1i64 else 0i64)],
+            transpose = 0, fixed_note = 0, second = 0, detune = 0 }
+
+    // Which of the bank's five rhythm slots an instrument claims, or -1 for a
+    // melodic one. The file's three-bit code counts from 1; the bank's slots
+    // are the order `rhythm` documents.
+    private let wopl_rhythm_slot = (flags: i32) ->
+        let k = (flags >> 3) & 7
+        if k == 1 then 0                // bass drum
+        else if k == 2 then 1           // snare
+        else if k == 3 then 2           // tom
+        else if k == 4 then 3           // cymbal
+        else if k == 5 then 4           // hi-hat
+        else -1
+
+    // A rhythm voice as the bank wants it. Four of the five are one operator,
+    // and the bank keeps that operator in the modulator half whichever half
+    // the chip takes it from — so the snare and the cymbal, which are
+    // carriers on the chip and sit in the carrier slot in the file, move
+    // across. The bass drum is a whole channel and stays as it is.
+    private let wopl_rhythm_patch = (bytes: const u8[], o: i64, slot: i32) ->
+        let mut pt = wopl_voice(bytes, o, false)
+        if slot == 1 || slot == 3 then
+            pt.m_char = pt.c_char
+            pt.m_scale = pt.c_scale
+            pt.m_atk = pt.c_atk
+            pt.m_sus = pt.c_sus
+            pt.m_wave = pt.c_wave
+        pt.fixed_note = bytes[o + 38i64]
+        pt.transpose = s16be_at(bytes, o + 32i64)
+        pt
+
+    // A melodic or percussion entry's primary voice.
+    private let wopl_patch = (bytes: const u8[], o: i64, is_perc: bool) ->
+        let flags = (i32) bytes[o + 39i64]
+        let key = (i32) bytes[o + 38i64]
+        let mut pt = wopl_voice(bytes, o, false)
+        pt.transpose = s16be_at(bytes, o + 32i64)
+        // A percussion entry's key number is the pitch it always sounds, and
+        // a melodic one can ask for the same treatment with the fixed flag.
+        if (flags & 0x40) != 0 || (is_perc && key > 0) then pt.fixed_note = key
+        pt
+
+    let load_wopl = (bytes: const u8[]) ->
+        if bytes.len < 19i64 then err(bank, smf.bad_bank)
+        else
+            // Version is the one little-endian field in the file.
+            let version = bytes[11i64] | ((i32) bytes[12i64] << 8)
+            let mbanks = u16be_at(bytes, 13i64)
+            let pbanks = u16be_at(bytes, 15i64)
+            let ins_size = if version >= 3 then 66i64 else 62i64
+            let meta = if version >= 2 then 34i64 * (mbanks + pbanks)
+                       else 0i64
+            let data = 19i64 + meta
+            let banks = (i64) mbanks + pbanks
+            // A version past the last one known is refused rather than
+            // guessed at: every revision so far has changed the size of an
+            // instrument, so reading a newer file with these offsets would
+            // not fail, it would quietly play the wrong bytes.
+            if version > 3 || mbanks < 1 || pbanks < 1
+                    || bytes.len < data + ins_size * 128i64 * banks then
+                err(bank, smf.bad_bank)
+            else ok(bank_from_wopl(bytes, data, ins_size, mbanks))
+
+    // Both banks are 128 entries, so a patch index is the melodic program
+    // itself, or 128 plus the percussion note. Second voices come after.
+    private let bank_from_wopl = (bytes: const u8[], data: i64, ins_size: i64,
+                                  mbanks: i64) ->
+        let per_base = data + ins_size * 128i64 * mbanks
+        let entry = (i: i32) ->
+            if i < 128 then data + i * ins_size
+            else per_base + (i - 128) * ins_size
+        let mut extra = 0
+        for i in 0..256 do
+            if wopl_is_dual(bytes[entry(i) + 39i64]) then
+                extra = extra + 1
+        let ps = alloc(patch[] { len = 256i64 + (i64) extra })!
+        let mel = alloc(i32[] { len = 128 })!
+        let drm = alloc(i32[] { len = 128 })!
+        let rmap = alloc(i32[] { len = 128 })!
+        let rh = alloc(patch[] { len = 5 })!
+        for i in 0..128 do
+            mel[i] = i
+            drm[i] = 128 + i
+            rmap[i] = -1
+        let mut nx = 256
+        let mut filled = 0      // bit per rhythm slot already claimed
+        for i in 0..256 do
+            let o = entry(i)
+            let is_perc = i >= 128
+            let flags = (i32) bytes[o + 39i64]
+            let mut pt = wopl_patch(bytes, o, is_perc)
+            if wopl_is_dual(flags) then
+                let mut p2 = wopl_voice(bytes, o, true)
+                p2.transpose = s16be_at(bytes, o + 34i64)
+                p2.fixed_note = pt.fixed_note
+                // Already centred on zero: WOPL's detune is a signed byte.
+                p2.detune = detune_units(s8_at(bytes, o + 37i64))
+                ps[nx] = p2
+                pt.second = nx
+                nx = nx + 1
+            ps[i] = pt
+            // Only the percussion bank's entries can claim a rhythm voice,
+            // and the first claimant of each wins: the chip has one snare
+            // however many notes ask for one, and a note that asks maps to it.
+            if is_perc then
+                let slot = wopl_rhythm_slot(flags)
+                if slot >= 0 then
+                    rmap[i - 128] = slot
+                    if (filled & (1 << slot)) == 0 then
+                        rh[slot] = wopl_rhythm_patch(bytes, o, slot)
+                        filled = filled | (1 << slot)
+        // A bank with no rhythm instruments gets the empty section the other
+        // formats get, so the player stays in nine-voice melodic mode.
+        if filled != 0 then
+            bank { name = "wopl", patches = ps, melodic = mel, drums = drm,
+                   rhythm = rh, rhythm_map = rmap }
+        else
+            free(rh)
+            free(rmap)
+            bank { name = "wopl", patches = ps, melodic = mel, drums = drm,
+                   rhythm = no_rhythm(), rhythm_map = no_rhythm_map() }
+
+    // Release a bank that came from one of the `load_*` readers. A bank
+    // written as source data is not heap-allocated and must not be passed here.
+    let free_bank = (b: bank) ->
+        free(b.rhythm_map)
+        free(b.rhythm)
+        free(b.drums)
+        free(b.melodic)
+        free(b.patches)
+
+    // ============================================================
+    // Temperament
+    // ============================================================
+
+    // A tuning: what each of the twelve pitch classes is worth, and what the
+    // A above middle C is worth in hertz.
+    //
+    // Equal temperament — every semitone the same size, every key the same
+    // colour — is a default rather than an obvious truth, and it is not the
+    // one the keyboard music of Bach's lifetime was written for. Twelve pure
+    // fifths overshoot seven octaves by the Pythagorean comma, about a
+    // quarter of a semitone, and every tuning is a decision about where to
+    // put that error. Equal temperament spreads it evenly, so nothing is pure
+    // and nothing is bad. A *well* temperament spreads it unevenly: the
+    // common keys come out near-pure and the remote ones tense, all twelve
+    // remain playable, and the difference between them is a colour a composer
+    // can write for. Meantone, older still, buys pure thirds in eight keys by
+    // making the other four unusable.
+    //
+    // The chip does not care. It is handed a frequency, and a frequency is
+    // exactly what a temperament changes.
+    //
+    // ```fc
+    // opl_midi.set_temperament(p, opl_midi.werckmeister3)
+    // opl_midi.set_temperament(p, opl_midi.at_pitch(opl_midi.vallotti, opl_midi.baroque_a))
+    // ```
+    //
+    // How much of this survives the hardware: the OPL2 tunes by a 10-bit
+    // F-number, and the player keeps that number between 512 and 1023 for
+    // every note from G1 up, so one step is between 1.7 and 3.4 cents and
+    // rounding costs at most half of that. The tables below reach ±27 cents
+    // and the interval differences they exist to create are larger still —
+    // Werckmeister III's major thirds span 18 cents end to end — so the
+    // character comes through, on a grid roughly a cent wide.
+    struct temperament =
+        name: const str
+
+        // Cents to add to each pitch class's equal-tempered pitch, C first,
+        // twelve entries. A cent is a hundredth of an equal-tempered
+        // semitone, so these are small numbers; ±30 covers everything here.
+        //
+        // Published tables read zero at C, and these are copied in that form
+        // so they can be checked against one. `freq_of` subtracts the A entry
+        // as it reads, which re-anchors the table on the note a tuner
+        // actually sets from a fork — so `a4` below always means what it
+        // says, whichever temperament is loaded, and switching between two of
+        // them moves the colours without moving the pitch.
+        cents: const f64[]
+
+        // The pitch standard: the frequency of A above middle C, MIDI note
+        // 69. Independent of the temperament — any table can be sounded at
+        // any pitch — which is why it is a field here and `at_pitch` is a
+        // one-liner.
+        a4: f64
+
+    // Modern concert pitch, and the pitch standard every table below carries
+    // until something says otherwise.
+    let concert_a = 440.0
+
+    // A representative baroque chamber pitch: a semitone below modern, which
+    // is roughly where Bach's Leipzig sat. There was no standard — pitch was
+    // a local fact, and surviving instruments from the period range over
+    // nearly a whole tone — so this is a convention, not a measurement.
+    let baroque_a = 415.3047
+
+    // The twelve deviations, C first: C C# D Eb E F F# G G# A Bb B.
+    //
+    // Every table below is the tuner's recipe worked out in cents, and every
+    // one of them is a rule about the twelve fifths: a pure fifth is 701.955
+    // cents, the Pythagorean comma the circle has to absorb is 23.460, and
+    // the syntonic comma that a pure major third asks for is 21.506. What
+    // distinguishes the temperaments is which fifths give up how much.
+
+    // Equal: the comma spread evenly, every fifth 2 cents narrow, every third
+    // 14 cents wide, every key identical. Here as the neutral element and as
+    // the thing to A/B against.
+    private let cents_equal = f64[] { len = 12,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 }
+
+    // Werckmeister III (1691) — Andreas Werckmeister's "correct temperament
+    // no. 1", and the one a recording most often means by "Bach's tuning".
+    // Four fifths (C-G, G-D, D-A, B-F#) narrow by a quarter comma each, the
+    // other eight pure. C, F and G major come out calm, the sharp keys
+    // Pythagorean and bright.
+    private let cents_werckmeister3 = f64[] { len = 12,
+         0.000,  -9.775,  -7.820,  -5.865,  -9.775,  -1.955,
+       -11.730,  -3.910,  -7.820, -11.730,  -3.910,  -7.820 }
+
+    // Kirnberger III (1779) — Johann Kirnberger studied with Bach and said
+    // more than once that he was writing down what he had been taught, which
+    // is the strongest claim any of these has to being the actual tuning.
+    // C-G-D-A-E narrow by a quarter of the *syntonic* comma, so C-E is a pure
+    // major third; F#-C# absorbs the leftover schisma; the rest are pure.
+    private let cents_kirnberger3 = f64[] { len = 12,
+         0.000,  -9.775,  -6.843,  -5.865, -13.686,  -1.955,
+        -9.776,  -3.422,  -7.820, -10.265,  -3.910, -11.731 }
+
+    // Vallotti (1754) — six consecutive fifths, F through B, narrow by a
+    // sixth of a comma; the other six pure. The gentlest of the four and the
+    // one most used by modern period ensembles, because it flatters
+    // everything and offends nothing.
+    private let cents_vallotti = f64[] { len = 12,
+         0.000,  -5.865,  -3.910,  -1.955,  -7.820,   1.955,
+        -7.820,  -1.955,  -3.910,  -5.865,   0.000,  -9.775 }
+
+    // Young II (1800) — Vallotti rotated one fifth sharper, so the six
+    // narrowed fifths run C through F#. Same recipe, key colours shifted:
+    // the sharp side pays a little more and the flat side a little less.
+    private let cents_young2 = f64[] { len = 12,
+         0.000,  -9.775,  -3.910,  -5.865,  -7.820,  -1.955,
+       -11.730,  -1.955,  -7.820,  -5.865,  -3.910,  -9.775 }
+
+    // Quarter-comma meantone (16th century) — eleven fifths narrow by a
+    // quarter of the syntonic comma, giving eight pure major thirds, and the
+    // twelfth fifth swallows everything left over: G#-Eb comes out 36 cents
+    // wide and howls. It is here as the foil rather than as a choice. It is
+    // gorgeous in C, G, D, F and Bb and it is *why* well temperament was
+    // invented: half the notebook — the E flat march, the C minor minuet —
+    // reaches keys this tuning cannot play.
+    private let cents_meantone = f64[] { len = 12,
+         0.000, -23.951,  -6.843,  10.265, -13.686,   3.422,
+       -20.529,  -3.422, -27.373, -10.265,   6.843, -17.108 }
+
+    let equal = temperament {
+        name = "equal",         cents = cents_equal,         a4 = concert_a }
+    let werckmeister3 = temperament {
+        name = "werckmeister3", cents = cents_werckmeister3, a4 = concert_a }
+    let kirnberger3 = temperament {
+        name = "kirnberger3",   cents = cents_kirnberger3,   a4 = concert_a }
+    let vallotti = temperament {
+        name = "vallotti",      cents = cents_vallotti,      a4 = concert_a }
+    let young2 = temperament {
+        name = "young2",        cents = cents_young2,        a4 = concert_a }
+    let meantone = temperament {
+        name = "meantone",      cents = cents_meantone,      a4 = concert_a }
+
+    // Every temperament here, in the order a menu should offer them: the
+    // default first, then the well temperaments oldest to newest, then the
+    // one that is a demonstration rather than an option. `temperament_named`
+    // reads this, and so should anything that wants to list or cycle them —
+    // it is the one place the set is written down.
+    let temperaments = temperament[] { len = 6,
+        equal, werckmeister3, kirnberger3, vallotti, young2, meantone }
+
+    // Look one up by the name it carries, for a command-line flag or a
+    // settings file. Exact match, no aliases: the names are short and lower
+    // case precisely so they can be typed.
+    let temperament_named = (name: const str) ->
+        let mut found = none(temperament)
+        for i in 0i64..temperaments.len do
+            if temperaments[i].name == name then found = some(temperaments[i])
+        found
+
+    // The same temperament sounded at a different pitch standard. The two are
+    // independent axes and this is what keeps them that way — `werckmeister3`
+    // at 415 is still Werckmeister III.
+    let at_pitch = (t: temperament, a4: f64) ->
+        temperament { name = t.name, cents = t.cents, a4 = a4 }
+
+    // ============================================================
+    // Player state
+    // ============================================================
+
+    // One MIDI channel's running controller state. Sixteen of these exist
+    // whether or not a song uses them; the defaults are General MIDI's, so a
+    // file that sets nothing still plays at a sensible level and pitch.
+    struct channel =
+        program: i32        // 0..127, last program change
+        volume: i32         // CC7,  default 100
+        expression: i32     // CC11, default 127
+        bend: i32           // -8192..8191
+        bend_range: i32     // semitones either way, default 2 (RPN 0)
+        sustain: bool       // CC64 down
+        rpn: i32            // currently selected RPN, for the data-entry dance
+
+    // One of the chip's nine voices, and what it is currently doing. A voice
+    // is `keyed` from the note-on that claimed it until the note-off that
+    // releases it; after that it is still audible for as long as the patch's
+    // release takes, which is why the allocator asks the chip rather than
+    // this flag when it wants a genuinely free voice.
+    struct voice =
+        midi_ch: i32        // -1 = never used
+        note: i32
+        patch: i32
+        vel: i32            // kept so a volume change can re-level the note
+        keyed: bool
+        held: bool          // note-off arrived, but the sustain pedal is down
+        serial: u32         // allocation order, for oldest-first stealing
+        // The second half of a dual-voice instrument. Worth knowing because
+        // it is the first thing to give up when a voice is needed: losing a
+        // doubling thins one note, losing a primary silences one.
+        doubling: bool
+
+    // A song, a bank, a chip, and the state that maps one onto the others.
+    //
+    // The player owns its chip and reads but does not own its song or bank.
+    // It produces no samples: `advance` moves the clock one output sample and
+    // dispatches whatever that reveals, and the caller pulls audio out of
+    // `chip` itself.
+    struct player =
+        chip: opl2.chip*
+        tune: song
+        kit: bank
+        rate: i32
+
+        // Clock. `to_next` counts output samples down to the next event; the
+        // tempo between two consecutive events is constant by construction,
+        // since a tempo change is itself an event, so the clock can step by
+        // event rather than by tick.
+        pos: i32            // index of the next event
+        tick: i32           // tick of the last event dispatched
+        to_next: f64
+        per_tick: f64       // output samples per tick at the current tempo
+        us_quarter: i32     // microseconds per quarter note
+
+        playing: bool
+        looping: bool
+        at_end: bool
+
+        channels: channel[16]
+        voices: voice[9]
+        serial: u32
+
+        // What the keyboard is tuned to. `equal` until `set_temperament`
+        // says otherwise, so a caller that never asks gets exactly what this
+        // player always did.
+        tuning: temperament
+
+        // Whether the chip is in rhythm mode, which decides both where a
+        // percussion note goes and how many melodic voices there are.
+        use_rhythm: bool
+        // Melodic voices available: nine normally, six in rhythm mode, where
+        // channels 6..8 have become the drum kit.
+        vmax: i32
+
+        // How many notes have had to take a voice away from a note that was
+        // still sounding. Nothing reads it during playback — it is here for
+        // whoever is tuning a bank or a song, because it is the one number
+        // that says whether nine voices are enough for the piece.
+        steals: u32
+
+        // Velocity/volume/expression product (0..127) -> total-level offset.
+        // TL counts down in 0.75 dB steps, so this is a log curve, and it is
+        // a table because a note-on should not cost a logarithm.
+        vel_tl: i32[128]
+
+    private let clamp = (v: i32, lo: i32, hi: i32) ->
+        if v < lo then lo else if v > hi then hi else v
+
+    // ============================================================
+    // Tempo
+    // ============================================================
+
+    // Recompute samples-per-tick from whichever time base the file uses. The
+    // two forms are genuinely different clocks: with a positive division a
+    // tick is a fraction of a quarter note and tempo scales it, while SMPTE
+    // divisions count real time and tempo events mean nothing. One function
+    // so there is one place that decides.
+    private let retime = (p: player*) ->
+        if p.tune.division > 0 then
+            p.per_tick = (f64) p.us_quarter * p.rate
+                / (1000000.0 * p.tune.division)
+        else
+            let fps = 0 - (p.tune.division >> 8)
+            let tpf = p.tune.division & 255
+            let d = (f64) fps * tpf
+            p.per_tick = if d > 0.0 then p.rate / d else p.rate / 1000.0
+
+    private let set_tempo = (p: player*, us: i32) ->
+        if us > 0 then
+            p.us_quarter = us
+            retime(p)
+
+    // ============================================================
+    // Pitch
+    // ============================================================
+
+    // Fractional MIDI note number to frequency, equal-tempered, at a given
+    // pitch standard. The one place in the file where an octave is a doubling
+    // and A is A.
+    private let et_freq = (a4: f64, note_f: f64) ->
+        a4 * math.pow(2.0, (note_f - 69.0) / 12.0)
+
+    // The frequency a tempered note sounds at.
+    //
+    // `note` is the written note — the thing that has a pitch class, and so
+    // the only thing a temperament has an opinion about. `extra` is
+    // everything continuous that follows it: pitch bend, and the few cents of
+    // detune the second half of a dual-voice patch carries. Bend slides the
+    // note off its own tempered pitch by equal-tempered semitones, which is
+    // what bending a real tuned keyboard would do, and what keeps a bend of
+    // zero exactly where the table put it.
+    //
+    // The `- cents[9]` is the re-anchoring the struct's comment describes: A
+    // is pitch class 9, and subtracting its own deviation makes A the note
+    // the table leaves alone. Everything else moves relative to it.
+    private let freq_of = (t: temperament, note: i32, extra: f64) ->
+        let pc = ((note % 12) + 12) % 12
+        et_freq(t.a4, note + extra + (t.cents[pc] - t.cents[9]) / 100.0)
+
+    // Frequency to the chip's (block, F-number) pair, per
+    //     f = fnum * 2^(block-1) * 49716 / 2^19.
+    //
+    // The same pitch has several spellings; the one with the largest F-number
+    // is the most precise, so this raises the block only as far as it must to
+    // bring the 10-bit F-number back in range. A note above the chip's top
+    // clamps rather than wrapping into a wrong octave.
+    private let block_fnum = (freq: f64) ->
+        let k = freq * 524288.0 / 49716.0
+        let mut block = 0
+        let mut fnum = k * 2.0
+        loop
+            if fnum < 1024.0 then break
+            if block >= 7 then break
+            block = block + 1
+            fnum = fnum / 2.0
+        let fi = (i32) (fnum + 0.5)
+        { block, if fi > 1023 then 1023 else if fi < 0 then 0 else fi }
+
+    // The (block, fnum) a voice should be sounding right now: its note, the
+    // patch's transpose, and its channel's current bend. Percussion ignores
+    // bend — a drum's pitch is the patch's business, not the note's.
+    private let voice_pitch = (p: player*, v: i32) ->
+        let vc = p.voices[v]
+        let ins = p.kit.patches[vc.patch]
+        // Zero on every voice but the second of a dual-voice pair, where it is
+        // the whole point: the two sound the same note a few cents apart.
+        let det = ins.detune / 32.0
+        // A fixed-pitch patch is percussion (or a bank pretending to be), and
+        // a drum is not on the keyboard: it takes the pitch standard, since
+        // tuning the ensemble down should take the whole ensemble, but not
+        // the temperament, which is a statement about intervals a drum has
+        // none of.
+        if ins.fixed_note > 0 then
+            block_fnum(et_freq(p.tuning.a4,
+                               (ins.fixed_note + ins.transpose) + det))
+        else
+            let ch = p.channels[vc.midi_ch]
+            let semis = (f64) ch.bend * ch.bend_range / 8192.0
+            // Transpose is part of the written note — a patch that transposes
+            // by anything but an octave sounds a different pitch class, and
+            // the temperament has to see the one that sounds.
+            block_fnum(freq_of(p.tuning, vc.note + ins.transpose, semis + det))
+
+    // ============================================================
+    // Level
+    // ============================================================
+
+    // Velocity, channel volume and expression fold into one 0..127 index.
+    // Multiplying rather than picking the smallest is what the specification
+    // intends: expression is a scale *within* the channel's volume, and both
+    // scale the note's own velocity.
+    private let level_index = (p: player*, ch: i32, vel: i32) ->
+        let c = p.channels[ch]
+        clamp(vel, 0, 127) * clamp(c.volume, 0, 127) * clamp(c.expression, 0, 127)
+            / (127 * 127)
+
+    // Write a voice's current loudness into the chip.
+    //
+    // In FM connection the modulator's total level is modulation depth, not
+    // volume, so only the carrier scales — turning both down would make the
+    // note quieter *and* duller, which is not what a volume control does. In
+    // additive connection both operators reach the output, so both scale.
+    private let apply_level = (p: player*, v: i32) ->
+        let vc = p.voices[v]
+        let ins = p.kit.patches[vc.patch]
+        let add = p.vel_tl[clamp(level_index(p, vc.midi_ch, vc.vel), 0, 127)]
+        let mo = opl2.op_mod_offset(v)
+        let c_tl = clamp((ins.c_scale & 63) + add, 0, 63)
+        opl2.write(p.chip, 0x40 + mo + 3, (ins.c_scale & 192) | c_tl)
+        if (ins.n_conn & 1) != 0 then
+            let m_tl = clamp((ins.m_scale & 63) + add, 0, 63)
+            opl2.write(p.chip, 0x40 + mo, (ins.m_scale & 192) | m_tl)
+
+    // ============================================================
+    // Voices
+    // ============================================================
+
+    // Which patch a note should sound on. Channel 9 is General MIDI's
+    // percussion channel, where the note number picks the drum rather than
+    // the pitch; every other channel uses its last program change.
+    // A bank is expected to carry 128 entries in each index table, and every
+    // one built here does. A shorter one silences what it does not cover
+    // rather than aborting on the read, because a bank is data somebody else
+    // may have written and a missing instrument is not worth a crash.
+    private let patch_for = (p: player*, ch: i32, note: i32) ->
+        let table = if ch == 9 then p.kit.drums else p.kit.melodic
+        let key = if ch == 9 then note
+                  else clamp(p.channels[ch].program, 0, 127)
+        if key >= table.len then -1
+        else
+            let idx = table[key]
+            if idx < 0 || idx >= p.kit.patches.len then -1 else idx
+
+    // Hand out one of the nine voices, in three tiers of increasing rudeness:
+    // one the chip says has finished sounding, then the longest-released one
+    // still ringing out, then — with everything genuinely busy — the note
+    // that has been held longest. The first tier is why `channel_idle` exists:
+    // reusing a silent voice is inaudible, and reusing a ringing one is not.
+    private let alloc_voice = (p: player*) ->
+        for v in 0..p.vmax do
+            if !p.voices[v].keyed && opl2.channel_idle(p.chip, v) then return v
+        let mut best = -1
+        let mut oldest = 0u32
+        for v in 0..p.vmax do
+            if !p.voices[v].keyed then
+                if best < 0 || p.voices[v].serial < oldest then
+                    best = v
+                    oldest = p.voices[v].serial
+        if best >= 0 then return best
+        // Everything is sounding, so something has to go. A doubling goes
+        // first, and its loss is not counted a steal: thinning one note is
+        // the degradation dual-voice is designed to take, and `steals` is
+        // meant to answer "did this piece lose notes", which it did not.
+        let mut bd = -1
+        let mut od = 0u32
+        for v in 0..p.vmax do
+            if p.voices[v].doubling then
+                if bd < 0 || p.voices[v].serial < od then
+                    bd = v
+                    od = p.voices[v].serial
+        if bd >= 0 then return bd
+        p.steals = p.steals + 1u32
+        let mut b2 = 0
+        let mut o2 = p.voices[0].serial
+        for v in 1..p.vmax do
+            if p.voices[v].serial < o2 then
+                b2 = v
+                o2 = p.voices[v].serial
+        b2
+
+    // A voice that is genuinely free, or -1 — `alloc_voice`'s two polite
+    // tiers without the third, plus a voice to skip because the caller has
+    // just keyed it. This is what a second voice is allowed to take: doubling
+    // an instrument is worth a voice nobody wants and never worth silencing a
+    // note somebody is listening to.
+    private let alloc_voice_free = (p: player*, avoid: i32) ->
+        for v in 0..p.vmax do
+            if v != avoid && !p.voices[v].keyed && opl2.channel_idle(p.chip, v) then
+                return v
+        let mut best = -1
+        let mut oldest = 0u32
+        for v in 0..p.vmax do
+            if v != avoid && !p.voices[v].keyed then
+                if best < 0 || p.voices[v].serial < oldest then
+                    best = v
+                    oldest = p.voices[v].serial
+        best
+
+    // Release any voice already sounding this note on this channel, outright
+    // rather than through `stop_note` — which under a held sustain pedal
+    // would only park it, which is not what a retrigger means.
+    //
+    // A second note-on for a note already down is common in real files, and
+    // without this it would leave the first voice keyed with no note-off ever
+    // coming for it: `stop_note` matches one voice, so the other would ring
+    // until something stole it.
+    private let release_note = (p: player*, ch: i32, note: i32) ->
+        for v in 0..9 do
+            if p.voices[v].keyed && p.voices[v].midi_ch == ch
+                    && p.voices[v].note == note then
+                opl2.note_off(p.chip, v)
+                p.voices[v].keyed = false
+                p.voices[v].held = false
+
+    // ============================================================
+    // Rhythm mode
+    // ============================================================
+
+    // The rhythm voice a percussion note plays on, or -1 for "not one of the
+    // five" — which means the note falls through to a melodic voice.
+    private let rhythm_for = (p: player*, note: i32) ->
+        if !p.use_rhythm || note < 0 then -1
+        else if note >= p.kit.rhythm_map.len then -1
+        else
+            let v = p.kit.rhythm_map[note]
+            if v < 0 || v >= p.kit.rhythm.len then -1 else v
+
+    // Entry 5 is the open hi-hat, and it deliberately lands on the same
+    // operator as entry 4: rhythm mode has one hi-hat, so open and closed are
+    // the same voice with different envelopes, and `strike_rhythm` programs
+    // the envelope on every hit. Two map entries sharing an operator is the
+    // general mechanism, not a special case — a bank can use it for any of
+    // the four single-operator voices.
+    private let rhythm_voice_of = (i: i32) ->
+        if i == 0 then opl2.rhythm_voice.bass_drum
+        else if i == 1 then opl2.rhythm_voice.snare
+        else if i == 2 then opl2.rhythm_voice.tom
+        else if i == 3 then opl2.rhythm_voice.cymbal
+        else opl2.rhythm_voice.hihat
+
+    // Put the chip in rhythm mode and program what does not change per hit:
+    // the bass drum, which is a whole two-operator channel, and the three
+    // channel pitches. The four single-operator voices are programmed at
+    // strike time instead, which is what lets two map entries share one
+    // operator with different envelopes.
+    private let setup_rhythm = (p: player*) ->
+        opl2.rhythm_mode(p.chip, true)
+        let bd = p.kit.rhythm[0]
+        opl2.load_instrument(p.chip, 6,
+            bd.m_char, bd.c_char, bd.m_scale, bd.c_scale,
+            bd.m_atk,  bd.c_atk,  bd.m_sus,   bd.c_sus,
+            bd.m_wave, bd.c_wave, bd.n_conn)
+        tune_rhythm(p)
+
+    // The three rhythm channels' pitches — and only three, because the hi-hat
+    // shares channel 7 with the snare and the cymbal shares channel 8 with
+    // the tom.
+    //
+    // On their own because a change of pitch standard has to redo exactly
+    // this and nothing else: reprogramming the kit around it would reset the
+    // tom, which `strike_rhythm` retunes per hit.
+    private let tune_rhythm = (p: player*) ->
+        let bd_n = if p.kit.rhythm[0].fixed_note > 0 then p.kit.rhythm[0].fixed_note
+                   else 36
+        let hh_n = if p.kit.rhythm[4].fixed_note > 0 then p.kit.rhythm[4].fixed_note
+                   else 84
+        let tt_n = if p.kit.rhythm[2].fixed_note > 0 then p.kit.rhythm[2].fixed_note
+                   else 48
+        let { bblk, bfn } = block_fnum(et_freq(p.tuning.a4, bd_n))
+        opl2.set_pitch(p.chip, 6, bblk, bfn)
+        let { hblk, hfn } = block_fnum(et_freq(p.tuning.a4, hh_n))
+        opl2.set_pitch(p.chip, 7, hblk, hfn)
+        let { tblk, tfn } = block_fnum(et_freq(p.tuning.a4, tt_n))
+        opl2.set_pitch(p.chip, 8, tblk, tfn)
+
+    // Strike one drum: level it for the note's velocity, tune it if it is the
+    // tom, and key it.
+    private let strike_rhythm = (p: player*, rv: i32, note: i32, vel: i32) ->
+        let ins = p.kit.rhythm[rv]
+        let add = p.vel_tl[clamp(level_index(p, 9, vel), 0, 127)]
+        if rv == 0 then
+            // The bass drum is a two-operator channel, so its loudness is the
+            // carrier's total level, exactly as for a melodic voice.
+            let mo = opl2.op_mod_offset(6)
+            opl2.write(p.chip, 0x40 + mo + 3,
+                (ins.c_scale & 192) | clamp((ins.c_scale & 63) + add, 0, 63))
+        else
+            // The other four are single operators, and that one operator is
+            // both the whole voice and the whole output. Programmed in full
+            // on every hit rather than once at startup: it costs five
+            // register writes, and it is what lets the open and closed
+            // hi-hats be one operator wearing two envelopes.
+            opl2.load_rhythm_op(p.chip, rhythm_voice_of(rv),
+                ins.m_char,
+                (ins.m_scale & 192) | clamp((ins.m_scale & 63) + add, 0, 63),
+                ins.m_atk, ins.m_sus, ins.m_wave)
+        // The tom is the one rhythm voice with a pitch, so General MIDI's six
+        // tom notes really do come out at six pitches. It shares channel 8
+        // with the cymbal, which is detuned as a side effect — inaudible,
+        // because what the cymbal plays is mostly noise.
+        if rv == 2 then
+            let { blk, fnv } = block_fnum(
+                et_freq(p.tuning.a4, (note + ins.transpose)))
+            opl2.set_pitch(p.chip, 8, blk, fnv)
+        opl2.rhythm_strike(p.chip, rhythm_voice_of(rv))
+
+    // Whether this song has any percussion the bank's rhythm section covers.
+    // Asked once per song, and never again while one is playing: that is what
+    // keeps the melodic voice count fixed for the length of a piece, since a
+    // player that switched modes mid-song would have to steal three sounding
+    // voices to do it. A song *change* is not mid-song — `bind_song` silences
+    // the chip first, so there is nothing left to steal from — which is why
+    // the question lives here rather than inline in `init`.
+    private let wants_rhythm = (tune: song, kit: bank) ->
+        if kit.rhythm.len < 5i64 || kit.rhythm_map.len < 128i64 then false
+        else
+            let mut want = false
+            for i in 0i64..tune.events.len do
+                match tune.events[i].m with
+                | note_on(n) ->
+                    if n.chan == 9 && n.note >= 0 && n.note < 128 then
+                        if kit.rhythm_map[n.note] >= 0 then want = true
+                | _ -> void()
+            want
+
+    // Program one chip channel with a patch and key it. Split out from
+    // `start_note` because a dual-voice instrument does all of this twice.
+    private let key_voice = (p: player*, v: i32, ch: i32, note: i32,
+                             pi: i32, vel: i32, doubling: bool) ->
+        // Release whatever this voice was still ringing out *before*
+        // reprogramming it: changing an operator's level or waveform under a
+        // sounding note is an audible click.
+        opl2.note_off(p.chip, v)
+        let ins = p.kit.patches[pi]
+        opl2.load_instrument(p.chip, v,
+            ins.m_char, ins.c_char, ins.m_scale, ins.c_scale,
+            ins.m_atk,  ins.c_atk,  ins.m_sus,   ins.c_sus,
+            ins.m_wave, ins.c_wave, ins.n_conn)
+        p.serial = p.serial + 1u32
+        p.voices[v].midi_ch = ch
+        p.voices[v].note = note
+        p.voices[v].patch = pi
+        p.voices[v].vel = vel
+        p.voices[v].keyed = true
+        p.voices[v].held = false
+        p.voices[v].serial = p.serial
+        p.voices[v].doubling = doubling
+        apply_level(p, v)
+        let { blk, fnv } = voice_pitch(p, v)
+        opl2.note_on(p.chip, v, blk, fnv)
+
+    private let start_note = (p: player*, ch: i32, note: i32, vel: i32) ->
+        if ch < 0 || ch > 15 || note < 0 || note > 127 then return
+        let rv = if ch == 9 then rhythm_for(p, note) else -1
+        if rv >= 0 then
+            strike_rhythm(p, rv, note, vel)
+            return
+        let pi = patch_for(p, ch, note)
+        if pi < 0 then return
+        release_note(p, ch, note)
+        let v = alloc_voice(p)
+        key_voice(p, v, ch, note, pi, vel, false)
+        // The second half of a dual-voice instrument, if there is one and the
+        // chip can spare a channel. Both halves carry the same channel and
+        // note, which is all it takes for note-off, pedal, bend and volume to
+        // find them both — they walk the voices by (channel, note) already.
+        let pi2 = p.kit.patches[pi].second
+        if pi2 > 0 && pi2 < p.kit.patches.len then
+            let v2 = alloc_voice_free(p, v)
+            if v2 >= 0 then key_voice(p, v2, ch, note, pi2, vel, true)
+
+    private let stop_note = (p: player*, ch: i32, note: i32) ->
+        let rv = if ch == 9 then rhythm_for(p, note) else -1
+        if rv >= 0 then
+            opl2.rhythm_release(p.chip, rhythm_voice_of(rv))
+            return
+        // Every voice sounding this note, not just the first: a dual-voice
+        // instrument put two of them there, and one note-off ends both.
+        for v in 0..9 do
+            if p.voices[v].keyed && p.voices[v].midi_ch == ch
+                    && p.voices[v].note == note then
+                // With the pedal down the key is released but the note is
+                // not: it keeps sounding until the pedal comes up.
+                if p.channels[ch].sustain then p.voices[v].held = true
+                else
+                    opl2.note_off(p.chip, v)
+                    p.voices[v].keyed = false
+                    p.voices[v].held = false
+
+    // Let go of everything the pedal was holding on one channel.
+    private let release_held = (p: player*, ch: i32) ->
+        for v in 0..9 do
+            if p.voices[v].held && p.voices[v].midi_ch == ch then
+                opl2.note_off(p.chip, v)
+                p.voices[v].keyed = false
+                p.voices[v].held = false
+
+    private let all_notes_off = (p: player*, ch: i32) ->
+        for v in 0..9 do
+            if p.voices[v].keyed && p.voices[v].midi_ch == ch then
+                opl2.note_off(p.chip, v)
+                p.voices[v].keyed = false
+                p.voices[v].held = false
+
+    // Re-apply level, or pitch, to every note currently sounding on a
+    // channel — what a mid-note volume change or pitch bend has to do, since
+    // the chip holds those per voice and knows nothing about MIDI channels.
+    private let relevel_channel = (p: player*, ch: i32) ->
+        for v in 0..9 do
+            if p.voices[v].keyed && p.voices[v].midi_ch == ch then
+                apply_level(p, v)
+
+    private let retune_channel = (p: player*, ch: i32) ->
+        for v in 0..9 do
+            if p.voices[v].keyed && p.voices[v].midi_ch == ch then
+                let { blk, fnv } = voice_pitch(p, v)
+                opl2.set_pitch(p.chip, v, blk, fnv)
+
+    // ============================================================
+    // Control changes
+    // ============================================================
+
+    // The controllers a player can honour. Everything else a file sends is
+    // ignored on purpose rather than by omission — pan in particular, which
+    // a mono chip has nowhere to put.
+    //
+    // Bend range arrives through the RPN mechanism rather than a controller
+    // of its own: CC101 and CC100 select a parameter number, and CC6 then
+    // sets it. Only RPN 0 is honoured; the others (fine tuning, coarse
+    // tuning) have no register to reach.
+    private let do_control = (p: player*, ch: i32, cc: i32, val: i32) ->
+        if cc == 7 then
+            p.channels[ch].volume = val
+            relevel_channel(p, ch)
+        else if cc == 11 then
+            p.channels[ch].expression = val
+            relevel_channel(p, ch)
+        else if cc == 64 then
+            let down = val >= 64
+            p.channels[ch].sustain = down
+            if !down then release_held(p, ch)
+        else if cc == 101 then
+            p.channels[ch].rpn = (p.channels[ch].rpn & 127) | (val << 7)
+        else if cc == 100 then
+            p.channels[ch].rpn = (p.channels[ch].rpn & 16256) | val
+        else if cc == 6 then
+            if p.channels[ch].rpn == 0 then
+                p.channels[ch].bend_range = clamp(val, 0, 24)
+                retune_channel(p, ch)
+        else if cc == 120 || cc == 123 then all_notes_off(p, ch)
+        else if cc == 121 then reset_controllers(p, ch)
+
+    private let reset_controllers = (p: player*, ch: i32) ->
+        p.channels[ch].volume = 100
+        p.channels[ch].expression = 127
+        p.channels[ch].bend = 0
+        p.channels[ch].bend_range = 2
+        p.channels[ch].sustain = false
+        p.channels[ch].rpn = 0
+        relevel_channel(p, ch)
+        retune_channel(p, ch)
+
+    // ============================================================
+    // The clock
+    // ============================================================
+
+    private let dispatch = (p: player*, m: msg) ->
+        match m with
+        | note_on(n) -> start_note(p, n.chan, n.note, n.vel)
+        | note_off(n) -> stop_note(p, n.chan, n.note)
+        | program(c) -> p.channels[c.chan].program = clamp(c.val, 0, 127)
+        | control(c) -> do_control(p, c.chan, c.cc, c.val)
+        | bend(c) ->
+            p.channels[c.chan].bend = c.val
+            retune_channel(p, c.chan)
+        | tempo(us) -> set_tempo(p, us)
+
+    // Silence the chip and forget every voice. Used when the music stops and
+    // when a loop wraps: a wrap that leaves notes sounding hands them to the
+    // next time round, where nothing will ever release them.
+    private let silence = (p: player*) ->
+        for v in 0..9 do
+            opl2.note_off(p.chip, v)
+            p.voices[v].midi_ch = -1
+            p.voices[v].keyed = false
+            p.voices[v].held = false
+            p.voices[v].serial = 0u32
+        // Drop the rhythm keys too, or a drum held across a stop keeps its
+        // key bit set and never articulates again — `rhythm_strike` needs a
+        // rising edge, and a bit that is already high has none to give.
+        if p.use_rhythm then
+            for i in 0..5 do
+                opl2.rhythm_release(p.chip, rhythm_voice_of(i))
+        opl2.silence_voices(p.chip)
+        // `silence_voices` clears every operator, including the five the
+        // rhythm section owns, so the kit has to be programmed again.
+        if p.use_rhythm then setup_rhythm(p)
+        p.serial = 0u32
+
+    // Every channel back to General MIDI's defaults. A loop wrap that skipped
+    // this would inherit the volume, bend and pedal state the last time round
+    // ended on, which is the classic reason a looped MIDI gets quieter — or
+    // stranger — on each repeat.
+    private let reset_channels = (p: player*) ->
+        for ch in 0..16 do
+            p.channels[ch].program = 0
+            p.channels[ch].volume = 100
+            p.channels[ch].expression = 127
+            p.channels[ch].bend = 0
+            p.channels[ch].bend_range = 2
+            p.channels[ch].sustain = false
+            p.channels[ch].rpn = 0
+
+    private let rewind = (p: player*) ->
+        silence(p)
+        reset_channels(p)
+        p.pos = 0
+        p.tick = 0
+        p.at_end = false
+        set_tempo(p, 500000)        // 120 bpm, until the song says otherwise
+        let first = if p.tune.events.len > 0i64 then p.tune.events[0].tick else 0
+        p.to_next = p.to_next + first * p.per_tick
+
+    // Move the clock on by one output sample and dispatch everything that
+    // becomes due. Call this once per sample, before pulling audio out of
+    // `p.chip`; it produces no audio itself.
+    //
+    // The inner loop steps event to event rather than tick to tick, so a
+    // sparse passage costs nothing and a chord's worth of simultaneous events
+    // is dispatched in one pass. `wrapped` bounds it: a song can loop at most
+    // once per call, so a degenerate zero-length song cannot spin here.
+    let advance = (p: player*) ->
+        if !p.playing then return
+        p.to_next = p.to_next - 1.0
+        let mut wrapped = false
+        loop
+            if p.to_next > 0.0 then break
+            if p.pos >= p.tune.events.len then
+                if !p.looping || wrapped then
+                    p.playing = false
+                    p.at_end = true
+                    silence(p)
+                    break
+                wrapped = true
+                rewind(p)
+            else
+                let e = p.tune.events[p.pos]
+                p.tick = e.tick
+                p.pos = p.pos + 1
+                dispatch(p, e.m)
+                let nxt = if p.pos >= p.tune.events.len then p.tune.length
+                          else p.tune.events[p.pos].tick
+                let d = nxt - e.tick
+                p.to_next = p.to_next + (if d < 0 then 0 else d) * p.per_tick
+
+    // ============================================================
+    // The caller's API
+    // ============================================================
+
+    // Put a song under a player: everything that depends on *which* song it
+    // is, and nothing that doesn't. Both the first song and every later one
+    // come through here, so a swap cannot forget a step the first one took.
+    //
+    // The order is the whole content of this function. The old song is
+    // silenced *before* `use_rhythm` moves, because dropping the rhythm keys
+    // is only reachable while rhythm mode still owns voices 6..8 — flip the
+    // mode first and a drum left keyed stays keyed, its bit already high, and
+    // `rhythm_strike` never finds the rising edge it needs again. Then the
+    // chip is told the new mode, and `rewind` silences a second time under
+    // it, which is also what reprograms the kit.
+    //
+    // `to_next` is zeroed after the rewind rather than left holding the first
+    // event's tick, so a song opens on its first note instead of playing the
+    // leading rest its notation happens to carry. `start` and `stop` do the
+    // same, and this is the third place that rule has to hold.
+    private let bind_song = (p: player*, tune: song) ->
+        silence(p)
+        p.tune = tune
+        // Rhythm mode: on if the bank has a kit and the song plays something
+        // it covers. It is not a knob because there is no interesting way to
+        // answer it wrong — a song with no percussion gains nothing and would
+        // lose three voices, and a song with percussion gains the chip's only
+        // noise generator *and* stops its drums competing for melodic voices
+        // at all.
+        p.use_rhythm = wants_rhythm(tune, p.kit)
+        p.vmax = if p.use_rhythm then 6 else 9
+        opl2.rhythm_mode(p.chip, p.use_rhythm)
+        rewind(p)
+        p.to_next = 0.0
+
+    // Build a player over a parsed song and a bank. The song and the bank
+    // belong to the caller and must outlive the player; the chip does not —
+    // it is created here and reachable as `p.chip` for sampling.
+    let init = (rate: i32, tune: song, kit: bank) ->
+        let p = alloc(player)!
+        p.chip = opl2.init(rate)
+        p.rate = rate
+        p.kit = kit
+        p.us_quarter = 500000
+        p.looping = true
+        p.tuning = equal
+        // Velocity index to total-level offset. TL is attenuation in 0.75 dB
+        // steps counting down from 0, so a linear 0..1 level becomes
+        // -20*log10(level)/0.75 steps of attenuation. Index 0 is silence
+        // rather than an infinite logarithm.
+        for i in 0..128 do
+            if i == 0 then p.vel_tl[i] = 63
+            else
+                let db = 0.0 - 20.0 * math.log10(i / 127.0)
+                p.vel_tl[i] = clamp((i32) (db / 0.75 + 0.5), 0, 63)
+        // Last, because it is the step that touches the chip: the table above
+        // is what a note-on reads, and binding a song is what makes note-ons
+        // possible.
+        bind_song(p, tune)
+        p
+
+    // Release a player and the chip it owns. Its song and bank are the
+    // caller's and are untouched.
+    let free_player = (p: player*) ->
+        free(p.chip)
+        free(p)
+
+    // Play from the top. A song with no events is silently declined rather
+    // than started, so `finished` reports true and the clock never runs.
+    let start = (p: player*) ->
+        rewind(p)
+        p.to_next = 0.0
+        if p.tune.events.len > 0i64 then p.playing = true
+        else
+            p.playing = false
+            p.at_end = true
+
+    // Stop, silence, and rewind: the next `start` opens on the first event.
+    let stop = (p: player*) ->
+        p.playing = false
+        rewind(p)
+        p.to_next = 0.0
+
+    // Play a different song on this player, stopped at its first event — the
+    // caller says when it sounds, exactly as after `stop`.
+    //
+    // One player, many songs, because the expensive half of a player is the
+    // chip it owns: 68 KB of emulator state against a song's few thousand
+    // events. A game with a piece per level wants a playlist, not a rack of
+    // synthesisers, and this is what lets it have one. The bank does not
+    // change — a swap re-reads it, so the new song's instruments come from
+    // the same place the old one's did.
+    //
+    // Everything a song decides is re-decided, rhythm mode included. Safe
+    // *only* at a song boundary, which is what this is: the chip is silenced
+    // on the way in, so the voice count can move without a sounding note
+    // losing its voice underneath it.
+    let set_song = (p: player*, tune: song) ->
+        p.playing = false
+        bind_song(p, tune)
+
+    // Hold where it is. Notes are keyed off so nothing hangs through the
+    // pause, but the position is kept, so `resume` picks up mid-phrase.
+    let pause = (p: player*) ->
+        p.playing = false
+        for v in 0..9 do
+            if p.voices[v].keyed then
+                opl2.note_off(p.chip, v)
+                p.voices[v].keyed = false
+                p.voices[v].held = false
+
+    let resume = (p: player*) ->
+        if !p.at_end && p.tune.events.len > 0i64 then p.playing = true
+
+    // Whether the song repeats at its end tick. On by default: game music
+    // loops, and a one-shot is the special case.
+    let set_loop = (p: player*, on: bool) ->
+        p.looping = on
+
+    // Tune the keyboard. Safe at any time, including mid-phrase: every
+    // sounding note is retuned in place and the rhythm channels follow the
+    // new pitch standard, so a piece can change temperament under itself
+    // without an articulation or a stolen voice.
+    //
+    // A table shorter than twelve entries is not a tuning, and a player that
+    // held one would abort on the first note off the end of it. This is the
+    // door, so this is where that is decided: such a table is declined and
+    // the player keeps what it had. There is no way to report it and nothing
+    // useful the caller could do — `temperament_named` is how a name becomes
+    // a temperament, and everything it can return is twelve long.
+    let set_temperament = (p: player*, t: temperament) ->
+        if t.cents.len < 12i64 then return
+        p.tuning = t
+        for v in 0..9 do
+            if p.voices[v].keyed then
+                let { blk, fnv } = voice_pitch(p, v)
+                opl2.set_pitch(p.chip, v, blk, fnv)
+        if p.use_rhythm then tune_rhythm(p)
+
+    // True once a non-looping song has run past its end tick.
+    let finished = (p: player*) -> p.at_end

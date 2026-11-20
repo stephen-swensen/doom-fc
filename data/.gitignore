@@ -1,0 +1,5 @@
+# Doom IWADs are copyrighted by id Software and are never committed.
+# Supply your own from a legitimate copy (e.g. Steam's "Ultimate Doom",
+# which ships DOOM.WAD and DOOM2.WAD).
+*.WAD
+*.wad

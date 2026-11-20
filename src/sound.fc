@@ -1,0 +1,469 @@
+// s_sound (channel allocation, attenuation, music selection) ported from
+// linuxdoom-1.10 (GPLv2), over an SDL2 audio callback that mixes the same
+// way linuxdoom's i_sound.c does: 8 channels of the WAD's 8-bit DMX
+// samples, volume and stereo separation through the original formula.
+// Music lives in music.fc (MUS through an emulated OPL2, as on DOS).
+
+struct sfxchannel =
+    data: const u8*      // current sample pointer, null = idle
+    dataend: const u8*
+    step: u32            // 16.16 source samples per output sample
+    stepremainder: u32
+    leftvol: i32         // 0..127
+    rightvol: i32
+    handle: i32
+    id: i32
+    start: i32           // gametic when started (oldest-first stealing)
+
+module isnd =
+    import math from std::
+
+    let num_channels = 8
+    let output_rate = 44100
+
+    let mut device = 0u32
+    let mut chans = sfxchannel[] { len = 8 }
+    let mut handlenums = 0
+    let mut lengths = i32[] { len = 128 }
+    let mut sample_rates = i32[] { len = 128 }
+    let mut steptable = i32[] { len = 256 }
+    let mut pitch_shift = false
+    let mut nosound = false
+    let mut nomusic = false
+    let mut mix_buf = default(i32[])
+
+    let lock = () -> if device > 0u32 then sdl2.lock_audio(device)
+    let unlock = () -> if device > 0u32 then sdl2.unlock_audio(device)
+
+    // getsfx: a DMX lump is u16 format, u16 rate, u32 length, then 8-bit
+    // unsigned samples.
+    let load_sfx = (id: i32) ->
+        let sfx = &sounds.s_sfx[id]
+        let name = alloca("ds%s{sfx.name}")
+        let lump = if w.check_num_for_name(name) == -1 then w.get_num_for_name("dspistol")
+                   else w.get_num_for_name(name)
+        let size = w.lump_length(lump)
+        let raw = w.cache_lump_num(lump, pu.static_x)
+        let rate = (i32) c.rd_u16(raw + 2)
+        let mut len = c.rd_i32(raw + 4)
+        if len > size - 8 || len <= 0 then len = size - 8
+        sfx.data = u8[] { ptr = raw + 8, len = len }
+        lengths[id] = len
+        sample_rates[id] = if rate > 0 then rate else 11025
+
+    // I_SetChannels: the pitch step table.
+    let set_channels = () ->
+        for k in 0..256 do
+            steptable[k] = (i32) (math.pow(2.0, (f64) ((i32) k - 128) / 64.0) * 65536.0)
+
+    let init = () ->
+        set_channels()
+        pitch_shift = argv.check_parm("-pitchshift") > 0
+        nosound = argv.check_parm("-nosound") > 0 || iv.headless
+        nomusic = argv.check_parm("-nomusic") > 0 || nosound
+        if !nosound then
+            for k in 1..sfx.numsfx do
+                let sx = &sounds.s_sfx[k]
+                if sx.link == -1 then load_sfx((i32) k)
+            for k in 1..sfx.numsfx do
+                let sx = &sounds.s_sfx[k]
+                if sx.link != -1 then
+                    sx.data = sounds.s_sfx[sx.link].data
+                    lengths[k] = lengths[sx.link]
+                    sample_rates[k] = sample_rates[sx.link]
+            mix_buf = alloc(i32[] { len = 4096 })!
+            let spec = sdl2.audio_spec {
+                freq = output_rate, format = sdl2.audio_s16sys, channels = 2u8, silence = 0u8,
+                samples = 512u16, padding = 0u16, size = 0u32,
+                callback = &callback, userdata = default(any*) }
+            let mut obtained = default(sdl2.audio_spec)
+            device = sdl2.open_audio(default(any*), 0, &spec, &obtained, 0)
+            if device == 0u32 then
+                i.print(alloca("I_InitSound: could not open audio (%s{(const str) sdl2.get_error()})\n"))
+                nosound = true
+                nomusic = true
+            else
+                i.print(alloca("I_InitSound: %d{obtained.freq} Hz stereo\n"))
+                musplay.init(obtained.freq)
+                sdl2.pause_audio(device, 0)
+
+    let shutdown = () ->
+        if device > 0u32 then
+            sdl2.close_audio(device)
+            device = 0u32
+
+    // addsfx / I_StartSound
+    let start_sound = (id: i32, vol: i32, sep: i32, pitch: i32, priority: i32) ->
+        if nosound then return 0
+        lock()
+        // Chainsaw troubles: these never stack, a new one replaces the old.
+        if id == sfx.sawup || id == sfx.sawidl || id == sfx.sawful || id == sfx.sawhit
+            || id == sfx.stnmov || id == sfx.pistol then
+            let mut done = false
+            for k in 0..num_channels do
+                if !done && c.not_null(chans[k].data) && chans[k].id == id then
+                    chans[k].data = default(const u8*)
+                    done = true
+        // free channel, or the oldest one
+        let mut oldest = ds.gametic
+        let mut oldestnum = 0
+        let mut slot = -1
+        for k in 0..num_channels do
+            if slot == -1 then
+                if c.is_null(chans[k].data) then slot = (i32) k
+                else if chans[k].start < oldest then
+                    oldestnum = (i32) k
+                    oldest = chans[k].start
+        if slot == -1 then slot = oldestnum
+        let ch = &chans[slot]
+        let data = sounds.s_sfx[id].data
+        ch.data = data.ptr
+        ch.dataend = data.ptr + lengths[id]
+        if handlenums == 0 then handlenums = 100
+        ch.handle = handlenums
+        handlenums = handlenums + 1
+        let base = (u32) (((i64) sample_rates[id] << 16) / output_rate)
+        ch.step = if pitch_shift then (u32) (((i64) base * steptable[pitch & 255]) >> 16) else base
+        ch.stepremainder = 0u32
+        ch.start = ds.gametic
+        set_params(ch, vol, sep)
+        ch.id = id
+        let h = ch.handle
+        unlock()
+        h
+
+    // Doom volumes run 0..15; the mixer's lookup runs 0..127.
+    private let set_params = (ch: sfxchannel*, vol15: i32, sep0: i32) ->
+        let volume = vol15 * 8
+        let mut sep = sep0 + 1
+        ch.leftvol = volume - ((volume * sep * sep) >> 16)
+        sep = sep - 257
+        ch.rightvol = volume - ((volume * sep * sep) >> 16)
+        if ch.leftvol < 0 then ch.leftvol = 0
+        if ch.leftvol > 127 then ch.leftvol = 127
+        if ch.rightvol < 0 then ch.rightvol = 0
+        if ch.rightvol > 127 then ch.rightvol = 127
+
+    let find = (handle: i32) ->
+        let mut slot = -1
+        for k in 0..num_channels do
+            if slot == -1 && c.not_null(chans[k].data) && chans[k].handle == handle then slot = (i32) k
+        slot
+
+    let stop_sound = (handle: i32) ->
+        lock()
+        let s = find(handle)
+        if s >= 0 then chans[s].data = default(const u8*)
+        unlock()
+
+    let sound_is_playing = (handle: i32) ->
+        if nosound then false
+        else
+            lock()
+            let playing = find(handle) >= 0
+            unlock()
+            playing
+
+    let update_sound_params = (handle: i32, vol: i32, sep: i32, pitch: i32) ->
+        lock()
+        let s = find(handle)
+        if s >= 0 then set_params(&chans[s], vol, sep)
+        unlock()
+
+    // SDL audio callback: mix the effects, add music, write s16 stereo.
+    let callback = (userdata: any*, stream: u8*, len: i32) ->
+        let frames = len / 4
+        let out = i16[] { ptr = (i16*) stream, len = frames * 2 }
+        let buf = mix_buf
+        for k in 0..frames * 2 do buf[k] = 0
+        musplay.render(buf, frames)
+        for chn in 0..num_channels do
+            let ch = &chans[chn]
+            if c.not_null(ch.data) then
+                let lv = ch.leftvol
+                let rv = ch.rightvol
+                let mut f = 0
+                loop
+                    if f >= frames || c.is_null(ch.data) then break
+                    let sample = (i32) *ch.data - 128
+                    // vol_lookup[v*256+j] = v*(j-128)*256/127
+                    buf[f * 2] = buf[f * 2] + lv * sample * 256 / 127
+                    buf[f * 2 + 1] = buf[f * 2 + 1] + rv * sample * 256 / 127
+                    ch.stepremainder = ch.stepremainder + ch.step
+                    ch.data = ch.data + (i32) (ch.stepremainder >> 16)
+                    ch.stepremainder = ch.stepremainder & 0xffffu32
+                    if ch.data >= ch.dataend then ch.data = default(const u8*)
+                    f = f + 1
+        for k in 0..frames * 2 do
+            let s = buf[k]
+            out[k] = if s > 0x7fff then 0x7fffi16 else if s < -0x8000 then -0x8000i16 else (i16) s
+
+module snd =
+    let s_clipping_dist = 1200 * 0x10000
+    let s_close_dist = 160 * 0x10000
+    let s_attenuator = (1200 * 0x10000 - 160 * 0x10000) >> 16
+    let norm_pitch = 128
+    let norm_priority = 64
+    let norm_sep = 128
+    let s_stereo_swing = 96 * 0x10000
+
+    struct channel =
+        sfxinfo: i32      // index into sounds.s_sfx, 0 = free
+        origin: const any*
+        handle: i32
+
+    let mut channels = default(channel[])
+    let mut num_channels = 8
+    let mut mus_paused = false
+    let mut mus_playing = 0
+    let mut nextcleanup = 0
+
+    let init = (sfx_volume: i32, music_volume: i32) ->
+        i.print(alloca("S_Init: default sfx volume %d{sfx_volume}\n"))
+        isnd.init()
+        set_sfx_volume(sfx_volume)
+        set_music_volume(music_volume)
+        channels = alloc(channel[] { len = num_channels })!
+        mus_paused = false
+        for k in 1..sfx.numsfx do
+            sounds.s_sfx[k].lumpnum = -1
+            sounds.s_sfx[k].usefulness = -1
+
+    // Per level startup code. Kills playing sounds at start of level,
+    // determines music if any, changes music.
+    let spmus = i32[] {
+        // Song - Who? - Where?
+        mus.e3m4,    // American  e4m1
+        mus.e3m2,    // Romero    e4m2
+        mus.e3m3,    // Shawn     e4m3
+        mus.e1m5,    // American  e4m4
+        mus.e2m7,    // Tim       e4m5
+        mus.e2m4,    // Romero    e4m6
+        mus.e2m6,    // J.Anderson e4m7 CHIRON.WAD
+        mus.e2m5,    // Shawn     e4m8
+        mus.e1m9     // Tim       e4m9
+    }
+
+    let start = () ->
+        // kill all playing sounds at start of level
+        // (trust me - a good idea)
+        for cnum in 0..num_channels do
+            if channels[cnum].sfxinfo != 0 then stop_channel((i32) cnum)
+        // start new music for the level
+        mus_paused = false
+        let mnum = if ds.gamemode == gmode.commercial then mus.runnin + ds.gamemap - 1
+                   else if ds.gameepisode < 4 then mus.e1m1 + (ds.gameepisode - 1) * 9 + ds.gamemap - 1
+                   else spmus[ds.gamemap - 1]
+        change_music(mnum, true)
+        nextcleanup = 15
+
+    let start_sound_at_volume = (origin: const any*, sfx_id: i32, volume0: i32) ->
+        let mut volume = volume0
+        // check for bogus sound #
+        if sfx_id < 1 || sfx_id > sfx.numsfx then i.fatal(alloca("Bad sfx #: %d{sfx_id}"))
+        let sx = &sounds.s_sfx[sfx_id]
+        let mut pitch = norm_pitch
+        let mut priority = norm_priority
+        let mut sep = norm_sep
+        // Initialize sound parameters
+        if sx.link != -1 then
+            pitch = sx.pitch
+            priority = sx.priority
+            volume = volume + sx.volume
+            if volume < 1 then return
+            if volume > ds.snd_sfxvolume then volume = ds.snd_sfxvolume
+        // Check to see if it is audible, and if not, modify the params
+        let listener = ds.players[ds.consoleplayer].mo
+        if c.not_null(origin) && origin != (const any*) listener then
+            let mo = (const mobj*) origin
+            let { rc, v2, s2, p2 } = adjust_sound_params(listener, mo, volume, sep, pitch)
+            volume = v2
+            sep = s2
+            pitch = p2
+            if mo.x == listener.x && mo.y == listener.y then sep = norm_sep
+            if !rc then return
+        // hacks to vary the sfx pitches
+        if sfx_id >= sfx.sawup && sfx_id <= sfx.sawhit then
+            pitch = pitch + 8 - (rnd.m_random() & 15)
+            if pitch < 0 then pitch = 0
+            else if pitch > 255 then pitch = 255
+        else if sfx_id != sfx.itemup && sfx_id != sfx.tink then
+            pitch = pitch + 16 - (rnd.m_random() & 31)
+            if pitch < 0 then pitch = 0
+            else if pitch > 255 then pitch = 255
+        // kill old sound
+        stop_sound(origin)
+        // try to find a channel
+        let cnum = get_channel(origin, sfx_id)
+        if cnum < 0 then return
+        // get lumpnum if necessary
+        if sx.lumpnum < 0 then sx.lumpnum = 0
+        // increase the usefulness
+        if sx.usefulness < 0 then sx.usefulness = 1 else sx.usefulness = sx.usefulness + 1
+        channels[cnum].handle = isnd.start_sound(sfx_id, volume, sep, pitch, priority)
+
+    let start_sound = (origin: const any*, sfx_id: i32) ->
+        start_sound_at_volume(origin, sfx_id, ds.snd_sfxvolume)
+
+    let stop_sound = (origin: const any*) ->
+        let mut done = false
+        for cnum in 0..num_channels do
+            if !done && channels[cnum].sfxinfo != 0 && channels[cnum].origin == origin then
+                stop_channel((i32) cnum)
+                done = true
+
+    // Stop and resume music, during game PAUSE.
+    let pause_sound = () ->
+        if mus_playing != 0 && !mus_paused then
+            isnd.lock()
+            musplay.pause()
+            isnd.unlock()
+            mus_paused = true
+
+    let resume_sound = () ->
+        if mus_playing != 0 && mus_paused then
+            isnd.lock()
+            musplay.resume()
+            isnd.unlock()
+            mus_paused = false
+
+    // Updates music & sounds
+    let update_sounds = (listener: mobj*) ->
+        for cnum in 0..num_channels do
+            let ch = &channels[cnum]
+            if ch.sfxinfo == 0 then continue
+            let sx = &sounds.s_sfx[ch.sfxinfo]
+            if isnd.sound_is_playing(ch.handle) then
+                // initialize parameters
+                let mut volume = ds.snd_sfxvolume
+                let mut pitch = norm_pitch
+                let mut sep = norm_sep
+                if sx.link != -1 then
+                    pitch = sx.pitch
+                    volume = volume + sx.volume
+                    if volume < 1 then
+                        stop_channel((i32) cnum)
+                        continue
+                    else if volume > ds.snd_sfxvolume then
+                        volume = ds.snd_sfxvolume
+                // check non-local sounds for distance clipping
+                // or modify their params
+                if c.not_null(ch.origin) && (const any*) listener != ch.origin then
+                    let { rc, v2, s2, p2 } = adjust_sound_params(listener, (const mobj*) ch.origin, volume, sep, pitch)
+                    if !rc then stop_channel((i32) cnum)
+                    else isnd.update_sound_params(ch.handle, v2, s2, p2)
+            else
+                // if channel is allocated but sound has stopped, free it
+                stop_channel((i32) cnum)
+
+    let set_music_volume = (volume: i32) ->
+        if volume < 0 || volume > 127 then i.fatal(alloca("Attempt to set music volume at %d{volume}"))
+        ds.snd_musicvolume = volume
+        isnd.lock()
+        musplay.set_volume(volume)
+        isnd.unlock()
+
+    let set_sfx_volume = (volume: i32) ->
+        if volume < 0 || volume > 127 then i.fatal(alloca("Attempt to set sfx volume at %d{volume}"))
+        ds.snd_sfxvolume = volume
+
+    // Starts some music with the music id found in sounds.h.
+    let start_music = (m_id: i32) -> change_music(m_id, false)
+
+    let change_music = (musicnum: i32, looping: bool) ->
+        if musicnum <= mus.none_x || musicnum >= mus.nummusic then
+            i.fatal(alloca("Bad music number %d{musicnum}"))
+        let music = &sounds.s_music[musicnum]
+        if mus_playing == musicnum then return
+        // shutdown old music
+        stop_music()
+        // get lumpnum if neccessary
+        if music.lumpnum == 0 then
+            music.lumpnum = w.get_num_for_name(alloca("d_%s{music.name}"))
+        // load & register it
+        music.data = u8[] { ptr = w.cache_lump_num(music.lumpnum, pu.music), len = w.lump_length(music.lumpnum) }
+        if !isnd.nomusic then
+            isnd.lock()
+            musplay.play(music.data, looping)
+            isnd.unlock()
+        mus_playing = musicnum
+
+    let stop_music = () ->
+        if mus_playing != 0 then
+            isnd.lock()
+            if mus_paused then musplay.resume()
+            musplay.stop()
+            isnd.unlock()
+            mus_playing = 0
+
+    let stop_channel = (cnum: i32) ->
+        let ch = &channels[cnum]
+        if ch.sfxinfo != 0 then
+            // stop the sound playing
+            if isnd.sound_is_playing(ch.handle) then isnd.stop_sound(ch.handle)
+            // degrade usefulness of sound data
+            let sx = &sounds.s_sfx[ch.sfxinfo]
+            sx.usefulness = sx.usefulness - 1
+            ch.sfxinfo = 0
+
+    // Changes volume, stereo-separation, and pitch variables from the norm
+    // of a sound effect to be played. If the sound is not audible, returns
+    // a 0. Otherwise, modifies parameters and returns 1.
+    let adjust_sound_params = (listener: const mobj*, source: const mobj*, vol0: i32, sep0: i32, pitch: i32) ->
+        // calculate the distance to sound origin and clip it if necessary
+        let adx = c.iabs(listener.x - source.x)
+        let ady = c.iabs(listener.y - source.y)
+        // From _GG1_ p.428. Appox. eucledian distance fast.
+        let mut approx_dist = adx + ady - ((if adx < ady then adx else ady) >> 1)
+        if ds.gamemap != 8 && approx_dist > s_clipping_dist then
+            { false, vol0, sep0, pitch }
+        else
+            // angle of source to listener
+            let mut angle = r.point_to_angle2(listener.x, listener.y, source.x, source.y)
+            if angle > listener.angle then angle = angle - listener.angle
+            else angle = angle + (0xffffffffu32 - listener.angle)
+            let fa = fx.fine(angle)
+            // stereo separation
+            let sep = 128 - (fx.mul(s_stereo_swing, tables.sin(fa)) >> 16)
+            // volume calculation
+            let mut vol = 0
+            if approx_dist < s_close_dist then
+                vol = ds.snd_sfxvolume
+            else if ds.gamemap == 8 then
+                if approx_dist > s_clipping_dist then approx_dist = s_clipping_dist
+                vol = 15 + ((ds.snd_sfxvolume - 15) * ((s_clipping_dist - approx_dist) >> 16)) / s_attenuator
+            else
+                // distance effect
+                vol = (ds.snd_sfxvolume * ((s_clipping_dist - approx_dist) >> 16)) / s_attenuator
+            { vol > 0, vol, sep, pitch }
+
+    // S_getChannel: If none available, return -1. Otherwise channel #.
+    let get_channel = (origin: const any*, sfxid: i32) ->
+        // Find an open channel
+        let mut cnum = 0
+        loop
+            if cnum >= num_channels then break
+            if channels[cnum].sfxinfo == 0 then break
+            else if c.not_null(origin) && channels[cnum].origin == origin then
+                stop_channel(cnum)
+                break
+            cnum = cnum + 1
+        // None available
+        if cnum == num_channels then
+            // Look for lower priority
+            cnum = 0
+            loop
+                if cnum >= num_channels then break
+                if sounds.s_sfx[channels[cnum].sfxinfo].priority >= sounds.s_sfx[sfxid].priority then break
+                cnum = cnum + 1
+            if cnum == num_channels then
+                // FUCK!  No lower priority.  Sorry, Charlie.
+                cnum = -1
+            else
+                // Otherwise, kick out lower priority.
+                stop_channel(cnum)
+        if cnum >= 0 then
+            let ch = &channels[cnum]
+            ch.sfxinfo = sfxid
+            ch.origin = origin
+        cnum

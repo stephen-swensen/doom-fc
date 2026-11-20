@@ -1,0 +1,330 @@
+// Episode-end text screens, the Doom II cast call and the bunny scroll
+// (f_finale.c), ported from linuxdoom-1.10 (GPLv2).
+
+struct castinfo =
+    name: const str
+    type: i32
+
+module f =
+    let textspeed = 3
+    let textwait = 250
+
+    // Stage of animation: 0 = text, 1 = art screen, 2 = character cast
+    let mut finalestage = 0
+    let mut finalecount = 0
+    let mut finaletext = ""
+    let mut finaleflat = ""
+
+    let castorder = castinfo[] {
+        castinfo { name = dstr.cc_zombie, type = mt.possessed },
+        castinfo { name = dstr.cc_shotgun, type = mt.shotguy },
+        castinfo { name = dstr.cc_heavy, type = mt.chainguy },
+        castinfo { name = dstr.cc_imp, type = mt.troop },
+        castinfo { name = dstr.cc_demon, type = mt.sergeant },
+        castinfo { name = dstr.cc_lost, type = mt.skull },
+        castinfo { name = dstr.cc_caco, type = mt.head },
+        castinfo { name = dstr.cc_hell, type = mt.knight },
+        castinfo { name = dstr.cc_baron, type = mt.bruiser },
+        castinfo { name = dstr.cc_arach, type = mt.baby },
+        castinfo { name = dstr.cc_pain, type = mt.pain },
+        castinfo { name = dstr.cc_reven, type = mt.undead },
+        castinfo { name = dstr.cc_mancu, type = mt.fatso },
+        castinfo { name = dstr.cc_arch, type = mt.vile },
+        castinfo { name = dstr.cc_spider, type = mt.spider },
+        castinfo { name = dstr.cc_cyber, type = mt.cyborg },
+        castinfo { name = dstr.cc_hero, type = mt.player }
+    }
+
+    let mut castnum = 0
+    let mut casttics = 0
+    let mut caststate = default(const state*)
+    let mut castdeath = false
+    let mut castframes = 0
+    let mut castonmelee = 0
+    let mut castattacking = false
+    let mut laststage = 0
+
+    let start_finale = () ->
+        ds.gameaction = ga.nothing
+        ds.gamestate = gs.finale
+        ds.viewactive = false
+        ds.automapactive = false
+        // Okay - IWAD dependend stuff. This has been changed severly, and
+        // some stuff might have changed in the process.
+        let gm = ds.gamemode
+        if gm == gmode.shareware || gm == gmode.registered || gm == gmode.retail then
+            // DOOM 1 - E1, E3 or E4, but each nine missions
+            snd.change_music(mus.victor, true)
+            let ep = ds.gameepisode
+            if ep == 1 then
+                finaleflat = "FLOOR4_8"
+                finaletext = dstr.e1text
+            else if ep == 2 then
+                finaleflat = "SFLR6_1"
+                finaletext = dstr.e2text
+            else if ep == 3 then
+                finaleflat = "MFLR8_4"
+                finaletext = dstr.e3text
+            else if ep == 4 then
+                finaleflat = "MFLR8_3"
+                finaletext = dstr.e4text
+        else if gm == gmode.commercial then
+            // DOOM II and missions packs with E1, M34
+            snd.change_music(mus.read_m, true)
+            let mp = ds.gamemap
+            if mp == 6 then
+                finaleflat = "SLIME16"
+                finaletext = dstr.c1text
+            else if mp == 11 then
+                finaleflat = "RROCK14"
+                finaletext = dstr.c2text
+            else if mp == 20 then
+                finaleflat = "RROCK07"
+                finaletext = dstr.c3text
+            else if mp == 30 then
+                finaleflat = "RROCK17"
+                finaletext = dstr.c4text
+            else if mp == 15 then
+                finaleflat = "RROCK13"
+                finaletext = dstr.c5text
+            else if mp == 31 then
+                finaleflat = "RROCK19"
+                finaletext = dstr.c6text
+        else
+            // Indeterminate.
+            snd.change_music(mus.read_m, true)
+            finaleflat = "F_SKY1"    // Not used anywhere else.
+            finaletext = dstr.c1text    // FIXME - other text, music?
+        finalestage = 0
+        finalecount = 0
+
+    let responder = (ev: event*) ->
+        if finalestage == 2 then cast_responder(ev) else false
+
+    let ticker = () ->
+        // check for skipping
+        if ds.gamemode == gmode.commercial && finalecount > 50 then
+            // go on to the next level
+            let mut pressed = false
+            for k in 0..dd.maxplayers do
+                if ds.players[k].cmd.buttons != 0u8 then pressed = true
+            if pressed then
+                if ds.gamemap == 30 then start_cast()
+                else ds.gameaction = ga.worlddone
+        // advance animation
+        finalecount = finalecount + 1
+        if finalestage == 2 then
+            cast_ticker()
+            return
+        if ds.gamemode == gmode.commercial then return
+        if finalestage == 0 && finalecount > (i32) finaletext.len * textspeed + textwait then
+            finalecount = 0
+            finalestage = 1
+            ds.wipegamestate = gs.force_wipe    // force a wipe
+            if ds.gameepisode == 3 then snd.start_music(mus.bunny)
+
+    let text_write = () ->
+        // erase the entire screen to a tiled background
+        let src = w.cache_lump_name(finaleflat, pu.cache)
+        let mut dest = v.screens[0]
+        for y in 0..200 do
+            for _ in 0..320 / 64 do
+                c.memcpy((any*) dest, (const any*) (src + ((y & 63) << 6)), 64i64)
+                dest = dest + 64
+        v.mark_rect(0, 0, 320, 200)
+        // draw some of the text onto the screen
+        let mut cx = 10
+        let mut cy = 10
+        let mut count = (finalecount - 10) / textspeed
+        if count < 0 then count = 0
+        let mut k = 0
+        loop
+            if count == 0 then break
+            count = count - 1
+            if k >= finaletext.len then break
+            let ch = finaletext[k]
+            k = k + 1
+            if ch == '\n' then
+                cx = 10
+                cy = cy + 11
+                continue
+            let cc = (i32) c.toupper(ch) - hu.fontstart
+            if cc < 0 || cc > hu.fontsize then
+                cx = cx + 4
+                continue
+            let w = (i32) hulib.font[cc].width
+            if cx + w > 320 then break
+            v.draw_patch(cx, cy, 0, hulib.font[cc])
+            cx = cx + w
+
+    let cast_type = () -> castorder[castnum].type
+    let cast_info = () -> &info.mobjinfo[cast_type()]
+    let state_at = (n: i32) -> (const state*) &info.states[n]
+
+    let start_cast = () ->
+        ds.wipegamestate = gs.force_wipe    // force a screen wipe
+        castnum = 0
+        caststate = state_at(cast_info().seestate)
+        casttics = caststate.tics
+        castdeath = false
+        finalestage = 2
+        castframes = 0
+        castonmelee = 0
+        castattacking = false
+        snd.change_music(mus.evil, true)
+
+    let stop_attack = () ->
+        castattacking = false
+        castframes = 0
+        caststate = state_at(cast_info().seestate)
+
+    let cast_ticker = () ->
+        casttics = casttics - 1
+        if casttics > 0 then return    // not time to change state yet
+        let mut stopped = false
+        if caststate.tics == -1 || caststate.nextstate == sn.null then
+            // switch from deathstate to next monster
+            castnum = castnum + 1
+            castdeath = false
+            if castnum >= castorder.len then castnum = 0
+            if cast_info().seesound != 0 then snd.start_sound(default(any*), cast_info().seesound)
+            caststate = state_at(cast_info().seestate)
+            castframes = 0
+        else
+            // just advance to next state in animation
+            if caststate == state_at(sn.play_atk1) then
+                stop_attack()    // Oh, gross hack!
+                stopped = true
+            else
+                let st = caststate.nextstate
+                caststate = state_at(st)
+                castframes = castframes + 1
+                // sound hacks....
+                let sfxn = if st == sn.play_atk1 then sfx.dshtgn
+                           else if st == sn.poss_atk2 then sfx.pistol
+                           else if st == sn.spos_atk2 then sfx.shotgn
+                           else if st == sn.vile_atk2 then sfx.vilatk
+                           else if st == sn.skel_fist2 then sfx.skeswg
+                           else if st == sn.skel_fist4 then sfx.skepch
+                           else if st == sn.skel_miss2 then sfx.skeatk
+                           else if st == sn.fatt_atk8 || st == sn.fatt_atk5 || st == sn.fatt_atk2 then sfx.firsht
+                           else if st == sn.cpos_atk2 || st == sn.cpos_atk3 || st == sn.cpos_atk4 then sfx.shotgn
+                           else if st == sn.troo_atk3 then sfx.claw
+                           else if st == sn.sarg_atk2 then sfx.sgtatk
+                           else if st == sn.boss_atk2 || st == sn.bos2_atk2 || st == sn.head_atk2 then sfx.firsht
+                           else if st == sn.skull_atk2 then sfx.sklatk
+                           else if st == sn.spid_atk2 || st == sn.spid_atk3 then sfx.shotgn
+                           else if st == sn.bspi_atk2 then sfx.plasma
+                           else if st == sn.cyber_atk2 || st == sn.cyber_atk4 || st == sn.cyber_atk6 then sfx.rlaunc
+                           else if st == sn.pain_atk3 then sfx.sklatk
+                           else 0
+                if sfxn != 0 then snd.start_sound(default(any*), sfxn)
+        if !stopped then
+            if castframes == 12 then
+                // go into attack frame
+                castattacking = true
+                if castonmelee != 0 then caststate = state_at(cast_info().meleestate)
+                else caststate = state_at(cast_info().missilestate)
+                castonmelee = castonmelee ^ 1
+                if caststate == state_at(sn.null) then
+                    if castonmelee != 0 then caststate = state_at(cast_info().meleestate)
+                    else caststate = state_at(cast_info().missilestate)
+            if castattacking then
+                if castframes == 24 || caststate == state_at(cast_info().seestate) then
+                    stop_attack()
+        casttics = caststate.tics
+        if casttics == -1 then casttics = 15
+
+    let cast_responder = (ev: event*) ->
+        if ev.type != evt.keydown then return false
+        if castdeath then return true    // already in dying frames
+        // go into death frame
+        castdeath = true
+        caststate = state_at(cast_info().deathstate)
+        casttics = caststate.tics
+        castframes = 0
+        castattacking = false
+        if cast_info().deathsound != 0 then snd.start_sound(default(any*), cast_info().deathsound)
+        true
+
+    let cast_print = (text: const str) ->
+        // find width
+        let mut width = 0
+        for ch in text do
+            let cc = (i32) c.toupper(ch) - hu.fontstart
+            if cc < 0 || cc > hu.fontsize then width = width + 4
+            else width = width + (i32) hulib.font[cc].width
+        // draw it
+        let mut cx = 160 - width / 2
+        for ch in text do
+            let cc = (i32) c.toupper(ch) - hu.fontstart
+            if cc < 0 || cc > hu.fontsize then cx = cx + 4
+            else
+                let w = (i32) hulib.font[cc].width
+                v.draw_patch(cx, 180, 0, hulib.font[cc])
+                cx = cx + w
+
+    let cast_drawer = () ->
+        // erase the entire screen to a background
+        v.draw_patch(0, 0, 0, v.patch_named("BOSSBACK"))
+        cast_print(castorder[castnum].name)
+        // draw the current frame in the middle of the screen
+        let sprdef = &r.sprites[caststate.sprite]
+        let sprframe = sprdef.spriteframes + (caststate.frame & ps.ff_framemask)
+        let lump = sprframe.lump[0]
+        let flip = sprframe.flip[0] != 0u8
+        let pt = v.patch_num(lump + r.firstspritelump)
+        if flip then v.draw_patch_flipped(160, 170, 0, pt)
+        else v.draw_patch(160, 170, 0, pt)
+
+    let draw_patch_col = (x: i32, pt: const patch*, col: i32) ->
+        let mut column = patches.column(pt, col)
+        let desttop = v.screens[0] + x
+        // step through the posts in a column
+        loop
+            let topdelta = (i32) *column
+            if topdelta == 0xff then break
+            let length = (i32) *(column + 1)
+            let mut source = column + 3
+            let mut dest = desttop + topdelta * 320
+            for _ in 0..length do
+                *dest = *source
+                source = source + 1
+                dest = dest + 320
+            column = column + length + 4
+
+    let bunny_scroll = () ->
+        let p1 = (const patch*) w.cache_lump_name("PFUB2", pu.level)
+        let p2 = (const patch*) w.cache_lump_name("PFUB1", pu.level)
+        v.mark_rect(0, 0, 320, 200)
+        let mut scrolled = 320 - (finalecount - 230) / 2
+        if scrolled > 320 then scrolled = 320
+        if scrolled < 0 then scrolled = 0
+        for x in 0..320 do
+            if x + scrolled < 320 then draw_patch_col(x, p1, x + scrolled)
+            else draw_patch_col(x, p2, x + scrolled - 320)
+        if finalecount < 1130 then return
+        if finalecount < 1180 then
+            v.draw_patch((320 - 13 * 8) / 2, (200 - 8 * 8) / 2, 0, v.patch_named("END0"))
+            laststage = 0
+            return
+        let mut stage = (finalecount - 1180) / 5
+        if stage > 6 then stage = 6
+        if stage > laststage then
+            snd.start_sound(default(any*), sfx.pistol)
+            laststage = stage
+        v.draw_patch((320 - 13 * 8) / 2, (200 - 8 * 8) / 2, 0, v.patch_named("END%d{stage}"))
+
+    let drawer = () ->
+        if finalestage == 2 then
+            cast_drawer()
+            return
+        if finalestage == 0 then text_write()
+        else
+            let ep = ds.gameepisode
+            if ep == 1 then
+                if ds.gamemode == gmode.retail then v.draw_patch(0, 0, 0, v.patch_named("CREDIT"))
+                else v.draw_patch(0, 0, 0, v.patch_named("HELP2"))
+            else if ep == 2 then v.draw_patch(0, 0, 0, v.patch_named("VICTORY2"))
+            else if ep == 3 then bunny_scroll()
+            else if ep == 4 then v.draw_patch(0, 0, 0, v.patch_named("ENDPIC"))

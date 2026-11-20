@@ -1,0 +1,172 @@
+// doomstat: the engine-wide globals (doomstat.h / doomstat.c plus the ones
+// d_main.c and g_game.c define for everyone), the D_PostEvent queue, and
+// the trivial G_*/D_* "request" setters lower layers call. Ported from
+// linuxdoom-1.10 (GPLv2).
+
+module ds =
+    // command line parms
+    let mut nomonsters = false
+    let mut respawnparm = false
+    let mut fastparm = false
+    let mut devparm = false
+
+    let mut gamemode = gmode.indetermined
+    let mut gamemission = gmission.doom
+    let mut modifiedgame = false
+
+    let mut startskill = sk.medium
+    let mut startepisode = 1
+    let mut startmap = 1
+    let mut autostart = false
+
+    let mut gameskill = sk.medium
+    let mut gameepisode = 1
+    let mut gamemap = 1
+    let mut respawnmonsters = false
+
+    let mut netgame = false
+    let mut deathmatch = 0
+
+    // sound volumes (0..15)
+    let mut snd_sfxvolume = 8
+    let mut snd_musicvolume = 8
+
+    let mut statusbaractive = false
+    let mut automapactive = false
+    let mut menuactive = false
+    let mut paused = false
+    let mut viewactive = true
+    let mut nodrawers = false
+    let mut noblit = false
+
+    let mut viewwindowx = 0
+    let mut viewwindowy = 0
+    let mut viewheight = 0
+    let mut viewwidth = 0
+    let mut scaledviewwidth = 0
+    let mut viewangleoffset = 0
+
+    let mut consoleplayer = 0
+    let mut displayplayer = 0
+
+    let mut totalkills = 0
+    let mut totalitems = 0
+    let mut totalsecret = 0
+    let mut levelstarttic = 0
+    let mut leveltime = 0
+
+    let mut usergame = false
+    let mut demoplayback = false
+    let mut demorecording = false
+    let mut singledemo = false
+    let mut netdemo = false
+    let mut timingdemo = false
+
+    let mut gamestate = gs.demoscreen
+    let mut wipegamestate = gs.demoscreen
+    let mut gameaction = ga.nothing
+    let mut gametic = 0
+
+    let mut players = player[] { len = 4 }
+    let mut playeringame = bool[] { len = 4 }
+
+    // p_setup
+    let max_dm_starts = 10
+    let mut deathmatchstarts = mapthing[] { len = 10 }
+    let mut deathmatch_p = 0
+    let mut playerstarts = mapthing[] { len = 4 }
+
+    let mut wminfo = default(wbstartstruct)
+
+    let mut precache = true
+    let mut singletics = false
+    let mut mouse_sensitivity = 5
+    let mut show_messages = 1
+    let mut screenblocks = 10
+    let mut detail_level = 0
+    let mut usegamma = 0
+    let mut inhelpscreens = false
+    let mut setsizeneeded = false
+
+    let mut bodyqueslot = 0
+    let mut skyflatnum = 0
+    let mut skytexture = 0
+
+    // g_game state the lower layers also touch
+    let mut secretexit = false
+    let mut d_skill = 0
+    let mut d_episode = 0
+    let mut d_map = 0
+
+    // d_main page/demo state
+    let mut advancedemo = false
+
+    // p_tick: the thinker list head
+    let mut thinkercap = default(thinker)
+
+    // r_main: validcount shared with the playsim
+    let mut validcount = 1
+
+    // maketic / ticdup (d_net)
+    let mut maketic = 0
+    let mut ticdup = 1
+
+    let mut netcmds = ticcmd[] { len = 4 * 12 }
+    let backuptics = 12
+
+    let netcmd = (pl: i32, tic: i32) -> &netcmds[pl * backuptics + tic % backuptics]
+
+    // ------------------------------------------------------------------
+    // Event queue (D_PostEvent)
+    // ------------------------------------------------------------------
+    let maxevents = 64
+    let mut events = event[] { len = 64 }
+    let mut eventhead = 0
+    let mut eventtail = 0
+
+    let post_event = (ev: event) ->
+        events[eventhead] = ev
+        eventhead = (eventhead + 1) & (maxevents - 1)
+
+    // ------------------------------------------------------------------
+    // Requests that only flip state (the bodies of G_ExitLevel & co.)
+    // ------------------------------------------------------------------
+    let g_exit_level = () ->
+        secretexit = false
+        gameaction = ga.completed
+
+    let g_secret_exit_level = () ->
+        // IF NO WOLF3D LEVELS, NO SECRET EXIT!
+        if gamemode == gmode.commercial && w.check_num_for_name("map31") < 0 then
+            secretexit = false
+        else
+            secretexit = true
+        gameaction = ga.completed
+
+    let g_defered_init_new = (skill: i32, episode: i32, map: i32) ->
+        d_skill = skill
+        d_episode = episode
+        d_map = map
+        gameaction = ga.newgame
+
+    let d_advance_demo = () ->
+        advancedemo = true
+
+    let player_of = (n: i32) -> &players[n]
+
+    // G_LoadGame / G_SaveGame requests
+    let mut savename = default(str)
+    let mut savegameslot = 0
+    let mut savedescription = u8[] { len = 32 }
+    let mut sendsave = false
+    let mut sendpause = false
+
+    let g_load_game = (name: const str) ->
+        if savename.len > 0 then free(savename)
+        savename = alloc("%s{name}")!
+        gameaction = ga.loadgame
+
+    let g_save_game = (slot: i32, description: const str) ->
+        savegameslot = slot
+        for k in 0..32 do savedescription[k] = if k < description.len then description[k] else 0u8
+        sendsave = true

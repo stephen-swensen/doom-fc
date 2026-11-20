@@ -1,0 +1,272 @@
+// m_argv, i_system, z_zone and w_wad: the layers everything else sits on.
+// Ported from linuxdoom-1.10 (GPLv2).
+
+// ------------------------------------------------------------------
+// m_argv
+// ------------------------------------------------------------------
+module argv =
+    let mut myargv = default(str[])
+
+    let set = (args: str[]) ->
+        myargv = args
+
+    let count = () -> (i32) myargv.len
+
+    // M_CheckParm: index of `check` among the args (case-insensitive),
+    // or 0 if absent.
+    let check_parm = (check: const str) ->
+        let mut found = 0
+        for idx in 1..myargv.len do
+            if found == 0 && ascii_eq(myargv[idx], check) then found = (i32) idx
+        found
+
+    let get = (idx: i32) -> (const str) myargv[idx]
+
+    private let ascii_eq = (a: const str, b: const str) ->
+        if a.len != b.len then false
+        else
+            let mut same = true
+            for k in 0..a.len do
+                if c.toupper(a[k]) != c.toupper(b[k]) then same = false
+            same
+
+// ------------------------------------------------------------------
+// i_system
+// ------------------------------------------------------------------
+module i =
+    let mut base_counter = 0u64
+    let mut counter_freq = 1u64
+
+    let fatal = (msg: const str) ->
+        ignore cstdio.fputs(c"Error: ", stderr)
+        ignore cstdio.fwrite(msg.ptr, 1usize, (usize) msg.len, stderr)
+        ignore cstdio.fputs(c"\n", stderr)
+        ignore cstdio.fflush(stderr)
+        sdl2.quit()
+        cstdlib.exit(-1)
+
+    let print = (msg: const str) ->
+        ignore cstdio.fwrite(msg.ptr, 1usize, (usize) msg.len, stdout)
+        ignore cstdio.fflush(stdout)
+
+    let init_time = () ->
+        counter_freq = sdl2.get_perf_frequency()
+        base_counter = sdl2.get_perf_counter()
+
+    // I_GetTime: time in 1/35th second tics since startup.
+    let get_time = () ->
+        let elapsed = sdl2.get_perf_counter() - base_counter
+        (i32) (elapsed * 35u64 / counter_freq)
+
+    // Same clock in microseconds (frame pacing).
+    let get_time_us = () ->
+        let elapsed = sdl2.get_perf_counter() - base_counter
+        (i64) (elapsed * 1000000u64 / counter_freq)
+
+    let sleep_ms = (ms: i32) -> sdl2.delay((u32) ms)
+
+// ------------------------------------------------------------------
+// z_zone. The original manages one big block with a rover; here each
+// allocation is its own calloc'd chunk on a doubly linked list, which keeps
+// the parts the engine depends on: purge tags (Z_FreeTags at level change),
+// owner back-pointers that get cleared on free, and Z_ChangeTag.
+// ------------------------------------------------------------------
+struct memblock =
+    size: i64
+    user: any**
+    tag: i32
+    id: i32
+    next: memblock*
+    prev: memblock*
+    pad: i64
+
+module pu =
+    let static_x = 1
+    let sound = 2
+    let music = 3
+    let dave = 4
+    let level = 50
+    let levspec = 51
+    let purgelevel = 100
+    let cache = 101
+
+module z =
+    let zoneid = 0x1d4a11
+    let header = 48
+
+    let mut blocklist = default(memblock*)
+
+    let init = () -> void()
+
+    let malloc = (size: i64, tag: i32, user: any**) ->
+        let raw = c.zalloc(size + (i64) header)
+        let b = (memblock*) raw
+        b.size = size
+        b.user = user
+        b.tag = tag
+        b.id = zoneid
+        b.prev = default(memblock*)
+        b.next = blocklist
+        if c.not_null(blocklist) then blocklist.prev = b
+        blocklist = b
+        let data = (any*) ((u8*) raw + header)
+        if c.not_null(user) then *user = data
+        data
+
+    private let block_of = (p: any*) ->
+        let b = (memblock*) ((u8*) p - header)
+        if b.id != zoneid then i.fatal("Z_Free: freed a pointer without ZONEID")
+        b
+
+    let zfree = (p: any*) ->
+        let b = block_of(p)
+        if c.not_null(b.user) then *b.user = default(any*)
+        if c.not_null(b.prev) then b.prev.next = b.next else blocklist = b.next
+        if c.not_null(b.next) then b.next.prev = b.prev
+        b.id = 0
+        cstdlib.c_free((any*) b)
+
+    let free_tags = (lowtag: i32, hightag: i32) ->
+        let mut b = blocklist
+        loop
+            if c.is_null(b) then break
+            let next = b.next
+            if b.tag >= lowtag && b.tag <= hightag then
+                zfree((any*) ((u8*) b + header))
+            b = next
+
+    let change_tag = (p: any*, tag: i32) ->
+        let b = block_of(p)
+        if tag >= pu.purgelevel && (usize) b.user < 0x100usize then
+            i.fatal("Z_ChangeTag: an owner is required for purgable blocks")
+        b.tag = tag
+
+    let size_of = (p: any*) -> block_of(p).size
+
+// ------------------------------------------------------------------
+// w_wad. WAD files are read whole into memory at startup; a cached lump is
+// a separately allocated (and therefore aligned) copy, like the original's
+// zone-cached lumps.
+// ------------------------------------------------------------------
+struct lumpinfo =
+    name: u8[8]
+    k1: u32
+    k2: u32
+    file: i32
+    position: i32
+    size: i32
+
+module w =
+    let mut files = default(u8[][])
+    let mut nfiles = 0
+    let mut lumpinfo = default(lumpinfo[])
+    let mut numlumps = 0
+    let mut lumpcache = default(any*[])
+
+    // Pack an up-to-8-char name, upper-cased and zero-padded, into two
+    // words for compares (W_CheckNumForName's name8 union).
+    let key = (name: const str) ->
+        let mut k1 = 0u32
+        let mut k2 = 0u32
+        let mut ended = false
+        for idx in 0..8 do
+            let ch = if ended || idx >= name.len then 0u8 else c.toupper(name[idx])
+            if ch == 0u8 then ended = true
+            if idx < 4 then k1 = k1 | ((u32) ch << (idx * 8))
+            else k2 = k2 | ((u32) ch << ((idx - 4) * 8))
+        { k1, k2 }
+
+    private let read_file = (path: const str) ->
+        let f = cstdio.fopen(alloca((cstr) path), c"rb")
+        if c.is_null(f) then none(u8[])
+        else
+            ignore cstdio.fseek(f, 0i64, cstdio.seek_end)
+            let len = cstdio.ftell(f)
+            ignore cstdio.fseek(f, 0i64, cstdio.seek_set)
+            let buf = alloc(u8[] { len = len })!
+            ignore cstdio.fread((any*) buf.ptr, 1usize, (usize) len, f)
+            ignore cstdio.fclose(f)
+            some(buf)
+
+    // W_AddFile (WAD files only; single-lump files are not supported).
+    let add_file = (path: const str) ->
+        match read_file(path) with
+        | none -> i.print(alloca(" couldn't open %s{path}\n"))
+        | some(data) ->
+            i.print(alloca(" adding %s{path}\n"))
+            let id = c.name_view(data.ptr, 4)
+            if id != "IWAD" && id != "PWAD" then
+                i.fatal(alloca("Wad file %s{path} doesn't have IWAD or PWAD id"))
+            let n = c.rd_i32(data.ptr + 4)
+            let tab = c.rd_i32(data.ptr + 8)
+            let newfiles = alloc(u8[][] { len = nfiles + 1 })!
+            for k in 0..nfiles do newfiles[k] = files[k]
+            newfiles[nfiles] = data
+            if nfiles > 0 then free(files)
+            files = newfiles
+            let newinfo = alloc(lumpinfo[] { len = numlumps + n })!
+            for k in 0..numlumps do newinfo[k] = lumpinfo[k]
+            for k in 0..n do
+                let e = data.ptr + tab + k * 16
+                let li = &newinfo[numlumps + k]
+                li.position = c.rd_i32(e)
+                li.size = c.rd_i32(e + 4)
+                li.file = nfiles
+                for b in 0..8 do li.name[b] = *(e + 8 + b)
+                let { k1, k2 } = key(c.name_view(e + 8, 8))
+                li.k1 = k1
+                li.k2 = k2
+            if numlumps > 0 then free(lumpinfo)
+            lumpinfo = newinfo
+            numlumps = numlumps + n
+            nfiles = nfiles + 1
+
+    let init_multiple_files = (paths: const str[]) ->
+        for p in paths do add_file(p)
+        if numlumps == 0 then i.fatal("W_InitFiles: no files found")
+        lumpcache = alloc(any*[] { len = numlumps })!
+
+    let num_lumps = () -> numlumps
+
+    // W_CheckNumForName: -1 if absent. Scans backwards so PWADs override.
+    let check_num_for_name = (name: const str) ->
+        let { k1, k2 } = key(name)
+        let mut idx = numlumps - 1
+        loop
+            if idx < 0 then break -1
+            if lumpinfo[idx].k1 == k1 && lumpinfo[idx].k2 == k2 then break idx
+            idx = idx - 1
+
+    let get_num_for_name = (name: const str) ->
+        let n = check_num_for_name(name)
+        if n == -1 then i.fatal(alloca("W_GetNumForName: %s{name} not found!"))
+        n
+
+    let lump_length = (lump: i32) ->
+        if lump >= numlumps then i.fatal(alloca("W_LumpLength: %d{lump} >= numlumps"))
+        lumpinfo[lump].size
+
+    let lump_name = (lump: i32) -> c.name_view(lumpinfo[lump].name.ptr, 8)
+
+    // W_ReadLump: copy a lump into a caller buffer.
+    let read_lump = (lump: i32, dest: any*) ->
+        if lump >= numlumps then i.fatal(alloca("W_ReadLump: %d{lump} >= numlumps"))
+        let li = &lumpinfo[lump]
+        c.memcpy(dest, (const any*) (files[li.file].ptr + li.position), (i64) li.size)
+
+    // W_CacheLumpNum: the lump's bytes, loaded once and kept.
+    let cache_lump_num = (lump: i32, tag: i32) ->
+        if lump >= numlumps || lump < 0 then i.fatal(alloca("W_CacheLumpNum: %d{lump} >= numlumps"))
+        if c.is_null(lumpcache[lump]) then
+            let p = z.malloc((i64) lumpinfo[lump].size, tag, &lumpcache[lump])
+            read_lump(lump, p)
+        else if tag < pu.purgelevel then
+            z.change_tag(lumpcache[lump], tag)
+        (u8*) lumpcache[lump]
+
+    let cache_lump_name = (name: const str, tag: i32) ->
+        cache_lump_num(get_num_for_name(name), tag)
+
+    // The cached lump as a byte slice.
+    let lump_bytes = (lump: i32) ->
+        const u8[] { ptr = cache_lump_num(lump, pu.static_x), len = lumpinfo[lump].size }

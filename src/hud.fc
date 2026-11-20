@@ -1,0 +1,904 @@
+// The heads-up message line (hu_lib, hu_stuff), the status bar (st_lib,
+// st_stuff) and cheat sequences (m_cheat), ported from linuxdoom-1.10
+// (GPLv2). Multiplayer chat is not carried over: doom-fc is single
+// player, and the chat widgets only ever draw in net games.
+
+struct hu_textline =
+    x: i32
+    y: i32
+    sc: i32
+    l: u8[81]
+    len: i32
+    needsupdate: i32
+
+struct hu_stext =
+    l: hu_textline[4]
+    h: i32
+    cl: i32
+    on: bool*
+    laston: bool
+
+struct st_number =
+    x: i32
+    y: i32
+    width: i32
+    oldnum: i32
+    num: i32*
+    on: bool*
+    p: patch**
+    data: i32
+
+struct st_percent =
+    n: st_number
+    p: patch*
+
+// inum indexes p[]; when binum is set (the arms icons, which point at a
+// player's weaponowned[] booleans) it is read as 0/1 instead.
+struct st_multicon =
+    x: i32
+    y: i32
+    oldinum: i32
+    inum: i32*
+    binum: bool*
+    on: bool*
+    p: patch**
+    data: i32
+
+struct st_binicon =
+    x: i32
+    y: i32
+    oldval: bool
+    val: bool*
+    on: bool*
+    p: patch*
+    data: i32
+
+struct cheatseq =
+    sequence: u8*
+    p: i32
+
+module cheat =
+    let scramble = (a: i32) ->
+        ((a & 1) << 7) + ((a & 2) << 5) + (a & 4) + ((a & 8) << 1)
+            + ((a & 16) >> 1) + (a & 32) + ((a & 64) >> 5) + ((a & 128) >> 7)
+
+    let make = (seq: const u8[]) ->
+        let mem = (u8*) c.zalloc(seq.len)
+        for k in 0..seq.len do *(mem + k) = seq[k]
+        cheatseq { sequence = mem, p = -1 }
+
+    // Called in st_stuff module, which handles the input. Returns true
+    // if the cheat was successful, false if failed.
+    let check = (cht: cheatseq*, key: i32) ->
+        let mut rc = false
+        if cht.p < 0 then cht.p = 0
+        let ch = *(cht.sequence + cht.p)
+        if ch == 0u8 then
+            *(cht.sequence + cht.p) = (u8) key
+            cht.p = cht.p + 1
+        else if (u8) scramble(key & 255) == ch then cht.p = cht.p + 1
+        else cht.p = 0
+        let nx = *(cht.sequence + cht.p)
+        if nx == 1u8 then cht.p = cht.p + 1
+        else if nx == 0xffu8 then
+            cht.p = 0
+            rc = true
+        rc
+
+    let get_param = (cht: cheatseq*, buffer: u8[]) ->
+        let mut p = cht.sequence
+        loop
+            let b = *p
+            p = p + 1
+            if b == 1u8 then break
+        let mut k = 0
+        loop
+            let ch = *p
+            buffer[k] = ch
+            k = k + 1
+            *p = 0u8
+            p = p + 1
+            if !(ch != 0u8 && *p != 0xffu8) then break
+        if *p == 0xffu8 then buffer[k] = 0u8
+
+module hulib =
+    let fg = 0
+    let mut font = patch*[] { len = 63 }
+
+    let clear_text_line = (t: hu_textline*) ->
+        t.len = 0
+        t.l[0] = 0u8
+        t.needsupdate = 1
+
+    let init_text_line = (t: hu_textline*, x: i32, y: i32, sc: i32) ->
+        t.x = x
+        t.y = y
+        t.sc = sc
+        clear_text_line(t)
+
+    let add_char_to_text_line = (t: hu_textline*, ch: u8) ->
+        if t.len == 80 then false
+        else
+            t.l[t.len] = ch
+            t.len = t.len + 1
+            t.l[t.len] = 0u8
+            t.needsupdate = 4
+            true
+
+    let del_char_from_text_line = (t: hu_textline*) ->
+        if t.len == 0 then false
+        else
+            t.len = t.len - 1
+            t.l[t.len] = 0u8
+            t.needsupdate = 4
+            true
+
+    let draw_text_line = (l: hu_textline*, drawcursor: bool) ->
+        let mut x = l.x
+        let mut k = 0
+        loop
+            if k >= l.len then break
+            let ch = (i32) c.toupper(l.l[k])
+            k = k + 1
+            if ch != ' ' && ch >= l.sc && ch <= '_' then
+                let f = font[ch - l.sc]
+                let w = (i32) f.width
+                if x + w > 320 then break
+                v.draw_patch_direct(x, l.y, fg, f)
+                x = x + w
+            else
+                x = x + 4
+                if x >= 320 then break
+        if drawcursor && x + font['_' - l.sc].width <= 320 then
+            v.draw_patch_direct(x, l.y, fg, font['_' - l.sc])
+
+    // sorta called by HU_Erase and just better darn get things straight
+    let erase_text_line = (l: hu_textline*) ->
+        // Only erases when NOT in automap and the screen is reduced, and
+        // the text must either need updating or refreshing (because
+        // of a recent change back from the automap)
+        if !ds.automapactive && ds.viewwindowx != 0 && l.needsupdate != 0 then
+            let lh = (i32) font[0].height + 1
+            let mut y = l.y
+            let mut yoffset = y * 320
+            loop
+                if y >= l.y + lh then break
+                if y < ds.viewwindowy || y >= ds.viewwindowy + ds.viewheight then
+                    r.video_erase(yoffset, 320)    // erase entire line
+                else
+                    r.video_erase(yoffset, ds.viewwindowx)    // erase left border
+                    r.video_erase(yoffset + ds.viewwindowx + ds.viewwidth, ds.viewwindowx)    // erase right border
+                y = y + 1
+                yoffset = yoffset + 320
+        if l.needsupdate != 0 then l.needsupdate = l.needsupdate - 1
+
+    let init_stext = (s: hu_stext*, x: i32, y: i32, h: i32, startchar: i32, on: bool*) ->
+        s.h = h
+        s.on = on
+        s.laston = true
+        s.cl = 0
+        for k in 0..h do
+            init_text_line(&s.l[k], x, y - (i32) k * ((i32) font[0].height + 1), startchar)
+
+    let add_line_to_stext = (s: hu_stext*) ->
+        // add a clear line
+        s.cl = s.cl + 1
+        if s.cl == s.h then s.cl = 0
+        clear_text_line(&s.l[s.cl])
+        // everything needs updating
+        for k in 0..s.h do s.l[k].needsupdate = 4
+
+    let add_message_to_stext = (s: hu_stext*, prefix: const str, msg: const str) ->
+        add_line_to_stext(s)
+        for ch in prefix do ignore add_char_to_text_line(&s.l[s.cl], ch)
+        for ch in msg do ignore add_char_to_text_line(&s.l[s.cl], ch)
+
+    let draw_stext = (s: hu_stext*) ->
+        if !*s.on then return    // if not on, don't draw
+        // draw everything
+        for k in 0..s.h do
+            let mut idx = s.cl - (i32) k
+            if idx < 0 then idx = idx + s.h    // handle queue of lines
+            // need a decision made here on whether to skip the draw
+            draw_text_line(&s.l[idx], false)    // no cursor, please
+
+    let erase_stext = (s: hu_stext*) ->
+        for k in 0..s.h do
+            if s.laston && !*s.on then s.l[k].needsupdate = 4
+            erase_text_line(&s.l[k])
+        s.laston = *s.on
+
+module hu =
+    let fontstart = '!'
+    let fontend = '_'
+    let fontsize = 63
+    let msgtimeout = 4 * 35
+    let msgrefresh = dd.key_enter
+
+    let mut plr = default(player*)
+    let mut w_title = default(hu_textline)
+    let mut w_message = default(hu_stext)
+    let mut message_on = false
+    let mut message_dontfuckwithme = false
+    let mut message_nottobefuckedwith = false
+    let mut message_counter = 0
+    let mut headsupactive = false
+    let mut chat_on = false
+
+    let mapnames = (const str)[] { dstr.hustr_e1m1, dstr.hustr_e1m2, dstr.hustr_e1m3, dstr.hustr_e1m4, dstr.hustr_e1m5, dstr.hustr_e1m6, dstr.hustr_e1m7, dstr.hustr_e1m8, dstr.hustr_e1m9, dstr.hustr_e2m1, dstr.hustr_e2m2, dstr.hustr_e2m3, dstr.hustr_e2m4, dstr.hustr_e2m5, dstr.hustr_e2m6, dstr.hustr_e2m7, dstr.hustr_e2m8, dstr.hustr_e2m9, dstr.hustr_e3m1, dstr.hustr_e3m2, dstr.hustr_e3m3, dstr.hustr_e3m4, dstr.hustr_e3m5, dstr.hustr_e3m6, dstr.hustr_e3m7, dstr.hustr_e3m8, dstr.hustr_e3m9, dstr.hustr_e4m1, dstr.hustr_e4m2, dstr.hustr_e4m3, dstr.hustr_e4m4, dstr.hustr_e4m5, dstr.hustr_e4m6, dstr.hustr_e4m7, dstr.hustr_e4m8, dstr.hustr_e4m9 }
+    let mapnames2 = (const str)[] { dstr.hustr_1, dstr.hustr_2, dstr.hustr_3, dstr.hustr_4, dstr.hustr_5, dstr.hustr_6, dstr.hustr_7, dstr.hustr_8, dstr.hustr_9, dstr.hustr_10, dstr.hustr_11, dstr.hustr_12, dstr.hustr_13, dstr.hustr_14, dstr.hustr_15, dstr.hustr_16, dstr.hustr_17, dstr.hustr_18, dstr.hustr_19, dstr.hustr_20, dstr.hustr_21, dstr.hustr_22, dstr.hustr_23, dstr.hustr_24, dstr.hustr_25, dstr.hustr_26, dstr.hustr_27, dstr.hustr_28, dstr.hustr_29, dstr.hustr_30, dstr.hustr_31, dstr.hustr_32 }
+    let mapnamesp = (const str)[] { dstr.phustr_1, dstr.phustr_2, dstr.phustr_3, dstr.phustr_4, dstr.phustr_5, dstr.phustr_6, dstr.phustr_7, dstr.phustr_8, dstr.phustr_9, dstr.phustr_10, dstr.phustr_11, dstr.phustr_12, dstr.phustr_13, dstr.phustr_14, dstr.phustr_15, dstr.phustr_16, dstr.phustr_17, dstr.phustr_18, dstr.phustr_19, dstr.phustr_20, dstr.phustr_21, dstr.phustr_22, dstr.phustr_23, dstr.phustr_24, dstr.phustr_25, dstr.phustr_26, dstr.phustr_27, dstr.phustr_28, dstr.phustr_29, dstr.phustr_30, dstr.phustr_31, dstr.phustr_32 }
+    let mapnamest = (const str)[] { dstr.thustr_1, dstr.thustr_2, dstr.thustr_3, dstr.thustr_4, dstr.thustr_5, dstr.thustr_6, dstr.thustr_7, dstr.thustr_8, dstr.thustr_9, dstr.thustr_10, dstr.thustr_11, dstr.thustr_12, dstr.thustr_13, dstr.thustr_14, dstr.thustr_15, dstr.thustr_16, dstr.thustr_17, dstr.thustr_18, dstr.thustr_19, dstr.thustr_20, dstr.thustr_21, dstr.thustr_22, dstr.thustr_23, dstr.thustr_24, dstr.thustr_25, dstr.thustr_26, dstr.thustr_27, dstr.thustr_28, dstr.thustr_29, dstr.thustr_30, dstr.thustr_31, dstr.thustr_32 }
+
+    let init = () ->
+        for k in 0..fontsize do
+            let name = "STCFN%03d{(i32) fontstart + (i32) k}"
+            hulib.font[k] = (patch*) w.cache_lump_name(name, pu.static_x)
+
+    let stop = () -> headsupactive = false
+
+    let title_y = () -> 167 - (i32) hulib.font[0].height
+
+    let start = () ->
+        if headsupactive then stop()
+        plr = &ds.players[ds.consoleplayer]
+        message_on = false
+        message_dontfuckwithme = false
+        message_nottobefuckedwith = false
+        chat_on = false
+        // create the message widget
+        hulib.init_stext(&w_message, 0, 0, 1, fontstart, &message_on)
+        // create the map title widget
+        hulib.init_text_line(&w_title, 0, title_y(), fontstart)
+        let s = if ds.gamemode == gmode.commercial then mapnames2[ds.gamemap - 1]
+                else mapnames[(ds.gameepisode - 1) * 9 + ds.gamemap - 1]
+        for ch in s do ignore hulib.add_char_to_text_line(&w_title, ch)
+        headsupactive = true
+
+    let drawer = () ->
+        hulib.draw_stext(&w_message)
+        if ds.automapactive then hulib.draw_text_line(&w_title, false)
+
+    let erase = () ->
+        hulib.erase_stext(&w_message)
+        hulib.erase_text_line(&w_title)
+
+    let ticker = () ->
+        // tick down message counter if message is up
+        if message_counter != 0 then
+            message_counter = message_counter - 1
+            if message_counter == 0 then
+                message_on = false
+                message_nottobefuckedwith = false
+        if ds.show_messages != 0 || message_dontfuckwithme then
+            // display message if necessary
+            if (plr.message.len > 0 && !message_nottobefuckedwith)
+                || (plr.message.len > 0 && message_dontfuckwithme) then
+                hulib.add_message_to_stext(&w_message, "", plr.message)
+                plr.message = ""
+                message_on = true
+                message_counter = msgtimeout
+                message_nottobefuckedwith = message_dontfuckwithme
+                message_dontfuckwithme = false
+
+    let responder = (ev: event*) ->
+        if ev.type != evt.keydown then return false
+        if !chat_on && ev.data1 == msgrefresh then
+            message_on = true
+            message_counter = msgtimeout
+            return true
+        false
+
+module stlib =
+    let bg = 4
+    let fg = 0
+    let st_y = 200 - 32
+
+    let mut sttminus = default(patch*)
+
+    let init = () -> sttminus = (patch*) w.cache_lump_name("STTMINUS", pu.static_x)
+
+    let init_num = (n: st_number*, x: i32, y: i32, pl: patch**, num: i32*, on: bool*, width: i32) ->
+        n.x = x
+        n.y = y
+        n.oldnum = 0
+        n.width = width
+        n.num = num
+        n.on = on
+        n.p = pl
+
+    // A fairly efficient way to draw a number based on differences from
+    // the old number. Note: worth the trouble?
+    let draw_num = (n: st_number*, refresh: bool) ->
+        let mut numdigits = n.width
+        let mut num = *n.num
+        let w = (i32) (*n.p).width
+        let h = (i32) (*n.p).height
+        n.oldnum = *n.num
+        let neg = num < 0
+        if neg then
+            if numdigits == 2 && num < -9 then num = -9
+            else if numdigits == 3 && num < -99 then num = -99
+            num = 0 - num
+        // clear the area
+        let mut x = n.x - numdigits * w
+        if n.y - st_y < 0 then i.fatal("drawNum: n->y - ST_Y < 0")
+        v.copy_rect(x, n.y - st_y, bg, w * numdigits, h, x, n.y, fg)
+        // if non-number, do not draw it
+        if num == 1994 then return
+        x = n.x
+        // in the special case of 0, you draw 0
+        if num == 0 then v.draw_patch(x - w, n.y, fg, *n.p)
+        // draw the new number
+        loop
+            if num == 0 || numdigits == 0 then break
+            numdigits = numdigits - 1
+            x = x - w
+            v.draw_patch(x, n.y, fg, *(n.p + num % 10))
+            num = num / 10
+        // draw a minus sign if necessary
+        if neg then v.draw_patch(x - 8, n.y, fg, sttminus)
+
+    let update_num = (n: st_number*, refresh: bool) ->
+        if *n.on then draw_num(n, refresh)
+
+    let init_percent = (p: st_percent*, x: i32, y: i32, pl: patch**, num: i32*, on: bool*, percent: patch*) ->
+        init_num(&p.n, x, y, pl, num, on, 3)
+        p.p = percent
+
+    let update_percent = (per: st_percent*, refresh: bool) ->
+        if refresh && *per.n.on then v.draw_patch(per.n.x, per.n.y, fg, per.p)
+        update_num(&per.n, refresh)
+
+    let init_mult_icon = (mi: st_multicon*, x: i32, y: i32, il: patch**, inum: i32*, binum: bool*, on: bool*) ->
+        mi.x = x
+        mi.y = y
+        mi.oldinum = -1
+        mi.inum = inum
+        mi.binum = binum
+        mi.on = on
+        mi.p = il
+
+    let multicon_value = (mi: st_multicon*) ->
+        if c.not_null(mi.binum) then (if *mi.binum then 1 else 0) else *mi.inum
+
+    let update_mult_icon = (mi: st_multicon*, refresh: bool) ->
+        let cur = multicon_value(mi)
+        if *mi.on && (mi.oldinum != cur || refresh) && cur != -1 then
+            if mi.oldinum != -1 then
+                let op = *(mi.p + mi.oldinum)
+                let x = mi.x - op.leftoffset
+                let y = mi.y - op.topoffset
+                let w = (i32) op.width
+                let h = (i32) op.height
+                if y - st_y < 0 then i.fatal("updateMultIcon: y - ST_Y < 0")
+                v.copy_rect(x, y - st_y, bg, w, h, x, y, fg)
+            v.draw_patch(mi.x, mi.y, fg, *(mi.p + cur))
+            mi.oldinum = cur
+
+    let init_bin_icon = (b: st_binicon*, x: i32, y: i32, ic: patch*, val: bool*, on: bool*) ->
+        b.x = x
+        b.y = y
+        b.oldval = false
+        b.val = val
+        b.on = on
+        b.p = ic
+
+    let update_bin_icon = (bi: st_binicon*, refresh: bool) ->
+        if *bi.on && (bi.oldval != *bi.val || refresh) then
+            let x = bi.x - bi.p.leftoffset
+            let y = bi.y - bi.p.topoffset
+            let w = (i32) bi.p.width
+            let h = (i32) bi.p.height
+            if y - st_y < 0 then i.fatal("updateBinIcon: y - ST_Y < 0")
+            if *bi.val then v.draw_patch(bi.x, bi.y, fg, bi.p)
+            else v.copy_rect(x, y - st_y, bg, w, h, x, y, fg)
+            bi.oldval = *bi.val
+
+module st =
+    let st_height = 32
+    let st_width = 320
+    let st_y = 200 - 32
+    let startredpals = 1
+    let startbonuspals = 9
+    let numredpals = 8
+    let numbonuspals = 4
+    let radiationpal = 13
+    let st_x = 0
+    let st_fx = 143
+    let numpainfaces = 5
+    let numstraightfaces = 3
+    let numturnfaces = 2
+    let numspecialfaces = 3
+    let facestride = 3 + 2 + 3
+    let numextrafaces = 2
+    let numfaces = 8 * 5 + 2
+    let turnoffset = 3
+    let ouchoffset = 3 + 2
+    let evilgrinoffset = 3 + 2 + 1
+    let rampageoffset = 3 + 2 + 2
+    let godface = 5 * 8
+    let deadface = 5 * 8 + 1
+    let evilgrincount = 2 * 35
+    let straightfacecount = 35 / 2
+    let turncount = 1 * 35
+    let rampagedelay = 2 * 35
+    let muchpain = 20
+
+    let am_msgheader = ('a' << 24) + ('m' << 16)
+    let am_msgentered = (('a' << 24) + ('m' << 16)) | ('e' << 8)
+    let am_msgexited = (('a' << 24) + ('m' << 16)) | ('x' << 8)
+
+    let mut plyr = default(player*)
+    let mut st_firsttime = false
+    let mut lu_palette = 0
+    let mut st_clock = 0
+    let mut st_msgcounter = 0
+    let mut st_automap = false
+    let mut st_statusbaron = false
+    let mut st_chat = false
+    let mut st_oldchat = false
+    let mut st_notdeathmatch = false
+    let mut st_armson = false
+    let mut st_fragson = false
+    let mut sbar = default(patch*)
+    let mut tallnum = patch*[] { len = 10 }
+    let mut tallpercent = default(patch*)
+    let mut shortnum = patch*[] { len = 10 }
+    let mut keys = patch*[] { len = 6 }
+    let mut faces = patch*[] { len = 42 }
+    let mut faceback = default(patch*)
+    let mut armsbg = default(patch*)
+    let mut arms = patch*[] { len = 12 }
+    let mut w_ready = default(st_number)
+    let mut w_frags = default(st_number)
+    let mut w_health = default(st_percent)
+    let mut w_armsbg = default(st_binicon)
+    let mut w_arms = st_multicon[] { len = 6 }
+    let mut w_faces = default(st_multicon)
+    let mut w_keyboxes = st_multicon[] { len = 3 }
+    let mut w_armor = default(st_percent)
+    let mut w_ammo = st_number[] { len = 4 }
+    let mut w_maxammo = st_number[] { len = 4 }
+    let mut st_fragscount = 0
+    let mut st_oldhealth = -1
+    let mut oldweaponsowned = bool[] { len = 9 }
+    let mut st_facecount = 0
+    let mut st_faceindex = 0
+    let mut keyboxes = i32[] { len = 3 }
+    let mut st_randomnumber = 0
+    let mut largeammo = 1994
+    let mut st_palette = 0
+    let mut st_stopped = true
+    let mut lastcalc = 0
+    let mut oldhealth = -1
+    let mut lastattackdown = -1
+    let mut priority = 0
+    let mut mypos_buf = default(str)
+
+    // Massive bunches of cheat shit to keep it from being easy to figure
+    // them out. Yeah, right...
+    let mut cheat_mus = default(cheatseq)
+    let mut cheat_choppers = default(cheatseq)
+    let mut cheat_god = default(cheatseq)
+    let mut cheat_ammo = default(cheatseq)
+    let mut cheat_ammonokey = default(cheatseq)
+    let mut cheat_noclip = default(cheatseq)
+    let mut cheat_commercial_noclip = default(cheatseq)
+    let mut cheat_powerup = cheatseq[] { len = 7 }
+    let mut cheat_clev = default(cheatseq)
+    let mut cheat_mypos = default(cheatseq)
+
+    let init_cheats = () ->
+        cheat_mus = cheat.make(u8[] { 0xb2u8, 0x26u8, 0xb6u8, 0xaeu8, 0xeau8, 1u8, 0u8, 0u8, 0xffu8 })
+        cheat_choppers = cheat.make(u8[] { 0xb2u8, 0x26u8, 0xe2u8, 0x32u8, 0xf6u8, 0x2au8, 0x2au8, 0xa6u8, 0x6au8, 0xeau8, 0xffu8 })
+        cheat_god = cheat.make(u8[] { 0xb2u8, 0x26u8, 0x26u8, 0xaau8, 0x26u8, 0xffu8 })
+        cheat_ammo = cheat.make(u8[] { 0xb2u8, 0x26u8, 0xf2u8, 0x66u8, 0xa2u8, 0xffu8 })
+        cheat_ammonokey = cheat.make(u8[] { 0xb2u8, 0x26u8, 0x66u8, 0xa2u8, 0xffu8 })
+        cheat_noclip = cheat.make(u8[] { 0xb2u8, 0x26u8, 0xeau8, 0x2au8, 0xb2u8, 0xeau8, 0x2au8, 0xf6u8, 0x2au8, 0x26u8, 0xffu8 })
+        cheat_commercial_noclip = cheat.make(u8[] { 0xb2u8, 0x26u8, 0xe2u8, 0x36u8, 0xb2u8, 0x2au8, 0xffu8 })
+        let last = u8[] { 0x6eu8, 0xeau8, 0xb2u8, 0x6au8, 0xa2u8, 0x36u8 }
+        for k in 0..6 do
+            cheat_powerup[k] = cheat.make(u8[] { 0xb2u8, 0x26u8, 0x62u8, 0xa6u8, 0x32u8, 0xf6u8, 0x36u8, 0x26u8, last[k], 0xffu8 })
+        cheat_powerup[6] = cheat.make(u8[] { 0xb2u8, 0x26u8, 0x62u8, 0xa6u8, 0x32u8, 0xf6u8, 0x36u8, 0x26u8, 0xffu8 })
+        cheat_clev = cheat.make(u8[] { 0xb2u8, 0x26u8, 0xe2u8, 0x36u8, 0xa6u8, 0x6eu8, 1u8, 0u8, 0u8, 0xffu8 })
+        cheat_mypos = cheat.make(u8[] { 0xb2u8, 0x26u8, 0xb6u8, 0xbau8, 0x2au8, 0xf6u8, 0xeau8, 0xffu8 })
+
+    let refresh_background = () ->
+        if st_statusbaron then
+            v.draw_patch(st_x, 0, stlib.bg, sbar)
+            if ds.netgame then v.draw_patch(st_fx, 0, stlib.bg, faceback)
+            v.copy_rect(st_x, 0, stlib.bg, st_width, st_height, st_x, st_y, stlib.fg)
+
+    // Respond to keyboard input events, intercept cheats.
+    let responder = (ev: event*) ->
+        // Filter automap on/off.
+        if ev.type == evt.keyup && (ev.data1 & (i32) 0xffff0000u32) == am_msgheader then
+            if ev.data1 == am_msgentered then
+                st_automap = true
+                st_firsttime = true
+            else if ev.data1 == am_msgexited then
+                st_automap = false
+        // if a user keypress...
+        else if ev.type == evt.keydown then
+            if !ds.netgame then
+                // b. - enabled for more debug fun.
+                // if (gameskill != sk_nightmare) {
+                // 'dqd' cheat for toggleable god mode
+                if cheat.check(&cheat_god, ev.data1) then
+                    plyr.cheats = plyr.cheats ^ cf.godmode
+                    if (plyr.cheats & cf.godmode) != 0 then
+                        if c.not_null(plyr.mo) then plyr.mo.health = 100
+                        plyr.health = 100
+                        plyr.message = dstr.ststr_dqdon
+                    else
+                        plyr.message = dstr.ststr_dqdoff
+                // 'fa' cheat for killer fucking arsenal
+                else if cheat.check(&cheat_ammonokey, ev.data1) then
+                    plyr.armorpoints = 200
+                    plyr.armortype = 2
+                    for k in 0..wp.numweapons do plyr.weaponowned[k] = true
+                    for k in 0..am.numammo do plyr.ammo[k] = plyr.maxammo[k]
+                    plyr.message = dstr.ststr_faadded
+                // 'kfa' cheat for key full ammo
+                else if cheat.check(&cheat_ammo, ev.data1) then
+                    plyr.armorpoints = 200
+                    plyr.armortype = 2
+                    for k in 0..wp.numweapons do plyr.weaponowned[k] = true
+                    for k in 0..am.numammo do plyr.ammo[k] = plyr.maxammo[k]
+                    for k in 0..it.numcards do plyr.cards[k] = true
+                    plyr.message = dstr.ststr_kfaadded
+                // 'mus' cheat for changing music
+                else if cheat.check(&cheat_mus, ev.data1) then
+                    let buf = u8[] { len = 3 }
+                    plyr.message = dstr.ststr_mus
+                    cheat.get_param(&cheat_mus, buf)
+                    if ds.gamemode == gmode.commercial then
+                        let n = ((i32) buf[0] - '0') * 10 + (i32) buf[1] - '0'
+                        let musnum = mus.runnin + n - 1
+                        if n > 35 then plyr.message = dstr.ststr_nomus
+                        else snd.change_music(musnum, true)
+                    else
+                        let n = ((i32) buf[0] - '1') * 9 + (i32) buf[1] - '1'
+                        let musnum = mus.e1m1 + n
+                        if n > 31 then plyr.message = dstr.ststr_nomus
+                        else snd.change_music(musnum, true)
+                // Simplified, accepting both "noclip" and "idspispopd".
+                // no clipping mode cheat
+                else if cheat.check(&cheat_noclip, ev.data1) || cheat.check(&cheat_commercial_noclip, ev.data1) then
+                    plyr.cheats = plyr.cheats ^ cf.noclip
+                    if (plyr.cheats & cf.noclip) != 0 then plyr.message = dstr.ststr_ncon
+                    else plyr.message = dstr.ststr_ncoff
+                // 'behold?' power-up cheats
+                for k in 0..6 do
+                    if cheat.check(&cheat_powerup[k], ev.data1) then
+                        if plyr.powers[k] == 0 then ignore p.give_power(plyr, (i32) k)
+                        else if (i32) k != pw.strength then plyr.powers[k] = 1
+                        else plyr.powers[k] = 0
+                        plyr.message = dstr.ststr_beholdx
+                // 'behold' power-up menu
+                if cheat.check(&cheat_powerup[6], ev.data1) then
+                    plyr.message = dstr.ststr_behold
+                // 'choppers' invulnerability & chainsaw
+                else if cheat.check(&cheat_choppers, ev.data1) then
+                    plyr.weaponowned[wp.chainsaw] = true
+                    plyr.powers[pw.invulnerability] = 1
+                    plyr.message = dstr.ststr_choppers
+                // 'mypos' for player position
+                else if cheat.check(&cheat_mypos, ev.data1) then
+                    let mo = ds.players[ds.consoleplayer].mo
+                    if mypos_buf.len > 0 then free(mypos_buf)
+                    mypos_buf = alloc("ang=0x%x{mo.angle};x,y=(0x%x{mo.x},0x%x{mo.y})")!
+                    plyr.message = mypos_buf
+            // 'clev' change-level cheat
+            if cheat.check(&cheat_clev, ev.data1) then
+                let buf = u8[] { len = 3 }
+                cheat.get_param(&cheat_clev, buf)
+                let mut epsd = 0
+                let mut map = 0
+                if ds.gamemode == gmode.commercial then
+                    epsd = 0
+                    map = ((i32) buf[0] - '0') * 10 + (i32) buf[1] - '0'
+                else
+                    epsd = (i32) buf[0] - '0'
+                    map = (i32) buf[1] - '0'
+                // Catch invalid maps.
+                let gm = ds.gamemode
+                // (the commercial check in linuxdoom also rejects epsd 0,
+                // so idclev never works in Doom II there; kept as is)
+                let bad = epsd < 1 || map < 1
+                    || (gm == gmode.retail && (epsd > 4 || map > 9))
+                    || (gm == gmode.registered && (epsd > 3 || map > 9))
+                    || (gm == gmode.shareware && (epsd > 1 || map > 9))
+                    || (gm == gmode.commercial && (epsd > 1 || map > 34))
+                if !bad then
+                    // So be it.
+                    plyr.message = dstr.ststr_clev
+                    ds.g_defered_init_new(ds.gameskill, epsd, map)
+        false
+
+    let calc_pain_offset = () ->
+        let health = if plyr.health > 100 then 100 else plyr.health
+        if health != oldhealth then
+            lastcalc = facestride * (((100 - health) * numpainfaces) / 101)
+            oldhealth = health
+        lastcalc
+
+    // This is a not-very-pretty routine which handles the face states and
+    // their timing. the precedence of expressions is:
+    //  dead > evil grin > turned head > straight ahead
+    let update_face_widget = () ->
+        if priority < 10 then
+            // dead
+            if plyr.health == 0 then
+                priority = 9
+                st_faceindex = deadface
+                st_facecount = 1
+        if priority < 9 then
+            if plyr.bonuscount != 0 then
+                // picking up bonus
+                let mut doevilgrin = false
+                for k in 0..wp.numweapons do
+                    if oldweaponsowned[k] != plyr.weaponowned[k] then
+                        doevilgrin = true
+                        oldweaponsowned[k] = plyr.weaponowned[k]
+                if doevilgrin then
+                    // evil grin if just picked up weapon
+                    priority = 8
+                    st_facecount = evilgrincount
+                    st_faceindex = calc_pain_offset() + evilgrinoffset
+        if priority < 8 then
+            if plyr.damagecount != 0 && c.not_null(plyr.attacker) && plyr.attacker != plyr.mo then
+                // being attacked
+                priority = 7
+                if plyr.health - st_oldhealth > muchpain then
+                    st_facecount = turncount
+                    st_faceindex = calc_pain_offset() + ouchoffset
+                else
+                    let badguyangle = r.point_to_angle2(plyr.mo.x, plyr.mo.y, plyr.attacker.x, plyr.attacker.y)
+                    let mut diffang = 0u32
+                    let mut turn = false
+                    if badguyangle > plyr.mo.angle then
+                        // whether right or left
+                        diffang = badguyangle - plyr.mo.angle
+                        turn = diffang > fx.ang180
+                    else
+                        // whether left or right
+                        diffang = plyr.mo.angle - badguyangle
+                        turn = diffang <= fx.ang180
+                    st_facecount = turncount
+                    st_faceindex = calc_pain_offset()
+                    if diffang < fx.ang45 then
+                        // head-on
+                        st_faceindex = st_faceindex + rampageoffset
+                    else if turn then
+                        // turn face right
+                        st_faceindex = st_faceindex + turnoffset
+                    else
+                        // turn face left
+                        st_faceindex = st_faceindex + turnoffset + 1
+        if priority < 7 then
+            // getting hurt because of your own damn stupidity
+            if plyr.damagecount != 0 then
+                if plyr.health - st_oldhealth > muchpain then
+                    priority = 7
+                    st_facecount = turncount
+                    st_faceindex = calc_pain_offset() + ouchoffset
+                else
+                    priority = 6
+                    st_facecount = turncount
+                    st_faceindex = calc_pain_offset() + rampageoffset
+        if priority < 6 then
+            // rapid firing
+            if plyr.attackdown then
+                if lastattackdown == -1 then lastattackdown = rampagedelay
+                else
+                    lastattackdown = lastattackdown - 1
+                    if lastattackdown == 0 then
+                        priority = 5
+                        st_faceindex = calc_pain_offset() + rampageoffset
+                        st_facecount = 1
+                        lastattackdown = 1
+            else
+                lastattackdown = -1
+        if priority < 5 then
+            // invulnerability
+            if (plyr.cheats & cf.godmode) != 0 || plyr.powers[pw.invulnerability] != 0 then
+                priority = 4
+                st_faceindex = godface
+                st_facecount = 1
+        // look left or look right if the facecount has timed out
+        if st_facecount == 0 then
+            st_faceindex = calc_pain_offset() + (st_randomnumber % 3)
+            st_facecount = straightfacecount
+            priority = 0
+        st_facecount = st_facecount - 1
+
+    let update_widgets = () ->
+        // must redirect the pointer if the ready weapon has changed.
+        if items.weaponinfo[plyr.readyweapon].ammo == am.noammo then
+            w_ready.num = &largeammo
+        else
+            w_ready.num = &plyr.ammo[items.weaponinfo[plyr.readyweapon].ammo]
+        w_ready.data = plyr.readyweapon
+        // update keycard multiple widgets
+        for k in 0..3 do
+            keyboxes[k] = if plyr.cards[k] then (i32) k else -1
+            if plyr.cards[k + 3] then keyboxes[k] = (i32) k + 3
+        // refresh everything if this is him coming back to life
+        update_face_widget()
+        // used by the w_armsbg widget
+        st_notdeathmatch = ds.deathmatch == 0
+        // used by w_arms[] widgets
+        st_armson = st_statusbaron && ds.deathmatch == 0
+        // used by w_frags widget
+        st_fragson = ds.deathmatch != 0 && st_statusbaron
+        st_fragscount = 0
+        for k in 0..dd.maxplayers do
+            if (i32) k != ds.consoleplayer then st_fragscount = st_fragscount + plyr.frags[k]
+            else st_fragscount = st_fragscount - plyr.frags[k]
+        // get rid of chat window if up because of message
+        st_msgcounter = st_msgcounter - 1
+        if st_msgcounter == 0 then st_chat = st_oldchat
+
+    let ticker = () ->
+        st_clock = st_clock + 1
+        st_randomnumber = rnd.m_random()
+        update_widgets()
+        st_oldhealth = plyr.health
+
+    let do_palette_stuff = () ->
+        let mut cnt = plyr.damagecount
+        if plyr.powers[pw.strength] != 0 then
+            // slowly fade the berzerk out
+            let bzc = 12 - (plyr.powers[pw.strength] >> 6)
+            if bzc > cnt then cnt = bzc
+        let mut palette = 0
+        if cnt != 0 then
+            palette = (cnt + 7) >> 3
+            if palette >= numredpals then palette = numredpals - 1
+            palette = palette + startredpals
+        else if plyr.bonuscount != 0 then
+            palette = (plyr.bonuscount + 7) >> 3
+            if palette >= numbonuspals then palette = numbonuspals - 1
+            palette = palette + startbonuspals
+        else if plyr.powers[pw.ironfeet] > 4 * 32 || (plyr.powers[pw.ironfeet] & 8) != 0 then
+            palette = radiationpal
+        else
+            palette = 0
+        if palette != st_palette then
+            st_palette = palette
+            let pal = w.cache_lump_num(lu_palette, pu.cache) + palette * 768
+            iv.set_palette(pal)
+
+    let draw_widgets = (refresh: bool) ->
+        // used by w_arms[] widgets
+        st_armson = st_statusbaron && ds.deathmatch == 0
+        // used by w_frags widget
+        st_fragson = ds.deathmatch != 0 && st_statusbaron
+        stlib.update_num(&w_ready, refresh)
+        for k in 0..4 do
+            stlib.update_num(&w_ammo[k], refresh)
+            stlib.update_num(&w_maxammo[k], refresh)
+        stlib.update_percent(&w_health, refresh)
+        stlib.update_percent(&w_armor, refresh)
+        stlib.update_bin_icon(&w_armsbg, refresh)
+        for k in 0..6 do stlib.update_mult_icon(&w_arms[k], refresh)
+        stlib.update_mult_icon(&w_faces, refresh)
+        for k in 0..3 do stlib.update_mult_icon(&w_keyboxes[k], refresh)
+        stlib.update_num(&w_frags, refresh)
+
+    let do_refresh = () ->
+        st_firsttime = false
+        // draw status bar background to off-screen buff
+        refresh_background()
+        // and refresh all widgets
+        draw_widgets(true)
+
+    let drawer = (fullscreen: bool, refresh: bool) ->
+        st_statusbaron = !fullscreen || ds.automapactive
+        st_firsttime = st_firsttime || refresh
+        // Do red-/gold-shifts from damage/items
+        do_palette_stuff()
+        // If just after ST_Start(), refresh all
+        if st_firsttime then do_refresh()
+        // Otherwise, update as little as possible
+        else draw_widgets(false)
+
+    let load_graphics = () ->
+        // Load the numbers, tall and short
+        for k in 0..10 do
+            tallnum[k] = v.patch_named_mut("STTNUM%d{(i32) k}")
+            shortnum[k] = v.patch_named_mut("STYSNUM%d{(i32) k}")
+        // Load percent key.
+        // Note: why not load STMINUS here, too?
+        tallpercent = v.patch_named_mut("STTPRCNT")
+        // key cards
+        for k in 0..it.numcards do keys[k] = v.patch_named_mut("STKEYS%d{(i32) k}")
+        // arms background
+        armsbg = v.patch_named_mut("STARMS")
+        // arms ownership widgets
+        for k in 0..6 do
+            // gray #
+            arms[k * 2] = v.patch_named_mut("STGNUM%d{(i32) k + 2}")
+            // yellow #
+            arms[k * 2 + 1] = shortnum[k + 2]
+        // face backgrounds for different color players
+        faceback = v.patch_named_mut("STFB%d{ds.consoleplayer}")
+        // status bar background bits
+        sbar = v.patch_named_mut("STBAR")
+        // face states
+        let mut facenum = 0
+        for k in 0..numpainfaces do
+            for j in 0..numstraightfaces do
+                faces[facenum] = v.patch_named_mut("STFST%d{(i32) k}%d{(i32) j}")
+                facenum = facenum + 1
+            faces[facenum] = v.patch_named_mut("STFTR%d{(i32) k}0")    // turn right
+            faces[facenum + 1] = v.patch_named_mut("STFTL%d{(i32) k}0")    // turn left
+            faces[facenum + 2] = v.patch_named_mut("STFOUCH%d{(i32) k}")    // ouch!
+            faces[facenum + 3] = v.patch_named_mut("STFEVL%d{(i32) k}")    // evil grin ;)
+            faces[facenum + 4] = v.patch_named_mut("STFKILL%d{(i32) k}")    // pissed off
+            facenum = facenum + 5
+        faces[facenum] = v.patch_named_mut("STFGOD0")
+        faces[facenum + 1] = v.patch_named_mut("STFDEAD0")
+
+    let init_data = () ->
+        st_firsttime = true
+        plyr = &ds.players[ds.consoleplayer]
+        st_clock = 0
+        st_automap = false
+        st_statusbaron = true
+        st_oldchat = false
+        st_chat = false
+        st_faceindex = 0
+        st_palette = -1
+        st_oldhealth = -1
+        for k in 0..wp.numweapons do oldweaponsowned[k] = plyr.weaponowned[k]
+        for k in 0..3 do keyboxes[k] = -1
+        stlib.init()
+
+    let create_widgets = () ->
+        // ready weapon ammo
+        stlib.init_num(&w_ready, 44, 171, tallnum.ptr,
+                       &plyr.ammo[items.weaponinfo[plyr.readyweapon].ammo], &st_statusbaron, 3)
+        // the last weapon type
+        w_ready.data = plyr.readyweapon
+        // health percentage
+        stlib.init_percent(&w_health, 90, 171, tallnum.ptr, &plyr.health, &st_statusbaron, tallpercent)
+        // arms background
+        stlib.init_bin_icon(&w_armsbg, 104, 168, armsbg, &st_notdeathmatch, &st_statusbaron)
+        // weapons owned
+        for k in 0..6 do
+            stlib.init_mult_icon(&w_arms[k], 111 + ((i32) k % 3) * 12, 172 + ((i32) k / 3) * 10,
+                                 arms.ptr + (i32) k * 2, default(i32*), &plyr.weaponowned[k + 1], &st_armson)
+        // frags sum
+        stlib.init_num(&w_frags, 138, 171, tallnum.ptr, &st_fragscount, &st_fragson, 2)
+        // faces
+        stlib.init_mult_icon(&w_faces, 143, 168, faces.ptr, &st_faceindex, default(bool*), &st_statusbaron)
+        // armor percentage - should be colored later
+        stlib.init_percent(&w_armor, 221, 171, tallnum.ptr, &plyr.armorpoints, &st_statusbaron, tallpercent)
+        // keyboxes 0-2
+        stlib.init_mult_icon(&w_keyboxes[0], 239, 171, keys.ptr, &keyboxes[0], default(bool*), &st_statusbaron)
+        stlib.init_mult_icon(&w_keyboxes[1], 239, 181, keys.ptr, &keyboxes[1], default(bool*), &st_statusbaron)
+        stlib.init_mult_icon(&w_keyboxes[2], 239, 191, keys.ptr, &keyboxes[2], default(bool*), &st_statusbaron)
+        // ammo count (all four kinds)
+        let ammoy = i32[] { 173, 179, 191, 185 }
+        for k in 0..4 do
+            stlib.init_num(&w_ammo[k], 288, ammoy[k], shortnum.ptr, &plyr.ammo[k], &st_statusbaron, 3)
+            stlib.init_num(&w_maxammo[k], 314, ammoy[k], shortnum.ptr, &plyr.maxammo[k], &st_statusbaron, 3)
+
+    let start = () ->
+        if !st_stopped then stop()
+        init_data()
+        create_widgets()
+        st_stopped = false
+
+    let stop = () ->
+        if st_stopped then return
+        iv.set_palette(w.cache_lump_num(lu_palette, pu.cache))
+        st_stopped = true
+
+    let init = () ->
+        lu_palette = w.get_num_for_name("PLAYPAL")
+        load_graphics()
+        init_cheats()

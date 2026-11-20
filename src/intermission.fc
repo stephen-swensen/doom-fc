@@ -1,0 +1,507 @@
+// Intermission screens (wi_stuff.c): the single-player tally, the
+// animated episode maps and "entering" screens. Ported from
+// linuxdoom-1.10 (GPLv2). The deathmatch / co-op tallies are left out
+// since doom-fc has no net game.
+
+struct wianim =
+    type: i32
+    period: i32
+    nanims: i32
+    locx: i32
+    locy: i32
+    data1: i32
+    data2: i32
+    p0: patch*
+    p1: patch*
+    p2: patch*
+    nexttic: i32
+    lastdrawn: i32
+    ctr: i32
+    state: i32
+
+module wi =
+    let numepisodes = 4
+    let nummaps = 9
+    let titley = 2
+    let spacingy = 33
+    let sp_statsx = 50
+    let sp_statsy = 50
+    let sp_timex = 16
+    let sp_timey = 200 - 32
+    let shownextlocdelay = 4
+
+    let anim_always = 0
+    let anim_random = 1
+    let anim_level = 2
+
+    // states
+    let nostate = -1
+    let statcount = 0
+    let shownextloc = 1
+
+    let lnodes_x = i32[] {
+        185, 148, 69, 209, 116, 166, 71, 135, 71,
+        254, 97, 188, 128, 214, 133, 208, 148, 235,
+        156, 48, 174, 265, 130, 279, 198, 140, 281
+    }
+    let lnodes_y = i32[] {
+        164, 143, 122, 102, 89, 55, 56, 29, 24,
+        25, 50, 64, 78, 92, 130, 136, 140, 158,
+        168, 154, 95, 75, 48, 23, 48, 25, 136
+    }
+
+    let mk = (type: i32, period: i32, nanims: i32, x: i32, y: i32, data1: i32) ->
+        wianim { type = type, period = period, nanims = nanims, locx = x, locy = y, data1 = data1 }
+
+    let mut epsd0animinfo = default(wianim[])
+    let mut epsd1animinfo = default(wianim[])
+    let mut epsd2animinfo = default(wianim[])
+
+    let init_anims = () ->
+        let t3 = 35 / 3
+        epsd0animinfo = alloc(wianim[] {
+            mk(anim_always, t3, 3, 224, 104, 0), mk(anim_always, t3, 3, 184, 160, 0),
+            mk(anim_always, t3, 3, 112, 136, 0), mk(anim_always, t3, 3, 72, 112, 0),
+            mk(anim_always, t3, 3, 88, 96, 0), mk(anim_always, t3, 3, 64, 48, 0),
+            mk(anim_always, t3, 3, 192, 40, 0), mk(anim_always, t3, 3, 136, 16, 0),
+            mk(anim_always, t3, 3, 80, 16, 0), mk(anim_always, t3, 3, 64, 24, 0) })!
+        epsd1animinfo = alloc(wianim[] {
+            mk(anim_level, t3, 1, 128, 136, 1), mk(anim_level, t3, 1, 128, 136, 2),
+            mk(anim_level, t3, 1, 128, 136, 3), mk(anim_level, t3, 1, 128, 136, 4),
+            mk(anim_level, t3, 1, 128, 136, 5), mk(anim_level, t3, 1, 128, 136, 6),
+            mk(anim_level, t3, 1, 128, 136, 7), mk(anim_level, t3, 3, 192, 144, 8),
+            mk(anim_level, t3, 1, 128, 136, 8) })!
+        epsd2animinfo = alloc(wianim[] {
+            mk(anim_always, t3, 3, 104, 168, 0), mk(anim_always, t3, 3, 40, 136, 0),
+            mk(anim_always, t3, 3, 160, 96, 0), mk(anim_always, t3, 3, 104, 80, 0),
+            mk(anim_always, t3, 3, 120, 32, 0), mk(anim_always, 35 / 4, 3, 40, 0, 0) })!
+
+    let anims_for = (epsd: i32) ->
+        if epsd == 0 then epsd0animinfo else if epsd == 1 then epsd1animinfo else epsd2animinfo
+
+    let anim_patch = (a: wianim*, k: i32) ->
+        if k == 0 then a.p0 else if k == 1 then a.p1 else a.p2
+
+    // used to accelerate or skip a stage
+    let mut acceleratestage = 0
+    // wbs->pnum
+    let mut me = 0
+    // specifies current state
+    let mut state = 0
+    // contains information passed into intermission
+    let mut wbs = default(wbstartstruct*)
+    // used for general timing
+    let mut cnt = 0
+    // used for timing of background animation
+    let mut bcnt = 0
+    let mut cnt_kills = 0
+    let mut cnt_items = 0
+    let mut cnt_secret = 0
+    let mut cnt_time = 0
+    let mut cnt_par = 0
+    let mut cnt_pause = 0
+    let mut sp_state = 0
+    let mut snl_pointeron = false
+
+    // GRAPHICS
+    let mut bg = default(patch*)
+    let mut yah = patch*[] { len = 2 }
+    let mut splat = default(patch*)
+    let mut percent = default(patch*)
+    let mut colon = default(patch*)
+    let mut num = patch*[] { len = 10 }
+    let mut wiminus = default(patch*)
+    let mut finished = default(patch*)
+    let mut entering = default(patch*)
+    let mut sp_secret = default(patch*)
+    let mut kills = default(patch*)
+    let mut secret = default(patch*)
+    let mut items = default(patch*)
+    let mut frags = default(patch*)
+    let mut time = default(patch*)
+    let mut par = default(patch*)
+    let mut sucks = default(patch*)
+    let mut lnames = patch*[] { len = 32 }
+
+    let plr = () -> &wbs.plyr[me]
+
+    let slam_background = () ->
+        c.memcpy((any*) v.screens[0], (const any*) v.screens[1], 320i64 * 200)
+        v.mark_rect(0, 0, 320, 200)
+
+    let responder = (ev: event*) -> false
+
+    // Draws "<Levelname> Finished!"
+    let draw_lf = () ->
+        let mut y = titley
+        // draw <LevelName>
+        let ln = lnames[wbs.last]
+        v.draw_patch((320 - ln.width) / 2, y, 0, ln)
+        // draw "Finished!"
+        y = y + (5 * ln.height) / 4
+        v.draw_patch((320 - finished.width) / 2, y, 0, finished)
+
+    // Draws "Entering <LevelName>"
+    let draw_el = () ->
+        let mut y = titley
+        // draw "Entering"
+        v.draw_patch((320 - entering.width) / 2, y, 0, entering)
+        // draw level
+        let ln = lnames[wbs.next]
+        y = y + (5 * ln.height) / 4
+        v.draw_patch((320 - ln.width) / 2, y, 0, ln)
+
+    let draw_on_lnode = (n: i32, pics: const patch*[]) ->
+        let nx = lnodes_x[wbs.epsd * 9 + n]
+        let ny = lnodes_y[wbs.epsd * 9 + n]
+        let mut fits = false
+        let mut k = 0
+        loop
+            let pc = pics[k]
+            let left = nx - pc.leftoffset
+            let top = ny - pc.topoffset
+            let right = left + pc.width
+            let bottom = top + pc.height
+            if left >= 0 && right < 320 && top >= 0 && bottom < 200 then fits = true
+            else k = k + 1
+            if fits || k == pics.len then break
+        if fits && k < pics.len then v.draw_patch(nx, ny, 0, pics[k])
+        else i.print(alloca("Could not place patch on level %d{n + 1}"))
+
+    let init_animated_back = () ->
+        if ds.gamemode == gmode.commercial then return
+        if wbs.epsd > 2 then return
+        let anims = anims_for(wbs.epsd)
+        for k in 0..anims.len do
+            let a = &anims[k]
+            // init variables
+            a.ctr = -1
+            // specify the next time to draw it
+            if a.type == anim_always then a.nexttic = bcnt + 1 + (rnd.m_random() % a.period)
+            else if a.type == anim_random then a.nexttic = bcnt + 1 + a.data2 + (rnd.m_random() % a.data1)
+            else if a.type == anim_level then a.nexttic = bcnt + 1
+
+    let update_animated_back = () ->
+        if ds.gamemode == gmode.commercial then return
+        if wbs.epsd > 2 then return
+        let anims = anims_for(wbs.epsd)
+        for k in 0..anims.len do
+            let a = &anims[k]
+            if bcnt == a.nexttic then
+                if a.type == anim_always then
+                    a.ctr = a.ctr + 1
+                    if a.ctr >= a.nanims then a.ctr = 0
+                    a.nexttic = bcnt + a.period
+                else if a.type == anim_random then
+                    a.ctr = a.ctr + 1
+                    if a.ctr == a.nanims then
+                        a.ctr = -1
+                        a.nexttic = bcnt + a.data2 + (rnd.m_random() % a.data1)
+                    else a.nexttic = bcnt + a.period
+                else if a.type == anim_level then
+                    // gawd-awful hack for level anims
+                    if !(state == statcount && k == 7) && wbs.next == a.data1 then
+                        a.ctr = a.ctr + 1
+                        if a.ctr == a.nanims then a.ctr = a.ctr - 1
+                        a.nexttic = bcnt + a.period
+
+    // (linuxdoom tests `if (commercial)` here, a constant, so it never
+    // drew the animations; the DOS game compares against gamemode)
+    let draw_animated_back = () ->
+        if ds.gamemode == gmode.commercial then return
+        if wbs.epsd > 2 then return
+        let anims = anims_for(wbs.epsd)
+        for k in 0..anims.len do
+            let a = &anims[k]
+            if a.ctr >= 0 then v.draw_patch(a.locx, a.locy, 0, anim_patch(a, a.ctr))
+
+    // Draws a number. If digits > 0, then use that many digits minimum,
+    // otherwise only use as many as necessary. Returns new x position.
+    let draw_num = (x0: i32, y: i32, n0: i32, digits0: i32) ->
+        let fontwidth = (i32) num[0].width
+        let mut digits = digits0
+        let mut n = n0
+        let mut x = x0
+        if digits < 0 then
+            if n == 0 then
+                // make variable-length zeros 1 digit long
+                digits = 1
+            else
+                // figure out # of digits in #
+                digits = 0
+                let mut temp = n
+                loop
+                    if temp == 0 then break
+                    temp = temp / 10
+                    digits = digits + 1
+        let neg = n < 0
+        if neg then n = 0 - n
+        // if non-number, do not draw it
+        if n == 1994 then return 0
+        // draw the new number
+        loop
+            if digits == 0 then break
+            digits = digits - 1
+            x = x - fontwidth
+            v.draw_patch(x, y, 0, num[n % 10])
+            n = n / 10
+        // draw a minus sign if necessary
+        if neg then
+            x = x - 8
+            v.draw_patch(x, y, 0, wiminus)
+        x
+
+    let draw_percent = (x: i32, y: i32, pc: i32) ->
+        if pc < 0 then return
+        v.draw_patch(x, y, 0, percent)
+        ignore draw_num(x, y, pc, -1)
+
+    // Display level completion time and par, or "sucks" message if overflow.
+    let draw_time = (x0: i32, y: i32, t: i32) ->
+        if t < 0 then return
+        let mut x = x0
+        if t <= 61 * 59 then
+            let mut div = 1
+            loop
+                let n = (t / div) % 60
+                x = draw_num(x, y, n, 2) - colon.width
+                div = div * 60
+                // draw
+                if div == 60 || t / div != 0 then v.draw_patch(x, y, 0, colon)
+                if t / div == 0 then break
+        else
+            // "sucks"
+            v.draw_patch(x - sucks.width, y, 0, sucks)
+
+    let init_no_state = () ->
+        state = nostate
+        acceleratestage = 0
+        cnt = 10
+
+    let update_no_state = () ->
+        update_animated_back()
+        cnt = cnt - 1
+        if cnt == 0 then g_world_done()
+
+    let init_show_next_loc = () ->
+        state = shownextloc
+        acceleratestage = 0
+        cnt = shownextlocdelay * 35
+        init_animated_back()
+
+    let update_show_next_loc = () ->
+        update_animated_back()
+        cnt = cnt - 1
+        if cnt == 0 || acceleratestage != 0 then init_no_state()
+        else snl_pointeron = (cnt & 31) < 20
+
+    let draw_show_next_loc = () ->
+        // draw animated background
+        slam_background()
+        draw_animated_back()
+        if ds.gamemode != gmode.commercial then
+            if wbs.epsd > 2 then
+                draw_el()
+                return
+            let last = if wbs.last == 8 then wbs.next - 1 else wbs.last
+            let splats = patch*[] { splat }
+            // draw a splat on taken cities.
+            for k in 0..last + 1 do draw_on_lnode((i32) k, splats)
+            // splat the secret level?
+            if wbs.didsecret then draw_on_lnode(8, splats)
+            // draw flashing ptr
+            if snl_pointeron then draw_on_lnode(wbs.next, yah)
+        // draws which level you are entering..
+        if ds.gamemode != gmode.commercial || wbs.next != 30 then draw_el()
+
+    let draw_no_state = () ->
+        snl_pointeron = true
+        draw_show_next_loc()
+
+    let init_stats = () ->
+        state = statcount
+        acceleratestage = 0
+        sp_state = 1
+        cnt_kills = -1
+        cnt_items = -1
+        cnt_secret = -1
+        cnt_time = -1
+        cnt_par = -1
+        cnt_pause = 35
+        init_animated_back()
+
+    let update_stats = () ->
+        update_animated_back()
+        let pl = plr()
+        if acceleratestage != 0 && sp_state != 10 then
+            acceleratestage = 0
+            cnt_kills = (pl.skills * 100) / wbs.maxkills
+            cnt_items = (pl.sitems * 100) / wbs.maxitems
+            cnt_secret = (pl.ssecret * 100) / wbs.maxsecret
+            cnt_time = pl.stime / 35
+            cnt_par = wbs.partime / 35
+            snd.start_sound(default(any*), sfx.barexp)
+            sp_state = 10
+        if sp_state == 2 then
+            cnt_kills = cnt_kills + 2
+            if (bcnt & 3) == 0 then snd.start_sound(default(any*), sfx.pistol)
+            if cnt_kills >= (pl.skills * 100) / wbs.maxkills then
+                cnt_kills = (pl.skills * 100) / wbs.maxkills
+                snd.start_sound(default(any*), sfx.barexp)
+                sp_state = sp_state + 1
+        else if sp_state == 4 then
+            cnt_items = cnt_items + 2
+            if (bcnt & 3) == 0 then snd.start_sound(default(any*), sfx.pistol)
+            if cnt_items >= (pl.sitems * 100) / wbs.maxitems then
+                cnt_items = (pl.sitems * 100) / wbs.maxitems
+                snd.start_sound(default(any*), sfx.barexp)
+                sp_state = sp_state + 1
+        else if sp_state == 6 then
+            cnt_secret = cnt_secret + 2
+            if (bcnt & 3) == 0 then snd.start_sound(default(any*), sfx.pistol)
+            if cnt_secret >= (pl.ssecret * 100) / wbs.maxsecret then
+                cnt_secret = (pl.ssecret * 100) / wbs.maxsecret
+                snd.start_sound(default(any*), sfx.barexp)
+                sp_state = sp_state + 1
+        else if sp_state == 8 then
+            if (bcnt & 3) == 0 then snd.start_sound(default(any*), sfx.pistol)
+            cnt_time = cnt_time + 3
+            if cnt_time >= pl.stime / 35 then cnt_time = pl.stime / 35
+            cnt_par = cnt_par + 3
+            if cnt_par >= wbs.partime / 35 then
+                cnt_par = wbs.partime / 35
+                if cnt_time >= pl.stime / 35 then
+                    snd.start_sound(default(any*), sfx.barexp)
+                    sp_state = sp_state + 1
+        else if sp_state == 10 then
+            if acceleratestage != 0 then
+                snd.start_sound(default(any*), sfx.sgcock)
+                if ds.gamemode == gmode.commercial then init_no_state()
+                else init_show_next_loc()
+        else if (sp_state & 1) != 0 then
+            cnt_pause = cnt_pause - 1
+            if cnt_pause == 0 then
+                sp_state = sp_state + 1
+                cnt_pause = 35
+
+    let draw_stats = () ->
+        // line height
+        let lh = (3 * num[0].height) / 2
+        slam_background()
+        // draw animated background
+        draw_animated_back()
+        draw_lf()
+        v.draw_patch(sp_statsx, sp_statsy, 0, kills)
+        draw_percent(320 - sp_statsx, sp_statsy, cnt_kills)
+        v.draw_patch(sp_statsx, sp_statsy + lh, 0, items)
+        draw_percent(320 - sp_statsx, sp_statsy + lh, cnt_items)
+        v.draw_patch(sp_statsx, sp_statsy + 2 * lh, 0, sp_secret)
+        draw_percent(320 - sp_statsx, sp_statsy + 2 * lh, cnt_secret)
+        v.draw_patch(sp_timex, sp_timey, 0, time)
+        draw_time(320 / 2 - sp_timex, sp_timey, cnt_time)
+        if wbs.epsd < 3 then
+            v.draw_patch(320 / 2 + sp_timex, sp_timey, 0, par)
+            draw_time(320 - sp_timex, sp_timey, cnt_par)
+
+    let check_for_accelerate = () ->
+        // check for button presses to skip delays
+        for k in 0..dd.maxplayers do
+            if ds.playeringame[k] then
+                let pl = &ds.players[k]
+                if ((i32) pl.cmd.buttons & bt.attack) != 0 then
+                    if !pl.attackdown then acceleratestage = 1
+                    pl.attackdown = true
+                else
+                    pl.attackdown = false
+                if ((i32) pl.cmd.buttons & bt.use) != 0 then
+                    if !pl.usedown then acceleratestage = 1
+                    pl.usedown = true
+                else
+                    pl.usedown = false
+
+    // Updates stuff each tick
+    let ticker = () ->
+        // counter for general background animation
+        bcnt = bcnt + 1
+        if bcnt == 1 then
+            // intermission music
+            if ds.gamemode == gmode.commercial then snd.change_music(mus.dm2int, true)
+            else snd.change_music(mus.inter, true)
+        check_for_accelerate()
+        if state == statcount then update_stats()
+        else if state == shownextloc then update_show_next_loc()
+        else update_no_state()
+
+    let load_data = () ->
+        let name = if ds.gamemode == gmode.commercial || (ds.gamemode == gmode.retail && wbs.epsd == 3) then "INTERPIC"
+                   else (const str) "WIMAP%d{wbs.epsd}"
+        bg = (patch*) w.cache_lump_name(name, pu.cache)
+        v.draw_patch(0, 0, 1, bg)
+        if ds.gamemode == gmode.commercial then
+            for k in 0..32 do lnames[k] = v.patch_named_mut("CWILV%02d{(i32) k}")
+        else
+            for k in 0..nummaps do lnames[k] = v.patch_named_mut("WILV%d{wbs.epsd}%d{(i32) k}")
+            // you are here
+            yah[0] = v.patch_named_mut("WIURH0")
+            // you are here (alt.)
+            yah[1] = v.patch_named_mut("WIURH1")
+            // splat
+            splat = v.patch_named_mut("WISPLAT")
+            if wbs.epsd < 3 then
+                let anims = anims_for(wbs.epsd)
+                for j in 0..anims.len do
+                    let a = &anims[j]
+                    for k in 0..a.nanims do
+                        // MONDO HACK! (E2's ninth animation reuses the fifth's frames)
+                        let pc = if wbs.epsd != 1 || j != 8 then v.patch_named_mut("WIA%d{wbs.epsd}%02d{(i32) j}%02d{(i32) k}")
+                                 else anim_patch(&epsd1animinfo[4], (i32) k)
+                        if k == 0 then a.p0 = pc else if k == 1 then a.p1 = pc else a.p2 = pc
+        // More hacks on minus sign.
+        wiminus = v.patch_named_mut("WIMINUS")
+        for k in 0..10 do num[k] = v.patch_named_mut("WINUM%d{(i32) k}")
+        // percent sign
+        percent = v.patch_named_mut("WIPCNT")
+        // "finished"
+        finished = v.patch_named_mut("WIF")
+        // "entering"
+        entering = v.patch_named_mut("WIENTER")
+        // "kills"
+        kills = v.patch_named_mut("WIOSTK")
+        // "scrt"
+        secret = v.patch_named_mut("WIOSTS")
+        // "secret"
+        sp_secret = v.patch_named_mut("WISCRT2")
+        items = v.patch_named_mut("WIOSTI")
+        // "frgs"
+        frags = v.patch_named_mut("WIFRGS")
+        // ":"
+        colon = v.patch_named_mut("WICOLON")
+        // "time"
+        time = v.patch_named_mut("WITIME")
+        // "sucks"
+        sucks = v.patch_named_mut("WISUCKS")
+        // "par"
+        par = v.patch_named_mut("WIPAR")
+
+    let drawer = () ->
+        if state == statcount then draw_stats()
+        else if state == shownextloc then draw_show_next_loc()
+        else draw_no_state()
+
+    let init_variables = (wbstartstruct: wbstartstruct*) ->
+        wbs = wbstartstruct
+        acceleratestage = 0
+        cnt = 0
+        bcnt = 0
+        me = wbs.pnum
+        if wbs.maxkills == 0 then wbs.maxkills = 1
+        if wbs.maxitems == 0 then wbs.maxitems = 1
+        if wbs.maxsecret == 0 then wbs.maxsecret = 1
+        if ds.gamemode != gmode.retail then
+            if wbs.epsd > 2 then wbs.epsd = wbs.epsd - 3
+
+    let start = (wbstartstruct: wbstartstruct*) ->
+        if epsd0animinfo.len == 0 then init_anims()
+        init_variables(wbstartstruct)
+        load_data()
+        init_stats()

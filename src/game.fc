@@ -1,0 +1,736 @@
+// g_game: ticcmd building, game flow between levels, demos and
+// save/load. Ported from linuxdoom-1.10 (GPLv2).
+
+module g =
+    let savegamesize = 0x2c000
+    let savestringsize = 24
+    let versionsize = 16
+    let maxplmove = 0x32
+    let turbothreshold = 0x32
+    let slowturntics = 6
+    let numkeys = 256
+    let bodyquesize = 32
+    let demomarker = 0x80
+
+    let mut forwardmove = i32[] { 0x19, 0x32 }
+    let mut sidemove = i32[] { 0x18, 0x28 }
+    let angleturn = i32[] { 640, 1280, 320 }    // + slow turn
+
+    let mut gamekeydown = bool[] { len = 256 }
+    let mut turnheld = 0    // for accelerative turning
+    let mut mousebuttons = bool[] { len = 3 }
+    // mouse values are used once
+    let mut mousex = 0
+    let mut mousey = 0
+    let mut dclicktime = 0
+    let mut dclickstate = false
+    let mut dclicks = 0
+    let mut dclicktime2 = 0
+    let mut dclickstate2 = false
+    let mut dclicks2 = 0
+    let mut starttime = 0
+    let mut bodyque = mobj*[] { len = 32 }
+    let mut consistancy = i16[] { len = 4 * 12 }
+
+    let mut demoname = default(str)
+    let mut demobuffer = default(u8*)
+    let mut demo_p = default(u8*)
+    let mut demoend = default(u8*)
+    let mut defdemoname = ""
+    let mut savebuffer = default(u8*)
+    let mut turbomessage = default(str)
+    let mut tictrace = false
+
+    let player_names = (const str)[] { dstr.hustr_plrgreen, dstr.hustr_plrindigo, dstr.hustr_plrbrown, dstr.hustr_plrred }
+
+    // Builds a ticcmd from all of the available inputs or reads it from
+    // the demo buffer. If recording a demo, write it out
+    let build_ticcmd = (cmd: ticcmd*) ->
+        c.memset((any*) cmd, 0, sizeof(ticcmd))
+        cmd.consistancy = consistancy[ds.consoleplayer * 12 + ds.maketic % 12]
+        let strafe = gamekeydown[misc.key_strafe] || mousebuttons[misc.mousebstrafe]
+        let speed = if gamekeydown[misc.key_speed] then 1 else 0
+        let mut forward = 0
+        let mut side = 0
+        // use two stage accelerative turning on the keyboard and joystick
+        if gamekeydown[misc.key_right] || gamekeydown[misc.key_left] then turnheld = turnheld + ds.ticdup
+        else turnheld = 0
+        let tspeed = if turnheld < slowturntics then 2 else speed    // slow turn
+        // let movement keys cancel each other out
+        if strafe then
+            if gamekeydown[misc.key_right] then side = side + sidemove[speed]
+            if gamekeydown[misc.key_left] then side = side - sidemove[speed]
+        else
+            if gamekeydown[misc.key_right] then cmd.angleturn = (i16) ((i32) cmd.angleturn - angleturn[tspeed])
+            if gamekeydown[misc.key_left] then cmd.angleturn = (i16) ((i32) cmd.angleturn + angleturn[tspeed])
+        if gamekeydown[misc.key_up] then forward = forward + forwardmove[speed]
+        if gamekeydown[misc.key_down] then forward = forward - forwardmove[speed]
+        if gamekeydown[misc.key_straferight] then side = side + sidemove[speed]
+        if gamekeydown[misc.key_strafeleft] then side = side - sidemove[speed]
+        // buttons
+        cmd.chatchar = 0u8
+        if gamekeydown[misc.key_fire] || mousebuttons[misc.mousebfire] then
+            cmd.buttons = cmd.buttons | (u8) bt.attack
+        if gamekeydown[misc.key_use] then
+            cmd.buttons = cmd.buttons | (u8) bt.use
+            // clear double clicks if hit use button
+            dclicks = 0
+        // chainsaw overrides
+        let mut done = false
+        for k in 0..wp.numweapons - 1 do
+            if !done && gamekeydown['1' + (i32) k] then
+                cmd.buttons = cmd.buttons | (u8) bt.change
+                cmd.buttons = cmd.buttons | (u8) ((i32) k << bt.weaponshift)
+                done = true
+        // mouse
+        if mousebuttons[misc.mousebforward] then forward = forward + forwardmove[speed]
+        // forward double click
+        if mousebuttons[misc.mousebforward] != dclickstate && dclicktime > 1 then
+            dclickstate = mousebuttons[misc.mousebforward]
+            if dclickstate then dclicks = dclicks + 1
+            if dclicks == 2 then
+                cmd.buttons = cmd.buttons | (u8) bt.use
+                dclicks = 0
+            else
+                dclicktime = 0
+        else
+            dclicktime = dclicktime + ds.ticdup
+            if dclicktime > 20 then
+                dclicks = 0
+                dclickstate = false
+        // strafe double click
+        let bstrafe = mousebuttons[misc.mousebstrafe]
+        if bstrafe != dclickstate2 && dclicktime2 > 1 then
+            dclickstate2 = bstrafe
+            if dclickstate2 then dclicks2 = dclicks2 + 1
+            if dclicks2 == 2 then
+                cmd.buttons = cmd.buttons | (u8) bt.use
+                dclicks2 = 0
+            else
+                dclicktime2 = 0
+        else
+            dclicktime2 = dclicktime2 + ds.ticdup
+            if dclicktime2 > 20 then
+                dclicks2 = 0
+                dclickstate2 = false
+        forward = forward + mousey
+        if strafe then side = side + mousex * 2
+        else cmd.angleturn = (i16) ((i32) cmd.angleturn - mousex * 0x8)
+        mousex = 0
+        mousey = 0
+        if forward > maxplmove then forward = maxplmove
+        else if forward < 0 - maxplmove then forward = 0 - maxplmove
+        if side > maxplmove then side = maxplmove
+        else if side < 0 - maxplmove then side = 0 - maxplmove
+        cmd.forwardmove = (i8) ((i32) cmd.forwardmove + forward)
+        cmd.sidemove = (i8) ((i32) cmd.sidemove + side)
+        // special buttons
+        if ds.sendpause then
+            ds.sendpause = false
+            cmd.buttons = (u8) (bt.special | bt.bts_pause)
+        if ds.sendsave then
+            ds.sendsave = false
+            cmd.buttons = (u8) (bt.special | bt.bts_savegame | (ds.savegameslot << bt.bts_saveshift))
+
+    let do_load_level = () ->
+        // Set the sky map. First thing, we have a dummy sky texture name,
+        // a flat. The data is in the WAD only because we look for an
+        // actual index, instead of simply setting one.
+        ds.skyflatnum = r.flat_num_for_name("F_SKY1")
+        // DOOM determines the sky texture to be used depending on the
+        // current episode, and the game version.
+        if ds.gamemode == gmode.commercial then
+            ds.skytexture = r.texture_num_for_name("SKY3")
+            if ds.gamemap < 12 then ds.skytexture = r.texture_num_for_name("SKY1")
+            else if ds.gamemap < 21 then ds.skytexture = r.texture_num_for_name("SKY2")
+        ds.levelstarttic = ds.gametic    // for time calculation
+        if ds.wipegamestate == gs.level then ds.wipegamestate = gs.force_wipe    // force a wipe
+        ds.gamestate = gs.level
+        for k in 0..dd.maxplayers do
+            if ds.playeringame[k] && ds.players[k].playerstate == pst.dead then ds.players[k].playerstate = pst.reborn
+            for j in 0..dd.maxplayers do ds.players[k].frags[j] = 0
+        p.setup_level(ds.gameepisode, ds.gamemap, 0, ds.gameskill)
+        ds.displayplayer = ds.consoleplayer    // view the guy you are playing
+        starttime = i.get_time()
+        ds.gameaction = ga.nothing
+        // clear cmd building stuff
+        for k in 0..numkeys do gamekeydown[k] = false
+        mousex = 0
+        mousey = 0
+        ds.sendpause = false
+        ds.sendsave = false
+        ds.paused = false
+        for k in 0..3 do mousebuttons[k] = false
+
+    // Get info needed to make ticcmd_ts for the players.
+    let responder = (ev: event*) ->
+        // allow spy mode changes even during the demo
+        if ds.gamestate == gs.level && ev.type == evt.keydown && ev.data1 == dd.key_f12
+            && (ds.singledemo || ds.deathmatch == 0) then
+            // spy mode
+            loop
+                ds.displayplayer = ds.displayplayer + 1
+                if ds.displayplayer == dd.maxplayers then ds.displayplayer = 0
+                if ds.playeringame[ds.displayplayer] || ds.displayplayer == ds.consoleplayer then break
+            return true
+        // any other key pops up menu if in demos
+        if ds.gameaction == ga.nothing && !ds.singledemo && (ds.demoplayback || ds.gamestate == gs.demoscreen) then
+            if ev.type == evt.keydown || (ev.type == evt.mouse && ev.data1 != 0) then
+                m.start_control_panel()
+                return true
+            return false
+        if ds.gamestate == gs.level then
+            if hu.responder(ev) then return true    // chat ate the event
+            if st.responder(ev) then return true    // status window ate it
+            if amap.responder(ev) then return true    // automap ate it
+        if ds.gamestate == gs.finale then
+            if f.responder(ev) then return true    // finale ate the event
+        if ev.type == evt.keydown then
+            if ev.data1 == dd.key_pause then
+                ds.sendpause = true
+                return true
+            if ev.data1 < numkeys && ev.data1 >= 0 then gamekeydown[ev.data1] = true
+            return true    // eat key down events
+        else if ev.type == evt.keyup then
+            if ev.data1 < numkeys && ev.data1 >= 0 then gamekeydown[ev.data1] = false
+            return false    // always let key up events filter down
+        else if ev.type == evt.mouse then
+            mousebuttons[0] = (ev.data1 & 1) != 0
+            mousebuttons[1] = (ev.data1 & 2) != 0
+            mousebuttons[2] = (ev.data1 & 4) != 0
+            mousex = ev.data2 * (ds.mouse_sensitivity + 5) / 10
+            mousey = ev.data3 * (ds.mouse_sensitivity + 5) / 10
+            return true    // eat events
+        false
+
+    // Make ticcmd_ts for the players.
+    let ticker = () ->
+        // do player reborns if needed
+        for k in 0..dd.maxplayers do
+            if ds.playeringame[k] && ds.players[k].playerstate == pst.reborn then do_reborn((i32) k)
+        // do things to change the game state
+        loop
+            if ds.gameaction == ga.nothing then break
+            let ga0 = ds.gameaction
+            if ga0 == ga.loadlevel then do_load_level()
+            else if ga0 == ga.newgame then do_new_game()
+            else if ga0 == ga.loadgame then do_load_game()
+            else if ga0 == ga.savegame then do_save_game()
+            else if ga0 == ga.playdemo then do_play_demo()
+            else if ga0 == ga.completed then do_completed()
+            else if ga0 == ga.victory then f.start_finale()
+            else if ga0 == ga.worlddone then do_world_done()
+            else if ga0 == ga.screenshot then
+                misc.screen_shot()
+                ds.gameaction = ga.nothing
+        // get commands, check consistancy, and build new consistancy check
+        let buf = (ds.gametic / ds.ticdup) % ds.backuptics
+        for k in 0..dd.maxplayers do
+            if ds.playeringame[k] then
+                let cmd = &ds.players[k].cmd
+                *cmd = ds.netcmds[(i32) k * ds.backuptics + buf]
+                if ds.demoplayback then read_demo_ticcmd(cmd)
+                if ds.demorecording then write_demo_ticcmd(cmd)
+                // check for turbo cheats
+                if (i32) cmd.forwardmove > turbothreshold && (ds.gametic & 31) == 0
+                    && ((ds.gametic >> 5) & 3) == (i32) k then
+                    if turbomessage.len > 0 then free(turbomessage)
+                    turbomessage = alloc("%s{player_names[k]} is turbo!")!
+                    ds.players[ds.consoleplayer].message = turbomessage
+        // check for special buttons
+        for k in 0..dd.maxplayers do
+            if ds.playeringame[k] then
+                let b = (i32) ds.players[k].cmd.buttons
+                if (b & bt.special) != 0 then
+                    let sb = b & bt.specialmask
+                    if sb == bt.bts_pause then
+                        ds.paused = !ds.paused
+                        if ds.paused then snd.pause_sound() else snd.resume_sound()
+                    else if sb == bt.bts_savegame then
+                        if ds.savedescription[0] == 0u8 then
+                            let ng = "NET GAME"
+                            for j in 0..ng.len do ds.savedescription[j] = ng[j]
+                        ds.savegameslot = (b & bt.bts_savemask) >> bt.bts_saveshift
+                        ds.gameaction = ga.savegame
+        // do main actions
+        let state = ds.gamestate
+        if state == gs.level then
+            p.ticker()
+            st.ticker()
+            amap.ticker()
+            hu.ticker()
+        else if state == gs.intermission then wi.ticker()
+        else if state == gs.finale then f.ticker()
+        else if state == gs.demoscreen then d_page_ticker()
+        // -tictrace: one line per tic, the format tools/refdemo prints
+        if tictrace then
+            let mo = ds.players[ds.consoleplayer].mo
+            if c.not_null(mo) then
+                i.print(alloca("T %d{ds.gametic} %d{rnd.prndindex} %d{mo.x} %d{mo.y} %d{ds.players[ds.consoleplayer].health}\n"))
+
+    // Can when a player completes a level.
+    let player_finish_level = (n: i32) ->
+        let pl = &ds.players[n]
+        for k in 0..pw.numpowers do pl.powers[k] = 0
+        for k in 0..it.numcards do pl.cards[k] = false
+        pl.mo.flags = pl.mo.flags & ~mf.shadow    // cancel invisibility
+        pl.extralight = 0    // cancel gun flashes
+        pl.fixedcolormap = 0    // cancel ir gogles
+        pl.damagecount = 0    // no palette changes
+        pl.bonuscount = 0
+
+    // Called after a player dies; almost everything is cleared and
+    // initialized
+    let player_reborn = (n: i32) ->
+        let pl = &ds.players[n]
+        let frags = i32[] { pl.frags[0], pl.frags[1], pl.frags[2], pl.frags[3] }
+        let killcount = pl.killcount
+        let itemcount = pl.itemcount
+        let secretcount = pl.secretcount
+        c.memset((any*) pl, 0, sizeof(player))
+        for k in 0..4 do pl.frags[k] = frags[k]
+        pl.killcount = killcount
+        pl.itemcount = itemcount
+        pl.secretcount = secretcount
+        pl.usedown = true
+        pl.attackdown = true    // don't do anything immediately
+        pl.playerstate = pst.live
+        pl.health = p.maxhealth
+        pl.readyweapon = wp.pistol
+        pl.pendingweapon = wp.pistol
+        pl.weaponowned[wp.fist] = true
+        pl.weaponowned[wp.pistol] = true
+        pl.ammo[am.clip] = 50
+        for k in 0..am.numammo do pl.maxammo[k] = p.maxammo[k]
+
+    // Returns false if the player cannot be respawned at the given
+    // mapthing_t spot because something is occupying it
+    let check_spot = (playernum: i32, mthing: const mapthing*) ->
+        if c.is_null(ds.players[playernum].mo) then
+            // first spawn of level, before corpses
+            for k in 0..playernum do
+                if ds.players[k].mo.x == mthing.x << 16 && ds.players[k].mo.y == mthing.y << 16 then return false
+            return true
+        let x = mthing.x << 16
+        let y = mthing.y << 16
+        if !p.check_position(ds.players[playernum].mo, x, y) then return false
+        // flush an old corpse if needed
+        if ds.bodyqueslot >= bodyquesize then p.remove_mobj(bodyque[ds.bodyqueslot % bodyquesize])
+        bodyque[ds.bodyqueslot % bodyquesize] = ds.players[playernum].mo
+        ds.bodyqueslot = ds.bodyqueslot + 1
+        // spawn a teleport fog
+        let ss = r.point_in_subsector(x, y)
+        let an = fx.fine(fx.ang45 * (u32) (mthing.angle / 45))
+        let mo = p.spawn_mobj(x + 20 * p.finecosine(an), y + 20 * p.finesine(an), ss.sector.floorheight, mt.tfog)
+        if ds.players[ds.consoleplayer].viewz != 1 then snd.start_sound(mo, sfx.telept)    // don't start sound on first frame
+        true
+
+    // Spawns a player at one of the random death match spots called at
+    // level load and each death
+    let death_match_spawn_player = (playernum: i32) ->
+        let selections = ds.deathmatch_p
+        if selections < 4 then i.fatal(alloca("Only %d{selections} deathmatch spots, 4 required"))
+        for _ in 0..20 do
+            let k = rnd.p_random() % selections
+            if check_spot(playernum, &ds.deathmatchstarts[k]) then
+                ds.deathmatchstarts[k].type = playernum + 1
+                p.spawn_player(&ds.deathmatchstarts[k])
+                return
+        // no good spot, so the player will probably get stuck
+        p.spawn_player(&ds.playerstarts[playernum])
+
+    let do_reborn = (playernum: i32) ->
+        if !ds.netgame then
+            // reload the level from scratch
+            ds.gameaction = ga.loadlevel
+        else
+            // respawn at the start
+            // first dissasociate the corpse
+            ds.players[playernum].mo.player = default(player*)
+            // spawn at random spot if in death match
+            if ds.deathmatch != 0 then
+                death_match_spawn_player(playernum)
+                return
+            if check_spot(playernum, &ds.playerstarts[playernum]) then
+                p.spawn_player(&ds.playerstarts[playernum])
+                return
+            // try to spawn at one of the other players spots
+            for k in 0..dd.maxplayers do
+                if check_spot(playernum, &ds.playerstarts[k]) then
+                    ds.playerstarts[k].type = playernum + 1    // fake as other player
+                    p.spawn_player(&ds.playerstarts[k])
+                    ds.playerstarts[k].type = (i32) k + 1    // restore
+                    return
+                // he's going to be inside something. Too bad.
+            p.spawn_player(&ds.playerstarts[playernum])
+
+    // DOOM Par Times
+    let pars = i32[] {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 30, 75, 120, 90, 165, 180, 180, 30, 165,
+        0, 90, 90, 90, 120, 90, 360, 240, 30, 170,
+        0, 90, 45, 90, 150, 90, 90, 165, 30, 135
+    }
+    // DOOM II Par Times
+    let cpars = i32[] {
+        30, 90, 120, 120, 90, 150, 120, 120, 270, 90,    //  1-10
+        210, 150, 150, 150, 210, 150, 420, 150, 210, 150,    // 11-20
+        240, 150, 180, 150, 150, 300, 330, 420, 300, 180,    // 21-30
+        120, 30    // 31-32
+    }
+
+    let do_completed = () ->
+        ds.gameaction = ga.nothing
+        for k in 0..dd.maxplayers do
+            if ds.playeringame[k] then player_finish_level((i32) k)    // take away cards and stuff
+        if ds.automapactive then amap.stop()
+        if ds.gamemode != gmode.commercial then
+            if ds.gamemap == 8 then
+                // victory
+                ds.gameaction = ga.victory
+                return
+            if ds.gamemap == 9 then
+                // exit secret level
+                for k in 0..dd.maxplayers do ds.players[k].didsecret = true
+        let wm = &ds.wminfo
+        wm.didsecret = ds.players[ds.consoleplayer].didsecret
+        wm.epsd = ds.gameepisode - 1
+        wm.last = ds.gamemap - 1
+        // wminfo.next is 0 biased, unlike gamemap
+        if ds.gamemode == gmode.commercial then
+            if ds.secretexit then
+                if ds.gamemap == 15 then wm.next = 30
+                else if ds.gamemap == 31 then wm.next = 31
+            else
+                if ds.gamemap == 31 || ds.gamemap == 32 then wm.next = 15
+                else wm.next = ds.gamemap
+        else
+            if ds.secretexit then
+                wm.next = 8    // go to secret level
+            else if ds.gamemap == 9 then
+                // returning from secret level
+                let ep = ds.gameepisode
+                if ep == 1 then wm.next = 3
+                else if ep == 2 then wm.next = 5
+                else if ep == 3 then wm.next = 6
+                else if ep == 4 then wm.next = 2
+            else
+                wm.next = ds.gamemap    // go to next level
+        wm.maxkills = ds.totalkills
+        wm.maxitems = ds.totalitems
+        wm.maxsecret = ds.totalsecret
+        wm.maxfrags = 0
+        if ds.gamemode == gmode.commercial then wm.partime = 35 * cpars[ds.gamemap - 1]
+        else wm.partime = 35 * pars[ds.gameepisode * 10 + ds.gamemap]
+        wm.pnum = ds.consoleplayer
+        for k in 0..dd.maxplayers do
+            let pl = &ds.players[k]
+            let wp0 = &wm.plyr[k]
+            wp0.in_game = ds.playeringame[k]
+            wp0.skills = pl.killcount
+            wp0.sitems = pl.itemcount
+            wp0.ssecret = pl.secretcount
+            wp0.stime = ds.leveltime
+            for j in 0..4 do wp0.frags[j] = pl.frags[j]
+        ds.gamestate = gs.intermission
+        ds.viewactive = false
+        ds.automapactive = false
+        wi.start(wm)
+
+    let world_done = () ->
+        ds.gameaction = ga.worlddone
+        if ds.secretexit then ds.players[ds.consoleplayer].didsecret = true
+        if ds.gamemode == gmode.commercial then
+            let mp = ds.gamemap
+            if ((mp == 15 || mp == 31) && ds.secretexit) || mp == 6 || mp == 11 || mp == 20 || mp == 30 then
+                f.start_finale()
+
+    let do_world_done = () ->
+        ds.gamestate = gs.level
+        ds.gamemap = ds.wminfo.next + 1
+        do_load_level()
+        ds.gameaction = ga.nothing
+        ds.viewactive = true
+
+
+
+    let do_load_game = () ->
+        ds.gameaction = ga.nothing
+        match misc.read_file(ds.savename) with
+        | none -> void()
+        | some(buf) ->
+            defer free(buf)
+            p.save_set(buf.ptr + savestringsize)
+            // skip the description field
+            let vcheck = "version %d{dd.version}"
+            let have = c.name_view(p.save_get(), versionsize)
+            if have != vcheck then return    // bad version
+            p.save_skip(versionsize)
+            let skill = p.save_read_byte()
+            let episode = p.save_read_byte()
+            let map = p.save_read_byte()
+            for k in 0..dd.maxplayers do ds.playeringame[k] = p.save_read_byte() != 0
+            // load a base level
+            init_new(skill, episode, map)
+            // get the times
+            let a = p.save_read_byte()
+            let b = p.save_read_byte()
+            let cc = p.save_read_byte()
+            ds.leveltime = (a << 16) + (b << 8) + cc
+            // dearchive all the modifications
+            p.unarchive_players()
+            p.unarchive_world()
+            p.unarchive_thinkers()
+            p.unarchive_specials()
+            if *p.save_get() != 0x1du8 then i.fatal("Bad savegame")
+            if ds.setsizeneeded then r.execute_set_view_size()
+            // draw the pattern into the back screen
+            r.fill_back_screen()
+
+    let do_save_game = () ->
+        let name = misc.save_name(ds.savegameslot)
+        defer free(name)
+        if c.is_null(savebuffer) then savebuffer = (u8*) c.zalloc((i64) savegamesize + 0x10000)
+        p.save_set(savebuffer)
+        c.memcpy((any*) p.save_get(), (const any*) ds.savedescription.ptr, (i64) savestringsize)
+        p.save_skip(savestringsize)
+        let vs = "version %d{dd.version}"
+        let sp0 = p.save_get()
+        for k in 0..versionsize do *(sp0 + k) = if k < vs.len then vs[k] else 0u8
+        p.save_skip(versionsize)
+        let wr = (b: i32) -> p.save_write_byte(b)
+        wr(ds.gameskill)
+        wr(ds.gameepisode)
+        wr(ds.gamemap)
+        for k in 0..dd.maxplayers do wr(if ds.playeringame[k] then 1 else 0)
+        wr(ds.leveltime >> 16)
+        wr(ds.leveltime >> 8)
+        wr(ds.leveltime)
+        p.archive_players()
+        p.archive_world()
+        p.archive_thinkers()
+        p.archive_specials()
+        wr(0x1d)    // consistancy marker
+        let length = (i64) (p.save_get() - savebuffer)
+        if length > (i64) savegamesize then i.fatal("Savegame buffer overrun")
+        ignore misc.write_file(name, savebuffer, length)
+        ds.gameaction = ga.nothing
+        ds.savedescription[0] = 0u8
+        ds.players[ds.consoleplayer].message = dstr.ggsaved
+        // draw the pattern into the back screen
+        r.fill_back_screen()
+
+    let do_new_game = () ->
+        ds.demoplayback = false
+        ds.netdemo = false
+        ds.netgame = false
+        ds.deathmatch = 0
+        ds.playeringame[1] = false
+        ds.playeringame[2] = false
+        ds.playeringame[3] = false
+        ds.respawnparm = false
+        ds.fastparm = false
+        ds.nomonsters = false
+        ds.consoleplayer = 0
+        init_new(ds.d_skill, ds.d_episode, ds.d_map)
+        ds.gameaction = ga.nothing
+
+    let init_new = (skill0: i32, episode0: i32, map0: i32) ->
+        let mut skill = skill0
+        let mut episode = episode0
+        let mut map = map0
+        if ds.paused then
+            ds.paused = false
+            snd.resume_sound()
+        if skill > sk.nightmare then skill = sk.nightmare
+        // This was quite messy with SPECIAL and commented parts.
+        // Supposedly hacks to make the latest edition work.
+        // It might not work properly.
+        if episode < 1 then episode = 1
+        if ds.gamemode == gmode.retail then
+            if episode > 4 then episode = 4
+        else if ds.gamemode == gmode.shareware then
+            if episode > 1 then episode = 1    // only start episode 1 on shareware
+        else
+            if episode > 3 then episode = 3
+        if map < 1 then map = 1
+        if map > 9 && ds.gamemode != gmode.commercial then map = 9
+        rnd.clear_random()
+        ds.respawnmonsters = skill == sk.nightmare || ds.respawnparm
+        if ds.fastparm || (skill == sk.nightmare && ds.gameskill != sk.nightmare) then
+            for k in sn.sarg_run1..sn.sarg_pain2 + 1 do info.states[k].tics = info.states[k].tics >> 1
+            info.mobjinfo[mt.bruisershot].speed = 20 * fx.fracunit
+            info.mobjinfo[mt.headshot].speed = 20 * fx.fracunit
+            info.mobjinfo[mt.troopshot].speed = 20 * fx.fracunit
+        else if skill != sk.nightmare && ds.gameskill == sk.nightmare then
+            for k in sn.sarg_run1..sn.sarg_pain2 + 1 do info.states[k].tics = info.states[k].tics << 1
+            info.mobjinfo[mt.bruisershot].speed = 15 * fx.fracunit
+            info.mobjinfo[mt.headshot].speed = 10 * fx.fracunit
+            info.mobjinfo[mt.troopshot].speed = 10 * fx.fracunit
+        // force players to be initialized upon first level load
+        for k in 0..dd.maxplayers do ds.players[k].playerstate = pst.reborn
+        ds.usergame = true    // will be set false if a demo
+        ds.paused = false
+        ds.demoplayback = false
+        ds.automapactive = false
+        ds.viewactive = true
+        ds.gameepisode = episode
+        ds.gamemap = map
+        ds.gameskill = skill
+        ds.viewactive = true
+        // set the sky map for the episode
+        if ds.gamemode == gmode.commercial then
+            ds.skytexture = r.texture_num_for_name("SKY3")
+            if ds.gamemap < 12 then ds.skytexture = r.texture_num_for_name("SKY1")
+            else if ds.gamemap < 21 then ds.skytexture = r.texture_num_for_name("SKY2")
+        else
+            if episode == 1 then ds.skytexture = r.texture_num_for_name("SKY1")
+            else if episode == 2 then ds.skytexture = r.texture_num_for_name("SKY2")
+            else if episode == 3 then ds.skytexture = r.texture_num_for_name("SKY3")
+            else if episode == 4 then ds.skytexture = r.texture_num_for_name("SKY4")    // Special Edition sky
+        do_load_level()
+
+    // DEMO RECORDING
+    let read_demo_ticcmd = (cmd: ticcmd*) ->
+        if (i32) *demo_p == demomarker then
+            // end of demo data stream
+            ignore check_demo_status()
+            return
+        cmd.forwardmove = (i8) *demo_p
+        cmd.sidemove = (i8) *(demo_p + 1)
+        cmd.angleturn = (i16) ((i32) *(demo_p + 2) << 8)
+        cmd.buttons = *(demo_p + 3)
+        demo_p = demo_p + 4
+
+    let write_demo_ticcmd = (cmd: ticcmd*) ->
+        if gamekeydown['q'] then ignore check_demo_status()    // press q to end demo recording
+        *demo_p = (u8) cmd.forwardmove
+        *(demo_p + 1) = (u8) cmd.sidemove
+        *(demo_p + 2) = (u8) (((i32) cmd.angleturn + 128) >> 8)
+        *(demo_p + 3) = cmd.buttons
+        if demo_p > demoend - 16 then
+            // no more space
+            ignore check_demo_status()
+            return
+        read_demo_ticcmd(cmd)    // make SURE it is exactly the same
+
+    let record_demo = (name: const str) ->
+        ds.usergame = false
+        if demoname.len > 0 then free(demoname)
+        demoname = alloc("%s{name}.lmp")!
+        let mut maxsize = 0x20000
+        let k = argv.check_parm("-maxdemo")
+        if k != 0 && k < argv.count() - 1 then maxsize = cstdlib.atoi(alloca((cstr) argv.get(k + 1))) * 1024
+        demobuffer = (u8*) c.zalloc((i64) maxsize)
+        demoend = demobuffer + maxsize
+        ds.demorecording = true
+
+    let begin_recording = () ->
+        demo_p = demobuffer
+        let wr = (b: i32) ->
+            *demo_p = (u8) b
+            demo_p = demo_p + 1
+        wr(dd.version)
+        wr(ds.gameskill)
+        wr(ds.gameepisode)
+        wr(ds.gamemap)
+        wr(ds.deathmatch)
+        wr(if ds.respawnparm then 1 else 0)
+        wr(if ds.fastparm then 1 else 0)
+        wr(if ds.nomonsters then 1 else 0)
+        wr(ds.consoleplayer)
+        for k in 0..dd.maxplayers do wr(if ds.playeringame[k] then 1 else 0)
+
+    let defered_play_demo = (name: const str) ->
+        defdemoname = name
+        ds.gameaction = ga.playdemo
+
+    let do_play_demo = () ->
+        ds.gameaction = ga.nothing
+        let lump = w.check_num_for_name(defdemoname)
+        if lump < 0 then
+            // a -playdemo file outside the WAD
+            match misc.read_file(alloca("%s{defdemoname}.lmp")) with
+            | none -> i.fatal(alloca("Demo %s{defdemoname} not found"))
+            | some(buf) -> demobuffer = buf.ptr
+        else
+            demobuffer = w.cache_lump_num(lump, pu.static_x)
+        demo_p = demobuffer
+        let rd = () ->
+            let b = (i32) *demo_p
+            demo_p = demo_p + 1
+            b
+        if rd() != dd.version then
+            ignore cstdio.fputs(c"Demo is from a different game version!\n", stderr)
+            ds.gameaction = ga.nothing
+            return
+        let skill = rd()
+        let episode = rd()
+        let map = rd()
+        ds.deathmatch = rd()
+        ds.respawnparm = rd() != 0
+        ds.fastparm = rd() != 0
+        ds.nomonsters = rd() != 0
+        ds.consoleplayer = rd()
+        for k in 0..dd.maxplayers do ds.playeringame[k] = rd() != 0
+        if ds.playeringame[1] then
+            ds.netgame = true
+            ds.netdemo = true
+        // don't spend a lot of time in loadlevel
+        ds.precache = false
+        init_new(skill, episode, map)
+        ds.precache = true
+        ds.usergame = false
+        ds.demoplayback = true
+
+    let time_demo = (name: const str) ->
+        ds.nodrawers = argv.check_parm("-nodraw") != 0
+        ds.noblit = argv.check_parm("-noblit") != 0
+        ds.timingdemo = true
+        ds.singletics = true
+        defdemoname = name
+        ds.gameaction = ga.playdemo
+
+    // Called after a death or level completion to allow demos to be
+    // cleaned up. Returns true if a new demo loop action will take place
+    let check_demo_status = () ->
+        if ds.timingdemo then
+            let endtime = i.get_time()
+            i.print(alloca("timed %d{ds.gametic} gametics in %d{endtime - starttime} realtics\n"))
+            demo_finished_hook()
+            i_quit()
+        if ds.demoplayback then
+            if ds.singledemo then
+                demo_finished_hook()
+                i_quit()
+            ds.demoplayback = false
+            ds.netdemo = false
+            ds.netgame = false
+            ds.deathmatch = 0
+            ds.playeringame[1] = false
+            ds.playeringame[2] = false
+            ds.playeringame[3] = false
+            ds.respawnparm = false
+            ds.fastparm = false
+            ds.nomonsters = false
+            ds.consoleplayer = 0
+            ds.d_advance_demo()
+            return true
+        if ds.demorecording then
+            *demo_p = (u8) demomarker
+            demo_p = demo_p + 1
+            ignore misc.write_file(demoname, demobuffer, (i64) (demo_p - demobuffer))
+            ds.demorecording = false
+            i.fatal(alloca("Demo %s{demoname} recorded"))
+        false
+
+    // Test-mode hook: report where a demo ended (used by the regression
+    // suite to check sync).
+    let demo_finished_hook = () ->
+        if argv.check_parm("-demostats") != 0 then
+            let pl = &ds.players[ds.consoleplayer]
+            let mo = pl.mo
+            if c.not_null(mo) then
+                i.print(alloca("DEMOEND gametic=%d{ds.gametic} map=E%d{ds.gameepisode}M%d{ds.gamemap} health=%d{pl.health} kills=%d{pl.killcount} items=%d{pl.itemcount} secrets=%d{pl.secretcount} x=%d{mo.x} y=%d{mo.y} rnd=%d{rnd.prndindex}\n"))
+            else
+                i.print(alloca("DEMOEND gametic=%d{ds.gametic} gamestate=%d{ds.gamestate} rnd=%d{rnd.prndindex}\n"))

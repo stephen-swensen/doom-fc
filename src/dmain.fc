@@ -1,0 +1,510 @@
+// d_main (startup, the main loop, D_Display, the title/demo sequence) and
+// the single-player half of d_net (TryRunTics / NetUpdate), ported from
+// linuxdoom-1.10 (GPLv2). IWAD discovery follows wolf-fc's data-directory
+// rules; see README.md.
+
+module d =
+    import io from std::
+
+    let mut demosequence = 0
+    let mut pagetic = 0
+    let mut pagename = "TITLEPIC"
+
+    // D_Display statics
+    let mut viewactivestate = false
+    let mut menuactivestate = false
+    let mut inhelpscreensstate = false
+    let mut fullscreen = false
+    let mut oldgamestate = -1
+    let mut borderdrawcount = 0
+
+    // d_net single-player state
+    let mut gametime = 0
+    let mut oldentertics = 0
+
+    // headless test hooks
+    let mut shotdir = default(str)
+    let mut shotevery = 0
+    let mut quitat = -1
+
+    // Send all the events of the given timestamp down the responder chain
+    let process_events = () ->
+        // IF STORE DEMO, DO NOT ACCEPT INPUT
+        if ds.gamemode == gmode.commercial && w.check_num_for_name("map01") < 0 then return
+        loop
+            if ds.eventtail == ds.eventhead then break
+            let ev = &ds.events[ds.eventtail]
+            if !m.responder(ev) then ignore g.responder(ev)    // menu ate the event?
+            ds.eventtail = (ds.eventtail + 1) & (ds.maxevents - 1)
+
+    // D_Display: draw current display, possibly wiping it from the
+    // previous
+    let display = () ->
+        if ds.nodrawers then return    // for comparative timing / profiling
+        let mut redrawsbar = false
+        // change the view size if needed
+        if ds.setsizeneeded then
+            r.execute_set_view_size()
+            oldgamestate = -1    // force background redraw
+            borderdrawcount = 3
+        // save the current screen if about to wipe
+        let wipe_now = ds.gamestate != ds.wipegamestate
+        if wipe_now then wipe.start_screen(0, 0, 320, 200)
+        if ds.gamestate == gs.level && ds.gametic != 0 then hu.erase()
+        // do buffered drawing
+        let state = ds.gamestate
+        if state == gs.level then
+            if ds.gametic != 0 then
+                if ds.automapactive then amap.drawer()
+                if wipe_now || (ds.viewheight != 200 && fullscreen) then redrawsbar = true
+                if inhelpscreensstate && !ds.inhelpscreens then redrawsbar = true    // just put away the help screen
+                st.drawer(ds.viewheight == 200, redrawsbar)
+                fullscreen = ds.viewheight == 200
+        else if state == gs.intermission then wi.drawer()
+        else if state == gs.finale then f.drawer()
+        else if state == gs.demoscreen then page_drawer()
+        // draw the view directly
+        if ds.gamestate == gs.level && !ds.automapactive && ds.gametic != 0 then
+            r.render_player_view(&ds.players[ds.displayplayer])
+        if ds.gamestate == gs.level && ds.gametic != 0 then hu.drawer()
+        // clean up border stuff
+        if ds.gamestate != oldgamestate && ds.gamestate != gs.level then
+            iv.set_palette(w.cache_lump_name("PLAYPAL", pu.cache))
+        // see if the border needs to be initially drawn
+        if ds.gamestate == gs.level && oldgamestate != gs.level then
+            viewactivestate = false    // view was not active
+            r.fill_back_screen()    // draw the pattern into the back screen
+        // see if the border needs to be updated to the screen
+        if ds.gamestate == gs.level && !ds.automapactive && ds.scaledviewwidth != 320 then
+            if ds.menuactive || menuactivestate || !viewactivestate then borderdrawcount = 3
+            if borderdrawcount != 0 then
+                r.draw_view_border()    // erase old menu stuff
+                borderdrawcount = borderdrawcount - 1
+        menuactivestate = ds.menuactive
+        viewactivestate = ds.viewactive
+        inhelpscreensstate = ds.inhelpscreens
+        oldgamestate = ds.gamestate
+        ds.wipegamestate = ds.gamestate
+        // draw pause pic
+        if ds.paused then
+            let y = if ds.automapactive then 4 else ds.viewwindowy + 4
+            v.draw_patch_direct(ds.viewwindowx + (ds.scaledviewwidth - 68) / 2, y, 0, v.patch_named("M_PAUSE"))
+        // menus go directly to the screen
+        m.drawer()    // menu is drawn even on top of everything
+        test_hooks()
+        // normal update
+        if !wipe_now then
+            iv.finish_update()    // page flip or blit buffer
+            return
+        // wipe update
+        wipe.end_screen(0, 0, 320, 200)
+        if iv.headless then
+            // run the melt to completion without real time passing
+            loop
+                let done = wipe.screen_wipe(wipe.melt, 0, 0, 320, 200, 1)
+                if done then break
+            return
+        let mut wipestart = i.get_time() - 1
+        loop
+            let mut nowtime = 0
+            let mut tics = 0
+            loop
+                nowtime = i.get_time()
+                tics = nowtime - wipestart
+                if tics != 0 then break
+                i.sleep_ms(1)
+            wipestart = nowtime
+            let done = wipe.screen_wipe(wipe.melt, 0, 0, 320, 200, tics)
+            iv.update_no_blit()
+            m.drawer()    // menu is drawn even on top of wipes
+            iv.finish_update()    // page flip or blit buffer
+            if done then break
+
+    // -shotdir DIR -shotevery N: dump a PNG every N gametics (headless
+    // inspection of demos, intermission screens, ...); -quitat TIC.
+    let test_hooks = () ->
+        if iv.pending_shot.len > 0 then
+            let fb = alloc(u32[] { len = 320 * 200 })!
+            defer free(fb)
+            iv.frame_argb(fb)
+            let name = alloc("%s{shotdir}/%s{iv.pending_shot}.png")!
+            defer free(name)
+            ignore png.write(name, fb, 320, 200, "")
+            free(iv.pending_shot)
+            iv.pending_shot = default(str)
+        if shotevery > 0 && ds.gametic % shotevery == 0 then
+            let fb = alloc(u32[] { len = 320 * 200 })!
+            defer free(fb)
+            iv.frame_argb(fb)
+            let name = alloc("%s{shotdir}/shot%06d{ds.gametic}.png")!
+            defer free(name)
+            ignore png.write(name, fb, 320, 200, "")
+
+    // I_Quit
+    let quit = () ->
+        isnd.shutdown()
+        if !iv.headless then misc.save_defaults()
+        iv.shutdown_graphics()
+        cstdlib.exit(0)
+
+    // D_PageTicker: Handles timing for warped projection
+    let page_ticker = () ->
+        pagetic = pagetic - 1
+        if pagetic < 0 then ds.d_advance_demo()
+
+    let page_drawer = () ->
+        v.draw_patch(0, 0, 0, v.patch_named(pagename))
+
+    // This cycles through the demo sequences.
+    let do_advance_demo = () ->
+        ds.players[ds.consoleplayer].playerstate = pst.live    // not reborn
+        ds.advancedemo = false
+        ds.usergame = false    // no save / end game here
+        ds.paused = false
+        ds.gameaction = ga.nothing
+        if ds.gamemode == gmode.retail then demosequence = (demosequence + 1) % 7
+        else demosequence = (demosequence + 1) % 6
+        let sq = demosequence
+        if sq == 0 then
+            pagetic = if ds.gamemode == gmode.commercial then 35 * 11 else 170
+            ds.gamestate = gs.demoscreen
+            pagename = "TITLEPIC"
+            if ds.gamemode == gmode.commercial then snd.start_music(mus.dm2ttl)
+            else snd.start_music(mus.intro)
+        else if sq == 1 then g.defered_play_demo("demo1")
+        else if sq == 2 then
+            pagetic = 200
+            ds.gamestate = gs.demoscreen
+            pagename = "CREDIT"
+        else if sq == 3 then g.defered_play_demo("demo2")
+        else if sq == 4 then
+            ds.gamestate = gs.demoscreen
+            if ds.gamemode == gmode.commercial then
+                pagetic = 35 * 11
+                pagename = "TITLEPIC"
+                snd.start_music(mus.dm2ttl)
+            else
+                pagetic = 200
+                pagename = if ds.gamemode == gmode.retail then "CREDIT" else "HELP2"
+        else if sq == 5 then g.defered_play_demo("demo3")
+        // THE DEFINITIVE DOOM Special Edition demo
+        else if sq == 6 then g.defered_play_demo("demo4")
+
+    let start_title = () ->
+        ds.gameaction = ga.nothing
+        demosequence = -1
+        ds.d_advance_demo()
+
+    // ------------------------------------------------------------------
+    // d_net, single player: build ticcmds as time passes, run game tics
+    // ------------------------------------------------------------------
+    let net_update = () ->
+        // check time
+        let nowtime = i.get_time() / ds.ticdup
+        let newtics = nowtime - gametime
+        gametime = nowtime
+        if newtics <= 0 then return    // nothing new to update
+        // build new ticcmds for console player
+        let gameticdiv = ds.gametic / ds.ticdup
+        for _ in 0..newtics do
+            iv.start_tic()
+            process_events()
+            if ds.maketic - gameticdiv >= ds.backuptics / 2 - 1 then break    // can't hold any more
+            g.build_ticcmd(ds.netcmd(ds.consoleplayer, ds.maketic))
+            ds.maketic = ds.maketic + 1
+
+    let try_run_tics = () ->
+        // get real tics
+        let entertic = i.get_time() / ds.ticdup
+        let realtics = entertic - oldentertics
+        oldentertics = entertic
+        // get available tics
+        net_update()
+        let mut lowtic = ds.maketic
+        let availabletics = lowtic - ds.gametic / ds.ticdup
+        // decide how many tics to run
+        let mut counts = if realtics < availabletics - 1 then realtics + 1
+                         else if realtics < availabletics then realtics
+                         else availabletics
+        if counts < 1 then counts = 1
+        // wait for new tics if needed
+        loop
+            if lowtic >= ds.gametic / ds.ticdup + counts then break
+            net_update()
+            lowtic = ds.maketic
+            if lowtic < ds.gametic / ds.ticdup then i.fatal("TryRunTics: lowtic < gametic")
+            // don't stay in here forever -- give the menu a chance to work
+            if i.get_time() / ds.ticdup - entertic >= 20 then
+                m.ticker()
+                return
+            i.sleep_ms(1)
+        // run the count * ticdup dics
+        loop
+            if counts <= 0 then break
+            counts = counts - 1
+            if ds.advancedemo then do_advance_demo()
+            m.ticker()
+            g.ticker()
+            ds.gametic = ds.gametic + 1
+            net_update()    // check for new console commands
+
+    // D_DoomLoop
+    let doom_loop = () ->
+        if ds.demorecording then g.begin_recording()
+        loop
+            // frame syncronous IO operations
+            iv.start_frame()
+            if iv.quit_requested then quit()
+            // process one or more tics
+            if ds.singletics then
+                iv.start_tic()
+                process_events()
+                g.build_ticcmd(ds.netcmd(ds.consoleplayer, ds.maketic))
+                if ds.advancedemo then do_advance_demo()
+                m.ticker()
+                g.ticker()
+                ds.gametic = ds.gametic + 1
+                ds.maketic = ds.maketic + 1
+            else
+                try_run_tics()    // will run at least one tic
+            // move positional sounds
+            snd.update_sounds(ds.players[ds.consoleplayer].mo)
+            // Update display, next frame, with current state.
+            display()
+            if quitat >= 0 && ds.gametic >= quitat then
+                g.demo_finished_hook()
+                quit()
+
+    // ------------------------------------------------------------------
+    // IWAD discovery
+    // ------------------------------------------------------------------
+    let mut wadfiles = default(str[])
+    let mut numwadfiles = 0
+
+    let add_file = (file: const str) ->
+        let nw = alloc(str[] { len = numwadfiles + 1 })!
+        for k in 0..numwadfiles do nw[k] = wadfiles[k]
+        nw[numwadfiles] = alloc("%s{file}")!
+        if numwadfiles > 0 then free(wadfiles)
+        wadfiles = nw
+        numwadfiles = numwadfiles + 1
+
+    // A file in dir, tried as given, lower case and upper case.
+    let find_in = (dir: const str, name: const str) ->
+        let lower = alloc("%s{name}")!
+        let upper = alloc("%s{name}")!
+        for k in 0..name.len do
+            lower[k] = if name[k] >= 'A' && name[k] <= 'Z' then name[k] + 32u8 else name[k]
+            upper[k] = c.toupper(name[k])
+        let cands = (const str)[] { name, lower, upper }
+        let mut found = none(str)
+        for cand in cands do
+            if found.is_none then
+                let path = alloc("%s{dir}/%s{cand}")!
+                if io.exists(path) then found = some(path) else free(path)
+        free(lower)
+        free(upper)
+        found
+
+    // $DOOM_FC_DATA_DIR, then ./data (if it holds an IWAD), then the
+    // install location baked in by the Makefile.
+    let iwad_names = (const str)[] { "doom2f.wad", "doom2.wad", "plutonia.wad", "tnt.wad", "doomu.wad", "doom.wad", "doom1.wad" }
+
+    let resolve_data_dir = () ->
+        match sys_env("DOOM_FC_DATA_DIR") with
+        | some(dir) -> dir
+        | none ->
+            let mut has = false
+            for nm in iwad_names do
+                if !has then
+                    match find_in("data", nm) with
+                    | some(pth) ->
+                        free(pth)
+                        has = true
+                    | none -> void()
+            if has then (const str) "data" else (const str) install_path.data_dir
+
+    let sys_env = (name: const str) ->
+        let v0 = cstdlib.getenv(alloca((cstr) name))
+        if c.is_null(v0) then none(const str) else some((const str) v0)
+
+    let identify_version = () ->
+        let dir = resolve_data_dir()
+        i.print(alloca("Data dir: %s{dir}\n"))
+        let pk = argv.check_parm("-iwad")
+        if pk != 0 && pk < argv.count() - 1 then
+            let name = argv.get(pk + 1)
+            let path = if io.exists(name) then some(alloc("%s{name}")!) else find_in(dir, name)
+            match path with
+            | none -> i.fatal(alloca("IWAD %s{name} not found"))
+            | some(pth) ->
+                let lname = alloca("%s{name}")
+                for k in 0..lname.len do lname[k] = if lname[k] >= 'A' && lname[k] <= 'Z' then lname[k] + 32u8 else lname[k]
+                let mut base = lname
+                for k in 0..lname.len do
+                    if lname[k] == '/' then base = lname[k + 1..]
+                ds.gamemode = if base == "doom2.wad" || base == "plutonia.wad" || base == "tnt.wad" || base == "doom2f.wad" then gmode.commercial
+                              else if base == "doomu.wad" then gmode.retail
+                              else if base == "doom1.wad" then gmode.shareware
+                              else gmode.registered
+                add_file(pth)
+                free(pth)
+            return
+        let modes = i32[] { gmode.commercial, gmode.commercial, gmode.commercial, gmode.commercial,
+                            gmode.retail, gmode.registered, gmode.shareware }
+        // -doom1 / -doom2 pick between installed IWADs
+        let prefer1 = argv.check_parm("-doom1") != 0 || argv.check_parm("-doom") != 0
+        let mut done = false
+        for k in 0..iwad_names.len do
+            let skip = prefer1 && modes[k] == gmode.commercial
+            if !done && !skip then
+                match find_in(dir, iwad_names[k]) with
+                | some(pth) ->
+                    ds.gamemode = modes[k]
+                    add_file(pth)
+                    free(pth)
+                    done = true
+                | none -> void()
+        if !done then
+            ds.gamemode = gmode.indetermined
+            i.fatal(alloca("Game mode indeterminate: no IWAD (doom2.wad, doom.wad, doom1.wad, ...) found in %s{dir}. Copy your IWADs there or set DOOM_FC_DATA_DIR."))
+
+    let parse_args = (args: str[]) ->
+        argv.set(args)
+        iv.headless = argv.check_parm("-headless") != 0
+        let k = argv.check_parm("-shotdir")
+        if k != 0 && k < argv.count() - 1 then shotdir = alloc("%s{argv.get(k + 1)}")!
+        let k2 = argv.check_parm("-shotevery")
+        if k2 != 0 && k2 < argv.count() - 1 then shotevery = cstdlib.atoi(alloca((cstr) argv.get(k2 + 1)))
+        g.tictrace = argv.check_parm("-tictrace") != 0
+        let k4 = argv.check_parm("-script")
+        if k4 != 0 && k4 < argv.count() - 1 then iv.script = alloc("%s{argv.get(k4 + 1)}")!
+        let k3 = argv.check_parm("-quitat")
+        if k3 != 0 && k3 < argv.count() - 1 then quitat = cstdlib.atoi(alloca((cstr) argv.get(k3 + 1)))
+
+    let doom_main = () ->
+        i.init_time()
+        identify_version()
+        ds.modifiedgame = false
+        ds.nomonsters = argv.check_parm("-nomonsters") != 0
+        ds.respawnparm = argv.check_parm("-respawn") != 0
+        ds.fastparm = argv.check_parm("-fast") != 0
+        ds.devparm = argv.check_parm("-devparm") != 0
+        if argv.check_parm("-altdeath") != 0 then ds.deathmatch = 2
+        else if argv.check_parm("-deathmatch") != 0 then ds.deathmatch = 1
+        let ver = "v%d{dd.version / 100}.%d{dd.version % 100}"
+        let gm = ds.gamemode
+        let title = if gm == gmode.retail then "The Ultimate DOOM Startup"
+                    else if gm == gmode.shareware then "DOOM Shareware Startup"
+                    else if gm == gmode.registered then "DOOM Registered Startup"
+                    else if gm == gmode.commercial then "DOOM 2: Hell on Earth"
+                    else "Public DOOM"
+        i.print(alloca("                         %s{title} %s{ver}                           \n"))
+        if ds.devparm then i.print(dstr.d_devstr)
+        // turbo option
+        let pt = argv.check_parm("-turbo")
+        if pt != 0 then
+            let mut scale = 200
+            if pt < argv.count() - 1 then scale = cstdlib.atoi(alloca((cstr) argv.get(pt + 1)))
+            if scale < 10 then scale = 10
+            if scale > 400 then scale = 400
+            i.print(alloca("turbo scale: %d{scale}%%\n"))
+            g.forwardmove[0] = g.forwardmove[0] * scale / 100
+            g.forwardmove[1] = g.forwardmove[1] * scale / 100
+            g.sidemove[0] = g.sidemove[0] * scale / 100
+            g.sidemove[1] = g.sidemove[1] * scale / 100
+        // add any files specified on the command line with -file wadfile
+        // to the wad list
+        let pf = argv.check_parm("-file")
+        if pf != 0 then
+            // the parms after p are wadfile/lump names, until end of parms
+            // or another - preceded parm
+            ds.modifiedgame = true    // homebrew levels
+            let mut q = pf + 1
+            loop
+                if q >= argv.count() || argv.get(q)[0] == '-' then break
+                add_file(argv.get(q))
+                q = q + 1
+        // get skill / episode / map from parms
+        ds.startskill = sk.medium
+        ds.startepisode = 1
+        ds.startmap = 1
+        ds.autostart = false
+        let ps0 = argv.check_parm("-skill")
+        if ps0 != 0 && ps0 < argv.count() - 1 then
+            ds.startskill = (i32) argv.get(ps0 + 1)[0] - '1'
+            ds.autostart = true
+        let pe = argv.check_parm("-episode")
+        if pe != 0 && pe < argv.count() - 1 then
+            ds.startepisode = (i32) argv.get(pe + 1)[0] - '0'
+            ds.startmap = 1
+            ds.autostart = true
+        let pw0 = argv.check_parm("-warp")
+        if pw0 != 0 && pw0 < argv.count() - 1 then
+            if ds.gamemode == gmode.commercial then
+                ds.startmap = cstdlib.atoi(alloca((cstr) argv.get(pw0 + 1)))
+            else
+                ds.startepisode = (i32) argv.get(pw0 + 1)[0] - '0'
+                if pw0 < argv.count() - 2 then ds.startmap = (i32) argv.get(pw0 + 2)[0] - '0'
+            ds.autostart = true
+        // init subsystems
+        i.print("V_Init: allocate screens.\n")
+        v.init()
+        i.print("M_LoadDefaults: Load system defaults.\n")
+        misc.load_defaults()    // load before initing other systems
+        i.print("Z_Init: Init zone memory allocation daemon. \n")
+        z.init()
+        i.print("W_Init: Init WADfiles.\n")
+        w.init_multiple_files(wadfiles)
+        // linuxdoom only recognises Ultimate DOOM as doomu.wad; Steam and
+        // id ship it as doom.wad, so look for episode 4.
+        if ds.gamemode == gmode.registered && w.check_num_for_name("E4M1") >= 0 then ds.gamemode = gmode.retail
+        if ds.modifiedgame && ds.gamemode == gmode.shareware then
+            i.fatal("\nYou cannot -file with the shareware version. Register!")
+        i.print("M_Init: Init miscellaneous info.\n")
+        m.init()
+        i.print("R_Init: Init DOOM refresh daemon - ")
+        r.init()
+        i.print("\nP_Init: Init Playloop state.\n")
+        p.init()
+        i.print("I_Init: Setting up machine state.\n")
+        iv.init_graphics()
+        i.print("D_CheckNetGame: Checking network game status.\n")
+        ds.playeringame[0] = true
+        ds.consoleplayer = 0
+        ds.displayplayer = 0
+        i.print("S_Init: Setting up sound.\n")
+        snd.init(ds.snd_sfxvolume, ds.snd_musicvolume)
+        i.print("HU_Init: Setting up heads up display.\n")
+        hu.init()
+        i.print("ST_Init: Init status bar.\n")
+        st.init()
+        amap.init()
+        if iv.headless then ds.singletics = true
+        let pmt = argv.check_parm("-musictest")
+        if pmt != 0 && pmt < argv.count() - 1 then
+            musplay.render_test(argv.get(pmt + 1))
+            quit()
+        // start the apropriate game based on parms
+        let pr = argv.check_parm("-record")
+        if pr != 0 && pr < argv.count() - 1 then
+            g.record_demo(argv.get(pr + 1))
+            ds.autostart = true
+        let pd = argv.check_parm("-playdemo")
+        if pd != 0 && pd < argv.count() - 1 then
+            ds.singledemo = true    // quit after one demo
+            g.defered_play_demo(argv.get(pd + 1))
+            doom_loop()    // never returns
+        let ptd = argv.check_parm("-timedemo")
+        if ptd != 0 && ptd < argv.count() - 1 then
+            g.time_demo(argv.get(ptd + 1))
+            doom_loop()    // never returns
+        let pl = argv.check_parm("-loadgame")
+        if pl != 0 && pl < argv.count() - 1 then
+            let name = misc.save_name((i32) argv.get(pl + 1)[0] - '0')
+            ds.g_load_game(name)
+            free(name)
+        if ds.gameaction != ga.loadgame then
+            if ds.autostart || ds.netgame then g.init_new(ds.startskill, ds.startepisode, ds.startmap)
+            else start_title()    // start up intro loop
+        doom_loop()    // never returns

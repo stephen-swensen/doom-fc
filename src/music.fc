@@ -1,0 +1,230 @@
+// Music. DOS Doom played its MUS lumps through the DMX library on an
+// OPL2 (AdLib / Sound Blaster), with instruments from the WAD's GENMIDI
+// lump. doom-fc does the same: each MUS lump is converted to an event list
+// (the mus2mid mapping) and played by the OPL2 emulator and General MIDI
+// player vendored from fc-lang's demos/shared (opl2.fc, opl_midi.fc),
+// using the IWAD's own GENMIDI patches.
+//
+// This module runs inside the SDL audio callback (render) and from the main
+// thread (play/stop/...); snd and isnd hold the audio lock around the
+// main-thread calls.
+
+module musplay =
+    import opl_midi from shared::
+    import opl2 from shared::
+
+    let mut player = default(opl_midi.player*)
+    let mut bank = default(opl_midi.bank)
+    let mut have_bank = false
+    let mut song = default(opl_midi.song)
+    let mut have_song = false
+    let mut volume = 8
+    let mut rate = 44100
+    let mut active = false
+    let mut paused = false
+
+    let init = (r: i32) ->
+        rate = r
+        let lump = w.check_num_for_name("GENMIDI")
+        if lump < 0 then
+            i.print("I_InitMusic: no GENMIDI lump, music disabled\n")
+        else
+            match opl_midi.load_genmidi(w.lump_bytes(lump)) with
+            | ok(b) ->
+                bank = b
+                have_bank = true
+            | err(_) -> i.print("I_InitMusic: bad GENMIDI lump, music disabled\n")
+
+    // Music volume 0..15 as a mix gain.
+    let set_volume = (v: i32) -> volume = v
+
+    // SDL audio callback side: mix `frames` stereo frames of music into buf.
+    let render = (buf: i32[], frames: i32) ->
+        if !active || paused || c.is_null(player) then return
+        let gain = volume
+        for fr in 0..frames do
+            opl_midi.advance(player)
+            let s = opl2.sample(player.chip) * gain / 15
+            buf[fr * 2] = buf[fr * 2] + s
+            buf[fr * 2 + 1] = buf[fr * 2 + 1] + s
+
+    // ------------------------------------------------------------------
+    // MUS -> event list (the mus2mid mapping)
+    // ------------------------------------------------------------------
+    // MUS controller numbers 1..9 as MIDI controllers (0 is program change).
+    let ctrl_map = i32[] { 0, 0, 1, 7, 10, 11, 91, 93, 64, 67 }
+    // MUS system events 10..14 as MIDI channel-mode controllers.
+    let sys_map = i32[] { 120, 123, 126, 127, 121 }
+
+    let midi_channel = (mc: i32) ->
+        if mc == 15 then 9 else if mc >= 9 then mc + 1 else mc
+
+    struct parser =
+        data: const u8[]
+        pos: i64
+        evs: opl_midi.event[]
+        n: i32
+
+    let push = (ps: parser*, tick: i32, m: opl_midi.msg) ->
+        if ps.n >= (i32) ps.evs.len then
+            let bigger = alloc(opl_midi.event[] { len = ps.evs.len * 2 })!
+            for k in 0..ps.evs.len do bigger[k] = ps.evs[k]
+            free(ps.evs)
+            ps.evs = bigger
+        ps.evs[ps.n] = opl_midi.event { tick = tick, m = m }
+        ps.n = ps.n + 1
+
+    let rd = (ps: parser*) ->
+        let b = if ps.pos < ps.data.len then (i32) ps.data[ps.pos] else 0
+        ps.pos = ps.pos + 1
+        b
+
+    let note = (ch: i32, nt: i32, vel: i32) -> opl_midi.note_msg { chan = ch, note = nt, vel = vel }
+
+    let mus_to_song = (data: const u8[]) ->
+        if data.len < 16 || data[0] != 'M' || data[1] != 'U' || data[2] != 'S' || data[3] != 0x1au8 then
+            return none(opl_midi.song)
+        let score_len = (i32) c.rd_u16(data.ptr + 4)
+        let score_start = (i32) c.rd_u16(data.ptr + 6)
+        let mut ps = parser { data = data, pos = (i64) score_start, evs = alloc(opl_midi.event[] { len = 256 })!, n = 0 }
+        let pp = &ps
+        let endpos = if (i64) score_start + score_len < data.len then (i64) score_start + score_len else data.len
+        let velocities = i32[] { len = 16 }
+        for k in 0..16 do velocities[k] = 127
+        let mut tick = 0
+        let mut done = false
+        loop
+            if done || pp.pos >= endpos then break
+            let desc = rd(pp)
+            let last = (desc & 0x80) != 0
+            let kind = (desc >> 4) & 7
+            let mchan = desc & 15
+            let ch = midi_channel(mchan)
+            if kind == 0 then
+                // release note
+                push(pp, tick, opl_midi.msg.note_off(note(ch, rd(pp) & 127, 0)))
+            else if kind == 1 then
+                // play note
+                let nb = rd(pp)
+                if (nb & 0x80) != 0 then velocities[mchan] = rd(pp) & 127
+                let vel = velocities[mchan]
+                if vel == 0 then push(pp, tick, opl_midi.msg.note_off(note(ch, nb & 127, 0)))
+                else push(pp, tick, opl_midi.msg.note_on(note(ch, nb & 127, vel)))
+            else if kind == 2 then
+                // pitch wheel: 0..255, 128 centred
+                let bend = rd(pp) * 64 - 8192
+                push(pp, tick, opl_midi.msg.bend(opl_midi.chan_msg { chan = ch, val = bend }))
+            else if kind == 3 then
+                // system event
+                let sysev = rd(pp) & 127
+                if sysev >= 10 && sysev <= 14 then
+                    push(pp, tick, opl_midi.msg.control(opl_midi.ctrl_msg { chan = ch, cc = sys_map[sysev - 10], val = 0 }))
+            else if kind == 4 then
+                // controller
+                let ctl = rd(pp) & 127
+                let value = rd(pp) & 127
+                if ctl == 0 then
+                    push(pp, tick, opl_midi.msg.program(opl_midi.chan_msg { chan = ch, val = value }))
+                else if ctl <= 9 then
+                    push(pp, tick, opl_midi.msg.control(opl_midi.ctrl_msg { chan = ch, cc = ctrl_map[ctl], val = value }))
+            else if kind == 6 then
+                // score end
+                done = true
+            else if kind == 7 then
+                // unused: carries a data byte
+                ignore rd(pp)
+            // kind 5 is end of measure: nothing to do
+            if last && !done then
+                // variable-length delay in 140 Hz ticks
+                let mut delay = 0
+                loop
+                    let b = rd(pp)
+                    delay = delay * 128 + (b & 127)
+                    if (b & 0x80) == 0 || pp.pos >= data.len then break
+                tick = tick + delay
+        // 70 ticks per quarter at the player's default 500000 us per
+        // quarter = MUS's 140 ticks per second
+        some(opl_midi.song { events = ps.evs[0..ps.n], division = 70, length = tick })
+
+    // -musictest LUMP: render 20 s of a song to musictest.wav (in the
+    // current directory) and report its level; for checking music without
+    // an audio device.
+    let render_test = (lumpname: const str) ->
+        init(44100)
+        let lump = w.get_num_for_name(lumpname)
+        play(w.lump_bytes(lump), false)
+        let secs = 20
+        let frames = 44100 * secs
+        let buf = alloc(i32[] { len = 2 * 4096 })!
+        let out = alloc(u8[] { len = 44 + frames * 4 })!
+        let mut peak = 0
+        let mut sumsq = 0.0
+        let mut done = 0
+        loop
+            if done >= frames then break
+            let chunk = if frames - done > 4096 then 4096 else frames - done
+            for k in 0..chunk * 2 do buf[k] = 0
+            render(buf, chunk)
+            for k in 0..chunk * 2 do
+                let s0 = buf[k]
+                let s = if s0 > 32767 then 32767 else if s0 < -32768 then -32768 else s0
+                if c.iabs(s) > peak then peak = c.iabs(s)
+                sumsq = sumsq + (f64) s * (f64) s
+                let o = 44 + ((i64) done * 2 + k) * 2
+                out[o] = (u8) (s & 255)
+                out[o + 1] = (u8) ((s >> 8) & 255)
+            done = done + chunk
+        // WAV header
+        let hdr = "RIFF----WAVEfmt "
+        for k in 0..16 do out[k] = hdr[k]
+        let put32 = (o: i64, v: i32) ->
+            out[o] = (u8) (v & 255)
+            out[o + 1] = (u8) ((v >> 8) & 255)
+            out[o + 2] = (u8) ((v >> 16) & 255)
+            out[o + 3] = (u8) ((v >> 24) & 255)
+        put32(4, 36 + frames * 4)
+        put32(16, 16)
+        put32(20, 1 | (2 << 16))
+        put32(24, 44100)
+        put32(28, 44100 * 4)
+        put32(32, 4 | (16 << 16))
+        let dh = "data"
+        for k in 0..4 do out[36 + k] = dh[k]
+        put32(40, frames * 4)
+        ignore misc.write_file("musictest.wav", out.ptr, out.len)
+        let rms = math_sqrt(sumsq / ((f64) frames * 2.0))
+        i.print(alloca("musictest %s{lumpname}: events=%d{(i32) song.events.len} peak=%d{peak} rms=%5.0f{rms}\n"))
+
+    let math_sqrt = (x: f64) ->
+        let mut g0 = if x > 1.0 then x / 2.0 else 1.0
+        for _ in 0..40 do g0 = 0.5 * (g0 + x / g0)
+        g0
+
+    // I_PlaySong
+    let play = (data: const u8[], looping: bool) ->
+        if !have_bank then return
+        match mus_to_song(data) with
+        | none -> void()
+        | some(newsong) ->
+            stop()
+            if have_song then opl_midi.free_song(song)
+            song = newsong
+            have_song = true
+            if c.is_null(player) then player = opl_midi.init(rate, song, bank)
+            else opl_midi.set_song(player, song)
+            opl_midi.set_loop(player, looping)
+            opl_midi.start(player)
+            active = true
+            paused = false
+
+    let stop = () ->
+        if c.not_null(player) then opl_midi.stop(player)
+        active = false
+
+    let pause = () ->
+        if c.not_null(player) then opl_midi.pause(player)
+        paused = true
+
+    let resume = () ->
+        if c.not_null(player) && paused then opl_midi.resume(player)
+        paused = false

@@ -1,0 +1,94 @@
+// C library bindings plus the tiny pointer helpers every module uses.
+//
+// Doom is a C program through and through: raw pointers that may be NULL,
+// memcpy/memset over structs, stdio for WAD and savegame files. Rather than
+// pretend otherwise, doom-fc binds the handful of libc calls it needs here.
+
+module cmem from "string.h" =
+    extern memcpy: (any*, const any*, usize) -> any*
+    extern memmove: (any*, const any*, usize) -> any*
+    extern memset: (any*, i32, usize) -> any*
+    extern memcmp: (const any*, const any*, usize) -> i32
+    extern strlen: (const cstr) -> usize
+
+module cstrings from "strings.h" =
+    extern strncasecmp: (const cstr, const cstr, usize) -> i32
+    extern strcasecmp: (const cstr, const cstr) -> i32
+
+module cstdlib from "stdlib.h" =
+    extern malloc: (usize) -> any*
+    extern calloc: (usize, usize) -> any*
+    extern free as c_free: (any*) -> void
+    extern exit: (i32) -> void
+    extern getenv: (const cstr) -> cstr
+    extern atoi: (const cstr) -> i32
+
+module cstdio from "stdio.h" =
+    extern fopen: (const cstr, const cstr) -> any*
+    extern fclose: (any*) -> i32
+    extern fread: (any*, usize, usize, any*) -> usize
+    extern fwrite: (const any*, usize, usize, any*) -> usize
+    extern fseek: (any*, i64, i32) -> i32
+    extern ftell: (any*) -> i64
+    extern fflush: (any*) -> i32
+    extern fputs: (const cstr, any*) -> i32
+    extern SEEK_SET as seek_set: i32
+    extern SEEK_END as seek_end: i32
+
+module cdir from "sys/stat.h" =
+    extern mkdir: (const cstr, u32) -> i32
+
+module c =
+    // NULL tests for raw pointers (FC has no `null` keyword).
+    let is_null = (p: const any*) -> (usize) p == 0usize
+    let not_null = (p: const any*) -> (usize) p != 0usize
+
+    // Allocate `n` zeroed bytes; abort on failure like Doom's Z_Malloc.
+    let zalloc = (n: i64) ->
+        let p = cstdlib.calloc((usize) (if n < 1 then 1i64 else n), 1usize)
+        if is_null(p) then
+            ignore cstdio.fputs(c"doom-fc: out of memory\n", stderr)
+            cstdlib.exit(1)
+        p
+
+    let memcpy = (dst: any*, src: const any*, n: i64) ->
+        ignore cmem.memcpy(dst, src, (usize) n)
+    let memset = (dst: any*, v: i32, n: i64) ->
+        ignore cmem.memset(dst, v, (usize) n)
+
+    // Doom's abs() on an int: wraps at INT_MIN exactly like the C original.
+    let iabs = (x: i32) -> if x < 0 then 0 - x else x
+
+    // Upper-case an ASCII byte (toupper).
+    let toupper = (ch: u8) ->
+        if ch >= 'a' && ch <= 'z' then ch - 32u8 else ch
+
+    // Length of a NUL-terminated name stored in a fixed byte buffer (at most max).
+    let strnlen = (p: const u8*, max: i32) ->
+        let mut n = 0
+        loop
+            if n >= max || *(p + n) == 0u8 then break
+            n = n + 1
+        n
+
+    // Case-insensitive compare of two lump-style names (up to 8 chars).
+    let name8_eq = (a: const str, b: const str) ->
+        let mut i = 0
+        loop
+            if i >= 8 then break true
+            let ca = if i < a.len then toupper(a[i]) else 0u8
+            let cb = if i < b.len then toupper(b[i]) else 0u8
+            if ca != cb then break false
+            if ca == 0u8 then break true
+            i = i + 1
+
+    // View a fixed-size, NUL-padded name (WAD directory entry, texture name)
+    // as an FC str of its real length.
+    let name_view = (p: const u8*, max: i32) ->
+        const str { ptr = p, len = strnlen(p, max) }
+
+    // Little-endian readers over a raw byte pointer (Doom's SHORT/LONG on x86).
+    let rd_i16 = (p: const u8*) -> (i16) ((u16) *p | ((u16) *(p + 1) << 8))
+    let rd_u16 = (p: const u8*) -> (u16) *p | ((u16) *(p + 1) << 8)
+    let rd_i32 = (p: const u8*) ->
+        (i32) ((u32) *p | ((u32) *(p + 1) << 8) | ((u32) *(p + 2) << 16) | ((u32) *(p + 3) << 24))

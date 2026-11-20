@@ -1,0 +1,1862 @@
+// The software renderer: r_main, r_bsp, r_segs, r_plane, r_things, r_draw,
+// r_data and r_sky from linuxdoom-1.10 (GPLv2), as one module because the
+// C files call each other in every direction. The level geometry arrays
+// (r_state.h) live here too; p_setup fills them.
+
+struct texpatch =
+    originx: i32
+    originy: i32
+    patch: i32
+
+struct texture =
+    name: u8[8]
+    width: i32
+    height: i32
+    patchcount: i32
+    patches: texpatch*
+
+struct cliprange =
+    first: i32
+    last: i32
+
+module r =
+    // ---------------------------------------------------------------
+    // r_state: level data (filled by p_setup)
+    // ---------------------------------------------------------------
+    let mut numvertexes = 0
+    let mut vertexes = default(vertex[])
+    let mut numsegs = 0
+    let mut segs = default(seg[])
+    let mut numsectors = 0
+    let mut sectors = default(sector[])
+    let mut numsubsectors = 0
+    let mut subsectors = default(subsector[])
+    let mut numnodes = 0
+    let mut nodes = default(node[])
+    let mut numlines = 0
+    let mut lines = default(line[])
+    let mut numsides = 0
+    let mut sides = default(side[])
+
+    // ---------------------------------------------------------------
+    // constants
+    // ---------------------------------------------------------------
+    let sw = 320
+    let sh = 200
+    let fieldofview = 2048
+    let lightlevels = 16
+    let lightsegshift = 4
+    let maxlightscale = 48
+    let lightscaleshift = 12
+    let maxlightz = 128
+    let lightzshift = 20
+    let numcolormaps = 32
+    let maxvisplanes = 128
+    let maxopenings = 320 * 64
+    let maxvissprites = 128
+    let maxsegs = 32
+    let heightbits = 12
+    let heightunit = 1 << 12
+    let minz = 65536 * 4
+    let baseycenter = 100
+    let angletoskyshift = 22
+    let distmap = 2
+    let sbarheight = 32
+    let maxshort = 0x7fff
+
+    // ---------------------------------------------------------------
+    // r_main state
+    // ---------------------------------------------------------------
+    let mut fixedcolormap = default(u8*)
+    let mut centerx = 0
+    let mut centery = 0
+    let mut centerxfrac = 0
+    let mut centeryfrac = 0
+    let mut projection = 0
+    let mut framecount = 0
+    let mut sscount = 0
+    let mut viewx = 0
+    let mut viewy = 0
+    let mut viewz = 0
+    let mut viewangle = 0u32
+    let mut viewcos = 0
+    let mut viewsin = 0
+    let mut viewplayer = default(player*)
+    let mut detailshift = 0
+    let mut clipangle = 0u32
+    let mut viewangletox = i32[] { len = 4096 }
+    let mut xtoviewangle = u32[] { len = 321 }
+    let mut scalelight = u8*[] { len = 16 * 48 }
+    let mut scalelightfixed = u8*[] { len = 48 }
+    let mut zlight = u8*[] { len = 16 * 128 }
+    let mut extralight = 0
+
+    let mut setblocks = 10
+    let mut setdetail = 0
+
+    // ---------------------------------------------------------------
+    // r_data state
+    // ---------------------------------------------------------------
+    let mut firstflat = 0
+    let mut lastflat = 0
+    let mut numflats = 0
+    let mut firstpatch = 0
+    let mut lastpatch = 0
+    let mut numpatches = 0
+    let mut firstspritelump = 0
+    let mut lastspritelump = 0
+    let mut numspritelumps = 0
+    let mut numtextures = 0
+    let mut textures = default(texture[])
+    let mut texturewidthmask = default(i32[])
+    let mut textureheight = default(i32[])
+    let mut texturecompositesize = default(i32[])
+    let mut texturecolumnlump = default(i16[][])
+    let mut texturecolumnofs = default(u16[][])
+    let mut texturecomposite = default(any*[])
+    let mut flattranslation = default(i32[])
+    let mut texturetranslation = default(i32[])
+    let mut spritewidth = default(i32[])
+    let mut spriteoffset = default(i32[])
+    let mut spritetopoffset = default(i32[])
+    let mut colormaps = default(u8*)
+
+    // ---------------------------------------------------------------
+    // r_draw state
+    // ---------------------------------------------------------------
+    let mut ylookup = u8*[] { len = 832 }
+    let mut columnofs = i32[] { len = 1120 }
+    let mut dc_colormap = default(u8*)
+    let mut dc_x = 0
+    let mut dc_yl = 0
+    let mut dc_yh = 0
+    let mut dc_iscale = 0
+    let mut dc_texturemid = 0
+    let mut dc_source = default(u8*)
+    let mut dc_translation = default(u8*)
+    let mut translationtables = default(u8*)
+    let mut ds_y = 0
+    let mut ds_x1 = 0
+    let mut ds_x2 = 0
+    let mut ds_colormap = default(u8*)
+    let mut ds_xfrac = 0
+    let mut ds_yfrac = 0
+    let mut ds_xstep = 0
+    let mut ds_ystep = 0
+    let mut ds_source = default(u8*)
+    let mut fuzzpos = 0
+
+    // colfunc selector: 0 = R_DrawColumn(Low), 1 = fuzz, 2 = translated
+    let col_base = 0
+    let col_fuzz = 1
+    let col_trans = 2
+    let mut colfunc = 0
+
+    let fuzzoff = 320
+    let fuzzoffset = i32[] {
+        320, -320, 320, -320, 320, 320, -320,
+        320, 320, -320, 320, 320, 320, -320,
+        320, 320, 320, -320, -320, -320, -320,
+        320, -320, -320, 320, 320, 320, 320, -320,
+        320, -320, 320, 320, -320, -320, 320,
+        320, -320, -320, -320, -320, 320, 320,
+        320, 320, -320, 320, 320, -320, 320
+    }
+
+    // ---------------------------------------------------------------
+    // r_bsp / r_segs state
+    // ---------------------------------------------------------------
+    let mut curline = default(seg*)
+    let mut sidedef = default(side*)
+    let mut linedef = default(line*)
+    let mut frontsector = default(sector*)
+    let mut backsector = default(sector*)
+    // drawsegs; one spare slot past MAXDRAWSEGS keeps ds_p's end pointer valid
+    let mut drawsegs = drawseg[] { len = 257 }
+    let mut ds_p = 0
+    let mut solidsegs = cliprange[] { len = 32 }
+    let mut newend = 0
+
+    let mut segtextured = false
+    let mut markfloor = false
+    let mut markceiling = false
+    let mut maskedtexture = false
+    let mut toptexture = 0
+    let mut bottomtexture = 0
+    let mut midtexture = 0
+    let mut rw_normalangle = 0u32
+    let mut rw_angle1 = 0
+    let mut rw_x = 0
+    let mut rw_stopx = 0
+    let mut rw_centerangle = 0u32
+    let mut rw_offset = 0
+    let mut rw_distance = 0
+    let mut rw_scale = 0
+    let mut rw_scalestep = 0
+    let mut rw_midtexturemid = 0
+    let mut rw_toptexturemid = 0
+    let mut rw_bottomtexturemid = 0
+    let mut worldtop = 0
+    let mut worldbottom = 0
+    let mut worldhigh = 0
+    let mut worldlow = 0
+    let mut pixhigh = 0
+    let mut pixlow = 0
+    let mut pixhighstep = 0
+    let mut pixlowstep = 0
+    let mut topfrac = 0
+    let mut topstep = 0
+    let mut bottomfrac = 0
+    let mut bottomstep = 0
+    let mut walllights = default(u8**)
+    let mut maskedtexturecol = default(i16*)
+
+    // ---------------------------------------------------------------
+    // r_plane state
+    // ---------------------------------------------------------------
+    let mut visplanes = visplane[] { len = 128 }
+    let mut lastvisplane = 0
+    let mut floorplane = default(visplane*)
+    let mut ceilingplane = default(visplane*)
+    let mut openings = i16[] { len = 320 * 64 }
+    let mut lastopening = default(i16*)
+    let mut floorclip = i16[] { len = 320 }
+    let mut ceilingclip = i16[] { len = 320 }
+    let mut spanstart = i32[] { len = 256 }
+    let mut planezlight = default(u8**)
+    let mut planeheight = 0
+    let mut yslope = i32[] { len = 200 }
+    let mut distscale = i32[] { len = 320 }
+    let mut basexscale = 0
+    let mut baseyscale = 0
+    let mut cachedheight = i32[] { len = 200 }
+    let mut cacheddistance = i32[] { len = 200 }
+    let mut cachedxstep = i32[] { len = 200 }
+    let mut cachedystep = i32[] { len = 200 }
+
+    // ---------------------------------------------------------------
+    // r_things state
+    // ---------------------------------------------------------------
+    let mut pspritescale = 0
+    let mut pspriteiscale = 0
+    let mut spritelights = default(u8**)
+    let mut negonearray = i16[] { len = 320 }
+    let mut screenheightarray = i16[] { len = 320 }
+    let mut sprites = default(spritedef[])
+    let mut numsprites = 0
+    let mut sprtemp = spriteframe[] { len = 29 }
+    let mut maxframe = 0
+    let mut spritename = ""
+    let mut vissprites = vissprite[] { len = 128 }
+    let mut vissprite_p = 0
+    let mut overflowsprite = default(vissprite)
+    let mut mfloorclip = default(i16*)
+    let mut mceilingclip = default(i16*)
+    let mut spryscale = 0
+    let mut sprtopscreen = 0
+    let mut vsprsortedhead = default(vissprite)
+    let mut unsorted = default(vissprite)
+    let mut clipbot = i16[] { len = 320 }
+    let mut cliptop = i16[] { len = 320 }
+
+    // r_sky
+    let mut skytexturemid = 0
+
+    // ---------------------------------------------------------------
+    // trig helpers
+    // ---------------------------------------------------------------
+    let finesine = (a: i32) -> tables.sin(a)
+    let finecosine = (a: i32) -> tables.sin(a + 2048)
+    let finetangent = (a: i32) -> tables.tan(a)
+
+    // ===============================================================
+    // r_main
+    // ===============================================================
+    let point_on_side = (x: i32, y: i32, nd: const node*) ->
+        if nd.dx == 0 then
+            if x <= nd.x then nd.dy > 0 else nd.dy < 0
+        else if nd.dy == 0 then
+            if y <= nd.y then nd.dx < 0 else nd.dx > 0
+        else
+            let dx = x - nd.x
+            let dy = y - nd.y
+            if ((nd.dy ^ nd.dx ^ dx ^ dy) & i32.min) != 0 then
+                ((nd.dy ^ dx) & i32.min) != 0
+            else
+                let left = fx.mul(nd.dy >> 16, dx)
+                let right = fx.mul(dy, nd.dx >> 16)
+                !(right < left)
+
+    let point_on_seg_side = (x: i32, y: i32, ln: const seg*) ->
+        let lx = ln.v1.x
+        let ly = ln.v1.y
+        let ldx = ln.v2.x - lx
+        let ldy = ln.v2.y - ly
+        if ldx == 0 then
+            if x <= lx then ldy > 0 else ldy < 0
+        else if ldy == 0 then
+            if y <= ly then ldx < 0 else ldx > 0
+        else
+            let dx = x - lx
+            let dy = y - ly
+            if ((ldy ^ ldx ^ dx ^ dy) & i32.min) != 0 then
+                ((ldy ^ dx) & i32.min) != 0
+            else
+                let left = fx.mul(ldy >> 16, dx)
+                let right = fx.mul(dy, ldx >> 16)
+                !(right < left)
+
+    private let tan_to_angle = (num: i32, den: i32) ->
+        tables.tantoangle[tables.slope_div((u32) num, (u32) den)]
+
+    let point_to_angle = (x0: i32, y0: i32) ->
+        let x = x0 - viewx
+        let y = y0 - viewy
+        if x == 0 && y == 0 then 0u32
+        else if x >= 0 then
+            if y >= 0 then
+                if x > y then tan_to_angle(y, x)
+                else fx.ang90 - 1u32 - tan_to_angle(x, y)
+            else
+                let ny = 0 - y
+                if x > ny then 0u32 - tan_to_angle(ny, x)
+                else fx.ang270 + tan_to_angle(x, ny)
+        else
+            let nx = 0 - x
+            if y >= 0 then
+                if nx > y then fx.ang180 - 1u32 - tan_to_angle(y, nx)
+                else fx.ang90 + tan_to_angle(nx, y)
+            else
+                let ny = 0 - y
+                if nx > ny then fx.ang180 + tan_to_angle(ny, nx)
+                else fx.ang270 - 1u32 - tan_to_angle(nx, ny)
+
+    // R_PointToAngle2. Like the original this clobbers viewx/viewy.
+    let point_to_angle2 = (x1: i32, y1: i32, x2: i32, y2: i32) ->
+        viewx = x1
+        viewy = y1
+        point_to_angle(x2, y2)
+
+    let point_to_dist = (x: i32, y: i32) ->
+        let mut dx = c.iabs(x - viewx)
+        let mut dy = c.iabs(y - viewy)
+        if dy > dx then
+            let temp = dx
+            dx = dy
+            dy = temp
+        // FixedDiv(0,0) saturates; the original then reads past
+        // tantoangle. Clamp to the table instead.
+        let mut slot = fx.div(dy, dx) >> tables.dbits
+        if slot > 2048 || slot < 0 then slot = 2048
+        let angle = fx.fine(tables.tantoangle[slot] + fx.ang90)
+        fx.div(dx, finesine(angle))
+
+    let scale_from_global_angle = (visangle: u32) ->
+        let anglea = (i32) (fx.ang90 + (visangle - viewangle))
+        let angleb = (i32) (fx.ang90 + (visangle - rw_normalangle))
+        let sinea = finesine(anglea >> 19)
+        let sineb = finesine(angleb >> 19)
+        let num = fx.mul(projection, sineb) << detailshift
+        let den = fx.mul(rw_distance, sinea)
+        if den > num >> 16 then
+            let scale = fx.div(num, den)
+            if scale > 64 * fx.fracunit then 64 * fx.fracunit
+            else if scale < 256 then 256
+            else scale
+        else 64 * fx.fracunit
+
+    let init_texture_mapping = () ->
+        let focallength = fx.div(centerxfrac, finetangent(8192 / 4 + fieldofview / 2))
+        for k in 0..4096 do
+            let ft = finetangent(k)
+            let t = if ft > fx.fracunit * 2 then -1
+                    else if ft < 0 - fx.fracunit * 2 then ds.viewwidth + 1
+                    else
+                        let t0 = fx.mul(ft, focallength)
+                        let t1 = (centerxfrac - t0 + fx.fracunit - 1) >> 16
+                        if t1 < -1 then -1
+                        else if t1 > ds.viewwidth + 1 then ds.viewwidth + 1
+                        else t1
+            viewangletox[k] = t
+        for x in 0..ds.viewwidth + 1 do
+            let mut k = 0
+            loop
+                if viewangletox[k] <= x then break
+                k = k + 1
+            xtoviewangle[x] = ((u32) k << 19) - fx.ang90
+        for k in 0..4096 do
+            if viewangletox[k] == -1 then viewangletox[k] = 0
+            else if viewangletox[k] == ds.viewwidth + 1 then viewangletox[k] = ds.viewwidth
+        clipangle = xtoviewangle[0]
+
+    let init_light_tables = () ->
+        for k in 0..lightlevels do
+            let startmap = ((lightlevels - 1 - k) * 2) * numcolormaps / lightlevels
+            for j in 0..maxlightz do
+                let scale = fx.div(320 / 2 * fx.fracunit, (j + 1) << lightzshift) >> lightscaleshift
+                let mut level = startmap - scale / distmap
+                if level < 0 then level = 0
+                if level >= numcolormaps then level = numcolormaps - 1
+                zlight[k * maxlightz + j] = colormaps + level * 256
+
+    let set_view_size = (blocks: i32, detail: i32) ->
+        ds.setsizeneeded = true
+        setblocks = blocks
+        setdetail = detail
+
+    let execute_set_view_size = () ->
+        ds.setsizeneeded = false
+        if setblocks == 11 then
+            ds.scaledviewwidth = sw
+            ds.viewheight = sh
+        else
+            ds.scaledviewwidth = setblocks * 32
+            ds.viewheight = (setblocks * 168 / 10) & ~7
+        detailshift = setdetail
+        ds.viewwidth = ds.scaledviewwidth >> detailshift
+        centery = ds.viewheight / 2
+        centerx = ds.viewwidth / 2
+        centerxfrac = centerx << 16
+        centeryfrac = centery << 16
+        projection = centerxfrac
+        colfunc = col_base
+        init_buffer(ds.scaledviewwidth, ds.viewheight)
+        init_texture_mapping()
+        pspritescale = fx.fracunit * ds.viewwidth / sw
+        pspriteiscale = fx.fracunit * sw / ds.viewwidth
+        for k in 0..ds.viewwidth do screenheightarray[k] = (i16) ds.viewheight
+        for k in 0..ds.viewheight do
+            let dy = c.iabs(((k - ds.viewheight / 2) << 16) + fx.fracunit / 2)
+            yslope[k] = fx.div((ds.viewwidth << detailshift) / 2 * fx.fracunit, dy)
+        for k in 0..ds.viewwidth do
+            let cosadj = c.iabs(finecosine(fx.fine(xtoviewangle[k])))
+            distscale[k] = fx.div(fx.fracunit, cosadj)
+        for k in 0..lightlevels do
+            let startmap = ((lightlevels - 1 - k) * 2) * numcolormaps / lightlevels
+            for j in 0..maxlightscale do
+                let mut level = startmap - j * sw / (ds.viewwidth << detailshift) / distmap
+                if level < 0 then level = 0
+                if level >= numcolormaps then level = numcolormaps - 1
+                scalelight[k * maxlightscale + j] = colormaps + level * 256
+
+    let init = () ->
+        init_data()
+        i.print("\nR_InitData")
+        set_view_size(ds.screenblocks, ds.detail_level)
+        i.print("\nR_InitPlanes")
+        init_light_tables()
+        i.print("\nR_InitLightTables")
+        skytexturemid = 100 * fx.fracunit
+        i.print("\nR_InitSkyMap")
+        init_translation_tables()
+        i.print("\nR_InitTranslationsTables")
+        framecount = 0
+
+    let point_in_subsector = (x: i32, y: i32) ->
+        if numnodes == 0 then &subsectors[0]
+        else
+            let mut nodenum = numnodes - 1
+            loop
+                if (nodenum & ml.nf_subsector) != 0 then break
+                let nd = &nodes[nodenum]
+                let side = if point_on_side(x, y, nd) then 1 else 0
+                nodenum = nd.children[side]
+            &subsectors[nodenum & ~ml.nf_subsector]
+
+    let setup_frame = (pl: player*) ->
+        viewplayer = pl
+        viewx = pl.mo.x
+        viewy = pl.mo.y
+        viewangle = pl.mo.angle + (u32) ds.viewangleoffset
+        extralight = pl.extralight
+        viewz = pl.viewz
+        viewsin = finesine(fx.fine(viewangle))
+        viewcos = finecosine(fx.fine(viewangle))
+        sscount = 0
+        if pl.fixedcolormap != 0 then
+            fixedcolormap = colormaps + pl.fixedcolormap * 256
+            walllights = scalelightfixed.ptr
+            for k in 0..maxlightscale do scalelightfixed[k] = fixedcolormap
+        else
+            fixedcolormap = default(u8*)
+        framecount = framecount + 1
+        ds.validcount = ds.validcount + 1
+
+    let render_player_view = (pl: player*) ->
+        setup_frame(pl)
+        clear_clip_segs()
+        ds_p = 0
+        clear_planes()
+        vissprite_p = 0
+        render_bsp_node(numnodes - 1)
+        draw_planes()
+        draw_masked()
+
+    // ===============================================================
+    // r_data
+    // ===============================================================
+    let draw_column_in_cache = (patchcol0: const u8*, cache: u8*, originy: i32, cacheheight: i32) ->
+        let mut patchcol = patchcol0
+        loop
+            let topdelta = *patchcol
+            if topdelta == 0xffu8 then break
+            let length = (i32) *(patchcol + 1)
+            let source = patchcol + 3
+            let mut count = length
+            let mut position = originy + (i32) topdelta
+            if position < 0 then
+                count = count + position
+                position = 0
+            if position + count > cacheheight then count = cacheheight - position
+            if count > 0 then c.memcpy((any*) (cache + position), (const any*) source, (i64) count)
+            patchcol = patchcol + length + 4
+
+    let generate_composite = (texnum: i32) ->
+        let tex = &textures[texnum]
+        let block = (u8*) z.malloc((i64) texturecompositesize[texnum], pu.static_x,
+                                   &texturecomposite[texnum])
+        let collump = texturecolumnlump[texnum]
+        let colofs = texturecolumnofs[texnum]
+        for k in 0..tex.patchcount do
+            let tp = tex.patches + k
+            let realpatch = (const patch*) w.cache_lump_num(tp.patch, pu.cache)
+            let x1 = tp.originx
+            let mut x2 = x1 + realpatch.width
+            let mut x = if x1 < 0 then 0 else x1
+            if x2 > tex.width then x2 = tex.width
+            loop
+                if x >= x2 then break
+                if collump[x] < 0i16 then
+                    let patchcol = (const u8*) realpatch + patches.column_ofs(realpatch, x - x1)
+                    draw_column_in_cache(patchcol, block + (i32) colofs[x], tp.originy, tex.height)
+                x = x + 1
+        z.change_tag((any*) block, pu.cache)
+
+    let generate_lookup = (texnum: i32) ->
+        let tex = &textures[texnum]
+        texturecomposite[texnum] = default(any*)
+        texturecompositesize[texnum] = 0
+        let collump = texturecolumnlump[texnum]
+        let colofs = texturecolumnofs[texnum]
+        let patchcount = alloc(u8[] { len = tex.width })!
+        defer free(patchcount)
+        for k in 0..tex.patchcount do
+            let tp = tex.patches + k
+            let realpatch = (const patch*) w.cache_lump_num(tp.patch, pu.cache)
+            let x1 = tp.originx
+            let mut x2 = x1 + realpatch.width
+            let mut x = if x1 < 0 then 0 else x1
+            if x2 > tex.width then x2 = tex.width
+            loop
+                if x >= x2 then break
+                patchcount[x] = patchcount[x] + 1u8
+                collump[x] = (i16) tp.patch
+                colofs[x] = (u16) (patches.column_ofs(realpatch, x - x1) + 3)
+                x = x + 1
+        let mut bad = false
+        for x in 0..tex.width do
+            if !bad then
+                if patchcount[x] == 0u8 then
+                    i.print(alloca("R_GenerateLookup: column without a patch (%s{c.name_view(tex.name.ptr, 8)})\n"))
+                    bad = true
+                else if patchcount[x] > 1u8 then
+                    collump[x] = -1i16
+                    colofs[x] = (u16) texturecompositesize[texnum]
+                    if texturecompositesize[texnum] > 0x10000 - tex.height then
+                        i.fatal(alloca("R_GenerateLookup: texture %d{texnum} is >64k"))
+                    texturecompositesize[texnum] = texturecompositesize[texnum] + tex.height
+
+    let get_column = (tex: i32, col0: i32) ->
+        let col = col0 & texturewidthmask[tex]
+        let lump = (i32) texturecolumnlump[tex][col]
+        let ofs = (i32) texturecolumnofs[tex][col]
+        if lump > 0 then w.cache_lump_num(lump, pu.cache) + ofs
+        else
+            if c.is_null(texturecomposite[tex]) then generate_composite(tex)
+            (u8*) texturecomposite[tex] + ofs
+
+    let init_textures = () ->
+        let names = w.cache_lump_name("PNAMES", pu.static_x)
+        let nummappatches = c.rd_i32(names)
+        let patchlookup = alloc(i32[] { len = nummappatches })!
+        defer free(patchlookup)
+        for k in 0..nummappatches do
+            patchlookup[k] = w.check_num_for_name(c.name_view(names + 4 + k * 8, 8))
+        let maptex1 = w.cache_lump_name("TEXTURE1", pu.static_x)
+        let numtextures1 = c.rd_i32(maptex1)
+        let maxoff1 = w.lump_length(w.get_num_for_name("TEXTURE1"))
+        let has2 = w.check_num_for_name("TEXTURE2") != -1
+        let maptex2 = if has2 then w.cache_lump_name("TEXTURE2", pu.static_x) else default(u8*)
+        let numtextures2 = if has2 then c.rd_i32(maptex2) else 0
+        let maxoff2 = if has2 then w.lump_length(w.get_num_for_name("TEXTURE2")) else 0
+        numtextures = numtextures1 + numtextures2
+        textures = alloc(texture[] { len = numtextures })!
+        texturecolumnlump = alloc(i16[][] { len = numtextures })!
+        texturecolumnofs = alloc(u16[][] { len = numtextures })!
+        texturecomposite = alloc(any*[] { len = numtextures })!
+        texturecompositesize = alloc(i32[] { len = numtextures })!
+        texturewidthmask = alloc(i32[] { len = numtextures })!
+        textureheight = alloc(i32[] { len = numtextures })!
+        let mut maptex = maptex1
+        let mut maxoff = maxoff1
+        let mut dirbase = 0
+        for k in 0..numtextures do
+            if (k & 63) == 0 then i.print(".")
+            if k == numtextures1 then
+                maptex = maptex2
+                maxoff = maxoff2
+                dirbase = numtextures1
+            let offset = c.rd_i32(maptex + 4 + (k - dirbase) * 4)
+            if offset > maxoff then i.fatal("R_InitTextures: bad texture directory")
+            let mtex = maptex + offset
+            // maptexture_t: name[8], masked(4), width(2), height(2),
+            // columndirectory(4), patchcount(2), patches[] of 10 bytes
+            let tex = &textures[k]
+            tex.width = (i32) c.rd_i16(mtex + 12)
+            tex.height = (i32) c.rd_i16(mtex + 14)
+            tex.patchcount = (i32) c.rd_i16(mtex + 20)
+            for b in 0..8 do tex.name[b] = *(mtex + b)
+            tex.patches = (texpatch*) c.zalloc((i64) tex.patchcount * sizeof(texpatch))
+            for j in 0..tex.patchcount do
+                let mp = mtex + 22 + j * 10
+                let tp = tex.patches + j
+                tp.originx = (i32) c.rd_i16(mp)
+                tp.originy = (i32) c.rd_i16(mp + 2)
+                tp.patch = patchlookup[(i32) c.rd_i16(mp + 4)]
+                if tp.patch == -1 then
+                    i.fatal(alloca("R_InitTextures: Missing patch in texture %s{c.name_view(tex.name.ptr, 8)}"))
+            texturecolumnlump[k] = alloc(i16[] { len = tex.width })!
+            texturecolumnofs[k] = alloc(u16[] { len = tex.width })!
+            let mut j = 1
+            loop
+                if j * 2 > tex.width then break
+                j = j << 1
+            texturewidthmask[k] = j - 1
+            textureheight[k] = tex.height << 16
+        for k in 0..numtextures do generate_lookup(k)
+        texturetranslation = alloc(i32[] { len = numtextures + 1 })!
+        for k in 0..numtextures do texturetranslation[k] = k
+
+    let init_flats = () ->
+        firstflat = w.get_num_for_name("F_START") + 1
+        lastflat = w.get_num_for_name("F_END") - 1
+        numflats = lastflat - firstflat + 1
+        flattranslation = alloc(i32[] { len = numflats + 1 })!
+        for k in 0..numflats do flattranslation[k] = k
+
+    let init_sprite_lumps = () ->
+        firstspritelump = w.get_num_for_name("S_START") + 1
+        lastspritelump = w.get_num_for_name("S_END") - 1
+        numspritelumps = lastspritelump - firstspritelump + 1
+        spritewidth = alloc(i32[] { len = numspritelumps })!
+        spriteoffset = alloc(i32[] { len = numspritelumps })!
+        spritetopoffset = alloc(i32[] { len = numspritelumps })!
+        for k in 0..numspritelumps do
+            if (k & 63) == 0 then i.print(".")
+            let p = (const patch*) w.cache_lump_num(firstspritelump + k, pu.cache)
+            spritewidth[k] = (i32) p.width << 16
+            spriteoffset[k] = (i32) p.leftoffset << 16
+            spritetopoffset[k] = (i32) p.topoffset << 16
+
+    let init_colormaps = () ->
+        let lump = w.get_num_for_name("COLORMAP")
+        colormaps = (u8*) c.zalloc((i64) w.lump_length(lump))
+        w.read_lump(lump, (any*) colormaps)
+
+    let init_data = () ->
+        init_textures()
+        i.print("\nInitTextures")
+        init_flats()
+        i.print("\nInitFlats")
+        init_sprite_lumps()
+        i.print("\nInitSprites")
+        init_colormaps()
+        i.print("\nInitColormaps")
+
+    let flat_num_for_name = (name: const str) ->
+        let k = w.check_num_for_name(name)
+        if k == -1 then i.fatal(alloca("R_FlatNumForName: %.8s{name} not found"))
+        k - firstflat
+
+    let check_texture_num_for_name = (name: const str) ->
+        if name.len > 0 && name[0] == '-' then 0
+        else
+            let mut found = -1
+            for k in 0..numtextures do
+                if found == -1 && c.name8_eq(c.name_view(textures[k].name.ptr, 8), name) then
+                    found = (i32) k
+            found
+
+    let texture_num_for_name = (name: const str) ->
+        let k = check_texture_num_for_name(name)
+        if k == -1 then i.fatal(alloca("R_TextureNumForName: %.8s{name} not found"))
+        k
+
+    let precache_level = () ->
+        // Everything is loaded on first use and never purged, so warming
+        // the cache only matters for the first frame's timing.
+        if ds.demoplayback then void()
+        else
+            for k in 0..numsectors do
+                ignore w.cache_lump_num(firstflat + flattranslation[sectors[k].floorpic], pu.cache)
+                ignore w.cache_lump_num(firstflat + flattranslation[sectors[k].ceilingpic], pu.cache)
+
+    // ===============================================================
+    // r_draw
+    // ===============================================================
+    let draw_column = () ->
+        let count = dc_yh - dc_yl
+        if count >= 0 then
+            if dc_x < 0 || dc_x >= sw || dc_yl < 0 || dc_yh >= sh then
+                i.fatal(alloca("R_DrawColumn: %d{dc_yl} to %d{dc_yh} at %d{dc_x}"))
+            let mut dest = ylookup[dc_yl] + columnofs[dc_x]
+            let fracstep = dc_iscale
+            let mut frac = dc_texturemid + (dc_yl - centery) * fracstep
+            let src = dc_source
+            let cmap = dc_colormap
+            for _ in 0..count + 1 do
+                *dest = *(cmap + (i32) *(src + ((frac >> 16) & 127)))
+                dest = dest + sw
+                frac = frac + fracstep
+
+    let draw_column_low = () ->
+        let count = dc_yh - dc_yl
+        if count >= 0 then
+            if dc_x < 0 || dc_x >= sw || dc_yl < 0 || dc_yh >= sh then
+                i.fatal(alloca("R_DrawColumn: %d{dc_yl} to %d{dc_yh} at %d{dc_x}"))
+            dc_x = dc_x << 1
+            let mut dest = ylookup[dc_yl] + columnofs[dc_x]
+            let mut dest2 = ylookup[dc_yl] + columnofs[dc_x + 1]
+            let fracstep = dc_iscale
+            let mut frac = dc_texturemid + (dc_yl - centery) * fracstep
+            for _ in 0..count + 1 do
+                let px = *(dc_colormap + (i32) *(dc_source + ((frac >> 16) & 127)))
+                *dest = px
+                *dest2 = px
+                dest = dest + sw
+                dest2 = dest2 + sw
+                frac = frac + fracstep
+
+    let draw_fuzz_column = () ->
+        if dc_yl == 0 then dc_yl = 1
+        if dc_yh == ds.viewheight - 1 then dc_yh = ds.viewheight - 2
+        let count = dc_yh - dc_yl
+        if count >= 0 then
+            if dc_x < 0 || dc_x >= sw || dc_yl < 0 || dc_yh >= sh then
+                i.fatal(alloca("R_DrawFuzzColumn: %d{dc_yl} to %d{dc_yh} at %d{dc_x}"))
+            let mut dest = ylookup[dc_yl] + columnofs[dc_x]
+            for _ in 0..count + 1 do
+                *dest = *(colormaps + 6 * 256 + (i32) *(dest + fuzzoffset[fuzzpos]))
+                fuzzpos = fuzzpos + 1
+                if fuzzpos == 50 then fuzzpos = 0
+                dest = dest + sw
+
+    let draw_translated_column = () ->
+        let count = dc_yh - dc_yl
+        if count >= 0 then
+            if dc_x < 0 || dc_x >= sw || dc_yl < 0 || dc_yh >= sh then
+                i.fatal(alloca("R_DrawColumn: %d{dc_yl} to %d{dc_yh} at %d{dc_x}"))
+            let mut dest = ylookup[dc_yl] + columnofs[dc_x]
+            let fracstep = dc_iscale
+            let mut frac = dc_texturemid + (dc_yl - centery) * fracstep
+            for _ in 0..count + 1 do
+                *dest = *(dc_colormap + (i32) *(dc_translation + (i32) *(dc_source + (frac >> 16))))
+                dest = dest + sw
+                frac = frac + fracstep
+
+    let call_colfunc = () ->
+        if colfunc == col_base then
+            if detailshift == 0 then draw_column() else draw_column_low()
+        else if colfunc == col_fuzz then draw_fuzz_column()
+        else draw_translated_column()
+
+    let init_translation_tables = () ->
+        translationtables = (u8*) c.zalloc(256i64 * 3)
+        for k in 0..256 do
+            if k >= 0x70 && k <= 0x7f then
+                *(translationtables + k) = (u8) (0x60 + (k & 0xf))
+                *(translationtables + k + 256) = (u8) (0x40 + (k & 0xf))
+                *(translationtables + k + 512) = (u8) (0x20 + (k & 0xf))
+            else
+                *(translationtables + k) = (u8) k
+                *(translationtables + k + 256) = (u8) k
+                *(translationtables + k + 512) = (u8) k
+
+    let draw_span = () ->
+        if ds_x2 < ds_x1 || ds_x1 < 0 || ds_x2 >= sw || ds_y < 0 || ds_y > sh then
+            i.fatal(alloca("R_DrawSpan: %d{ds_x1} to %d{ds_x2} at %d{ds_y}"))
+        let mut xfrac = ds_xfrac
+        let mut yfrac = ds_yfrac
+        let mut dest = ylookup[ds_y] + columnofs[ds_x1]
+        let count = ds_x2 - ds_x1
+        for _ in 0..count + 1 do
+            let spot = ((yfrac >> (16 - 6)) & (63 * 64)) + ((xfrac >> 16) & 63)
+            *dest = *(ds_colormap + (i32) *(ds_source + spot))
+            dest = dest + 1
+            xfrac = xfrac + ds_xstep
+            yfrac = yfrac + ds_ystep
+
+    let draw_span_low = () ->
+        if ds_x2 < ds_x1 || ds_x1 < 0 || ds_x2 >= sw || ds_y < 0 || ds_y > sh then
+            i.fatal(alloca("R_DrawSpan: %d{ds_x1} to %d{ds_x2} at %d{ds_y}"))
+        let mut xfrac = ds_xfrac
+        let mut yfrac = ds_yfrac
+        ds_x1 = ds_x1 << 1
+        ds_x2 = ds_x2 << 1
+        let mut dest = ylookup[ds_y] + columnofs[ds_x1]
+        let count = ds_x2 - ds_x1
+        for _ in 0..count + 1 do
+            let spot = ((yfrac >> (16 - 6)) & (63 * 64)) + ((xfrac >> 16) & 63)
+            let px = *(ds_colormap + (i32) *(ds_source + spot))
+            *dest = px
+            *(dest + 1) = px
+            dest = dest + 2
+            xfrac = xfrac + ds_xstep
+            yfrac = yfrac + ds_ystep
+
+    let call_spanfunc = () ->
+        if detailshift == 0 then draw_span() else draw_span_low()
+
+    let init_buffer = (width: i32, height: i32) ->
+        ds.viewwindowx = (sw - width) >> 1
+        for k in 0..width do columnofs[k] = ds.viewwindowx + k
+        ds.viewwindowy = if width == sw then 0 else (sh - sbarheight - height) >> 1
+        for k in 0..height do ylookup[k] = v.screens[0] + (k + ds.viewwindowy) * sw
+
+    let fill_back_screen = () ->
+        if ds.scaledviewwidth == 320 then void()
+        else
+            let name = if ds.gamemode == gmode.commercial then "GRNROCK" else "FLOOR7_2"
+            let src = w.cache_lump_name(name, pu.cache)
+            let mut dest = v.screens[1]
+            for y in 0..sh - sbarheight do
+                for _ in 0..sw / 64 do
+                    c.memcpy((any*) dest, (const any*) (src + ((y & 63) << 6)), 64i64)
+                    dest = dest + 64
+            let vx = ds.viewwindowx
+            let vy = ds.viewwindowy
+            let svw = ds.scaledviewwidth
+            let vh = ds.viewheight
+            let mut x = 0
+            loop
+                if x >= svw then break
+                v.draw_patch(vx + x, vy - 8, 1, v.patch_named("brdr_t"))
+                v.draw_patch(vx + x, vy + vh, 1, v.patch_named("brdr_b"))
+                x = x + 8
+            let mut y = 0
+            loop
+                if y >= vh then break
+                v.draw_patch(vx - 8, vy + y, 1, v.patch_named("brdr_l"))
+                v.draw_patch(vx + svw, vy + y, 1, v.patch_named("brdr_r"))
+                y = y + 8
+            v.draw_patch(vx - 8, vy - 8, 1, v.patch_named("brdr_tl"))
+            v.draw_patch(vx + svw, vy - 8, 1, v.patch_named("brdr_tr"))
+            v.draw_patch(vx - 8, vy + vh, 1, v.patch_named("brdr_bl"))
+            v.draw_patch(vx + svw, vy + vh, 1, v.patch_named("brdr_br"))
+
+    let video_erase = (ofs: i32, count: i32) ->
+        c.memcpy((any*) (v.screens[0] + ofs), (const any*) (v.screens[1] + ofs), (i64) count)
+
+    let draw_view_border = () ->
+        if ds.scaledviewwidth == sw then void()
+        else
+            let top = ((sh - sbarheight) - ds.viewheight) / 2
+            let mut side = (sw - ds.scaledviewwidth) / 2
+            video_erase(0, top * sw + side)
+            let mut ofs = (ds.viewheight + top) * sw - side
+            video_erase(ofs, top * sw + side)
+            ofs = top * sw + sw - side
+            side = side << 1
+            for _ in 1..ds.viewheight do
+                video_erase(ofs, side)
+                ofs = ofs + sw
+            v.mark_rect(0, 0, sw, sh - sbarheight)
+
+    // ===============================================================
+    // r_bsp
+    // ===============================================================
+    let clear_clip_segs = () ->
+        solidsegs[0].first = -0x7fffffff
+        solidsegs[0].last = -1
+        solidsegs[1].first = ds.viewwidth
+        solidsegs[1].last = 0x7fffffff
+        newend = 2
+
+    let clip_solid_wall_segment = (first: i32, last: i32) ->
+        let mut start = 0
+        loop
+            if solidsegs[start].last >= first - 1 then break
+            start = start + 1
+        let mut finished = false
+        if first < solidsegs[start].first then
+            if last < solidsegs[start].first - 1 then
+                // post is entirely visible (above start), insert a new clippost
+                store_wall_range(first, last)
+                let mut next = newend
+                newend = newend + 1
+                loop
+                    if next == start then break
+                    solidsegs[next] = solidsegs[next - 1]
+                    next = next - 1
+                solidsegs[next].first = first
+                solidsegs[next].last = last
+                finished = true
+            else
+                store_wall_range(first, solidsegs[start].first - 1)
+                solidsegs[start].first = first
+        if !finished && last > solidsegs[start].last then
+            let mut next = start
+            let mut crunch = false
+            loop
+                if last < solidsegs[next + 1].first - 1 then break
+                store_wall_range(solidsegs[next].last + 1, solidsegs[next + 1].first - 1)
+                next = next + 1
+                if last <= solidsegs[next].last then
+                    solidsegs[start].last = solidsegs[next].last
+                    crunch = true
+                    break
+            if !crunch then
+                store_wall_range(solidsegs[next].last + 1, last)
+                solidsegs[start].last = last
+            // crunch: remove posts covered by the new one
+            if next != start then
+                loop
+                    let at_end = next == newend
+                    next = next + 1
+                    if at_end then break
+                    start = start + 1
+                    solidsegs[start] = solidsegs[next]
+                newend = start + 1
+
+    let clip_pass_wall_segment = (first: i32, last: i32) ->
+        let mut start = 0
+        loop
+            if solidsegs[start].last >= first - 1 then break
+            start = start + 1
+        let mut done = false
+        if first < solidsegs[start].first then
+            if last < solidsegs[start].first - 1 then
+                store_wall_range(first, last)
+                done = true
+            else
+                store_wall_range(first, solidsegs[start].first - 1)
+        if !done && last > solidsegs[start].last then
+            loop
+                if last < solidsegs[start + 1].first - 1 then
+                    store_wall_range(solidsegs[start].last + 1, last)
+                    break
+                store_wall_range(solidsegs[start].last + 1, solidsegs[start + 1].first - 1)
+                start = start + 1
+                if last <= solidsegs[start].last then break
+
+    let add_line = (ln: seg*) ->
+        curline = ln
+        let mut angle1 = point_to_angle(ln.v1.x, ln.v1.y)
+        let mut angle2 = point_to_angle(ln.v2.x, ln.v2.y)
+        let span = angle1 - angle2
+        if span >= fx.ang180 then return
+        rw_angle1 = (i32) angle1
+        angle1 = angle1 - viewangle
+        angle2 = angle2 - viewangle
+        let mut tspan = angle1 + clipangle
+        if tspan > 2u32 * clipangle then
+            tspan = tspan - 2u32 * clipangle
+            if tspan >= span then return
+            angle1 = clipangle
+        tspan = clipangle - angle2
+        if tspan > 2u32 * clipangle then
+            tspan = tspan - 2u32 * clipangle
+            if tspan >= span then return
+            angle2 = 0u32 - clipangle
+        let x1 = viewangletox[fx.fine(angle1 + fx.ang90)]
+        let x2 = viewangletox[fx.fine(angle2 + fx.ang90)]
+        if x1 == x2 then return
+        backsector = ln.backsector
+        let fs = frontsector
+        let bs = backsector
+        if c.is_null(bs) then clip_solid_wall_segment(x1, x2 - 1)
+        else if bs.ceilingheight <= fs.floorheight || bs.floorheight >= fs.ceilingheight then
+            clip_solid_wall_segment(x1, x2 - 1)
+        else if bs.ceilingheight != fs.ceilingheight || bs.floorheight != fs.floorheight then
+            clip_pass_wall_segment(x1, x2 - 1)
+        else if bs.ceilingpic == fs.ceilingpic && bs.floorpic == fs.floorpic
+                && bs.lightlevel == fs.lightlevel && curline.sidedef.midtexture == 0 then
+            void()
+        else
+            clip_pass_wall_segment(x1, x2 - 1)
+
+    let checkcoord = i32[] {
+        3, 0, 2, 1,
+        3, 0, 2, 0,
+        3, 1, 2, 0,
+        0, 0, 0, 0,
+        2, 0, 2, 1,
+        0, 0, 0, 0,
+        3, 1, 3, 0,
+        0, 0, 0, 0,
+        2, 0, 3, 1,
+        2, 1, 3, 1,
+        2, 1, 3, 0,
+        0, 0, 0, 0
+    }
+
+    let check_bbox = (bspcoord: const i32[]) ->
+        let boxx = if viewx <= bspcoord[box.left] then 0
+                   else if viewx < bspcoord[box.right] then 1
+                   else 2
+        let boxy = if viewy >= bspcoord[box.top] then 0
+                   else if viewy > bspcoord[box.bottom] then 1
+                   else 2
+        let boxpos = (boxy << 2) + boxx
+        if boxpos == 5 then return true
+        let x1 = bspcoord[checkcoord[boxpos * 4]]
+        let y1 = bspcoord[checkcoord[boxpos * 4 + 1]]
+        let x2 = bspcoord[checkcoord[boxpos * 4 + 2]]
+        let y2 = bspcoord[checkcoord[boxpos * 4 + 3]]
+        let mut angle1 = point_to_angle(x1, y1) - viewangle
+        let mut angle2 = point_to_angle(x2, y2) - viewangle
+        let span = angle1 - angle2
+        if span >= fx.ang180 then return true
+        let mut tspan = angle1 + clipangle
+        if tspan > 2u32 * clipangle then
+            tspan = tspan - 2u32 * clipangle
+            if tspan >= span then return false
+            angle1 = clipangle
+        tspan = clipangle - angle2
+        if tspan > 2u32 * clipangle then
+            tspan = tspan - 2u32 * clipangle
+            if tspan >= span then return false
+            angle2 = 0u32 - clipangle
+        let sx1 = viewangletox[fx.fine(angle1 + fx.ang90)]
+        let mut sx2 = viewangletox[fx.fine(angle2 + fx.ang90)]
+        if sx1 == sx2 then return false
+        sx2 = sx2 - 1
+        let mut start = 0
+        loop
+            if solidsegs[start].last >= sx2 then break
+            start = start + 1
+        !(sx1 >= solidsegs[start].first && sx2 <= solidsegs[start].last)
+
+    let subsector_render = (num: i32) ->
+        if num >= numsubsectors then
+            i.fatal(alloca("R_Subsector: ss %d{num} with numss = %d{numsubsectors}"))
+        sscount = sscount + 1
+        let sub = &subsectors[num]
+        frontsector = sub.sector
+        let fs = frontsector
+        if fs.floorheight < viewz then
+            floorplane = find_plane(fs.floorheight, fs.floorpic, fs.lightlevel)
+        else
+            floorplane = default(visplane*)
+        if fs.ceilingheight > viewz || fs.ceilingpic == ds.skyflatnum then
+            ceilingplane = find_plane(fs.ceilingheight, fs.ceilingpic, fs.lightlevel)
+        else
+            ceilingplane = default(visplane*)
+        add_sprites(fs)
+        for k in 0..sub.numlines do
+            add_line(&segs[sub.firstline + k])
+
+    let render_bsp_node = (bspnum: i32) ->
+        if (bspnum & ml.nf_subsector) != 0 then
+            if bspnum == -1 then subsector_render(0)
+            else subsector_render(bspnum & ~ml.nf_subsector)
+        else
+            let bsp = &nodes[bspnum]
+            let side = if point_on_side(viewx, viewy, bsp) then 1 else 0
+            render_bsp_node(bsp.children[side])
+            if check_bbox(bsp.bbox[(side ^ 1) * 4 .. (side ^ 1) * 4 + 4]) then
+                render_bsp_node(bsp.children[side ^ 1])
+
+    // ===============================================================
+    // r_segs
+    // ===============================================================
+    let set_walllights = (lightnum: i32) ->
+        walllights = if lightnum < 0 then scalelight.ptr
+                     else if lightnum >= lightlevels then scalelight.ptr + (lightlevels - 1) * maxlightscale
+                     else scalelight.ptr + lightnum * maxlightscale
+
+    let render_masked_seg_range = (dsg: drawseg*, x1: i32, x2: i32) ->
+        curline = dsg.curline
+        frontsector = curline.frontsector
+        backsector = curline.backsector
+        let fs = frontsector
+        let bs = backsector
+        let texnum = texturetranslation[curline.sidedef.midtexture]
+        let mut lightnum = (fs.lightlevel >> lightsegshift) + extralight
+        if curline.v1.y == curline.v2.y then lightnum = lightnum - 1
+        else if curline.v1.x == curline.v2.x then lightnum = lightnum + 1
+        set_walllights(lightnum)
+        maskedtexturecol = dsg.maskedtexturecol
+        rw_scalestep = dsg.scalestep
+        spryscale = dsg.scale1 + (x1 - dsg.x1) * rw_scalestep
+        mfloorclip = dsg.sprbottomclip
+        mceilingclip = dsg.sprtopclip
+        if (curline.linedef.flags & ml.dontpegbottom) != 0 then
+            let base = if fs.floorheight > bs.floorheight then fs.floorheight else bs.floorheight
+            dc_texturemid = base + textureheight[texnum] - viewz
+        else
+            let base = if fs.ceilingheight < bs.ceilingheight then fs.ceilingheight else bs.ceilingheight
+            dc_texturemid = base - viewz
+        dc_texturemid = dc_texturemid + curline.sidedef.rowoffset
+        if c.not_null(fixedcolormap) then dc_colormap = fixedcolormap
+        dc_x = x1
+        loop
+            if dc_x > x2 then break
+            if *(maskedtexturecol + dc_x) != (i16) maxshort then
+                if c.is_null(fixedcolormap) then
+                    let mut index = (u32) (spryscale >> lightscaleshift)
+                    if index >= (u32) maxlightscale then index = (u32) (maxlightscale - 1)
+                    dc_colormap = *(walllights + (i32) index)
+                sprtopscreen = centeryfrac - fx.mul(dc_texturemid, spryscale)
+                dc_iscale = (i32) (0xffffffffu32 / (u32) spryscale)
+                let col = get_column(texnum, (i32) *(maskedtexturecol + dc_x)) - 3
+                draw_masked_column(col)
+                *(maskedtexturecol + dc_x) = (i16) maxshort
+            spryscale = spryscale + rw_scalestep
+            dc_x = dc_x + 1
+
+    let render_seg_loop = () ->
+        let mut texturecolumn = 0
+        loop
+            if rw_x >= rw_stopx then break
+            let mut yl = (topfrac + heightunit - 1) >> heightbits
+            if yl < ceilingclip[rw_x] + 1 then yl = ceilingclip[rw_x] + 1
+            if markceiling then
+                let top = ceilingclip[rw_x] + 1
+                let mut bottom = yl - 1
+                if bottom >= floorclip[rw_x] then bottom = floorclip[rw_x] - 1
+                if top <= bottom then
+                    ceilingplane.top[rw_x + 1] = (u8) top
+                    ceilingplane.bottom[rw_x + 1] = (u8) bottom
+            let mut yh = bottomfrac >> heightbits
+            if yh >= floorclip[rw_x] then yh = floorclip[rw_x] - 1
+            if markfloor then
+                let mut top = yh + 1
+                let bottom = floorclip[rw_x] - 1
+                if top <= ceilingclip[rw_x] then top = ceilingclip[rw_x] + 1
+                if top <= bottom then
+                    floorplane.top[rw_x + 1] = (u8) top
+                    floorplane.bottom[rw_x + 1] = (u8) bottom
+            if segtextured then
+                let angle = fx.fine(rw_centerangle + xtoviewangle[rw_x])
+                texturecolumn = (rw_offset - fx.mul(finetangent(angle), rw_distance)) >> 16
+                let mut index = (u32) (rw_scale >> lightscaleshift)
+                if index >= (u32) maxlightscale then index = (u32) (maxlightscale - 1)
+                dc_colormap = *(walllights + (i32) index)
+                dc_x = rw_x
+                dc_iscale = (i32) (0xffffffffu32 / (u32) rw_scale)
+            if midtexture != 0 then
+                dc_yl = yl
+                dc_yh = yh
+                dc_texturemid = rw_midtexturemid
+                dc_source = get_column(midtexture, texturecolumn)
+                call_colfunc()
+                ceilingclip[rw_x] = (i16) ds.viewheight
+                floorclip[rw_x] = -1i16
+            else
+                if toptexture != 0 then
+                    let mut mid = pixhigh >> heightbits
+                    pixhigh = pixhigh + pixhighstep
+                    if mid >= floorclip[rw_x] then mid = floorclip[rw_x] - 1
+                    if mid >= yl then
+                        dc_yl = yl
+                        dc_yh = mid
+                        dc_texturemid = rw_toptexturemid
+                        dc_source = get_column(toptexture, texturecolumn)
+                        call_colfunc()
+                        ceilingclip[rw_x] = (i16) mid
+                    else
+                        ceilingclip[rw_x] = (i16) (yl - 1)
+                else if markceiling then
+                    ceilingclip[rw_x] = (i16) (yl - 1)
+                if bottomtexture != 0 then
+                    let mut mid = (pixlow + heightunit - 1) >> heightbits
+                    pixlow = pixlow + pixlowstep
+                    if mid <= ceilingclip[rw_x] then mid = ceilingclip[rw_x] + 1
+                    if mid <= yh then
+                        dc_yl = mid
+                        dc_yh = yh
+                        dc_texturemid = rw_bottomtexturemid
+                        dc_source = get_column(bottomtexture, texturecolumn)
+                        call_colfunc()
+                        floorclip[rw_x] = (i16) mid
+                    else
+                        floorclip[rw_x] = (i16) (yh + 1)
+                else if markfloor then
+                    floorclip[rw_x] = (i16) (yh + 1)
+                if maskedtexture then
+                    *(maskedtexturecol + rw_x) = (i16) texturecolumn
+            rw_scale = rw_scale + rw_scalestep
+            topfrac = topfrac + topstep
+            bottomfrac = bottomfrac + bottomstep
+            rw_x = rw_x + 1
+
+    let store_wall_range = (start: i32, stop: i32) ->
+        if ds_p == sil.maxdrawsegs then return
+        if start >= ds.viewwidth || start > stop then
+            i.fatal(alloca("Bad R_RenderWallRange: %d{start} to %d{stop}"))
+        let dsp = &drawsegs[ds_p]
+        sidedef = curline.sidedef
+        linedef = curline.linedef
+        linedef.flags = linedef.flags | ml.mapped
+        rw_normalangle = curline.angle + fx.ang90
+        let mut offsetangle = (u32) c.iabs((i32) (rw_normalangle - (u32) rw_angle1))
+        if offsetangle > fx.ang90 then offsetangle = fx.ang90
+        let distangle = fx.ang90 - offsetangle
+        let hyp = point_to_dist(curline.v1.x, curline.v1.y)
+        let mut sineval = finesine(fx.fine(distangle))
+        rw_distance = fx.mul(hyp, sineval)
+        rw_x = start
+        dsp.x1 = start
+        dsp.x2 = stop
+        dsp.curline = curline
+        rw_stopx = stop + 1
+        rw_scale = scale_from_global_angle(viewangle + xtoviewangle[start])
+        dsp.scale1 = rw_scale
+        if stop > start then
+            dsp.scale2 = scale_from_global_angle(viewangle + xtoviewangle[stop])
+            rw_scalestep = (dsp.scale2 - rw_scale) / (stop - start)
+            dsp.scalestep = rw_scalestep
+        else
+            dsp.scale2 = dsp.scale1
+        let fs = frontsector
+        let bs = backsector
+        worldtop = fs.ceilingheight - viewz
+        worldbottom = fs.floorheight - viewz
+        midtexture = 0
+        toptexture = 0
+        bottomtexture = 0
+        maskedtexture = false
+        dsp.maskedtexturecol = default(i16*)
+        if c.is_null(bs) then
+            // single sided line
+            midtexture = texturetranslation[sidedef.midtexture]
+            markfloor = true
+            markceiling = true
+            if (linedef.flags & ml.dontpegbottom) != 0 then
+                let vtop = fs.floorheight + textureheight[sidedef.midtexture]
+                rw_midtexturemid = vtop - viewz
+            else
+                rw_midtexturemid = worldtop
+            rw_midtexturemid = rw_midtexturemid + sidedef.rowoffset
+            dsp.silhouette = sil.both
+            dsp.sprtopclip = screenheightarray.ptr
+            dsp.sprbottomclip = negonearray.ptr
+            dsp.bsilheight = i32.max
+            dsp.tsilheight = i32.min
+        else
+            // two sided line
+            dsp.sprtopclip = default(i16*)
+            dsp.sprbottomclip = default(i16*)
+            dsp.silhouette = 0
+            if fs.floorheight > bs.floorheight then
+                dsp.silhouette = sil.bottom
+                dsp.bsilheight = fs.floorheight
+            else if bs.floorheight > viewz then
+                dsp.silhouette = sil.bottom
+                dsp.bsilheight = i32.max
+            if fs.ceilingheight < bs.ceilingheight then
+                dsp.silhouette = dsp.silhouette | sil.top
+                dsp.tsilheight = fs.ceilingheight
+            else if bs.ceilingheight < viewz then
+                dsp.silhouette = dsp.silhouette | sil.top
+                dsp.tsilheight = i32.min
+            if bs.ceilingheight <= fs.floorheight then
+                dsp.sprbottomclip = negonearray.ptr
+                dsp.bsilheight = i32.max
+                dsp.silhouette = dsp.silhouette | sil.bottom
+            if bs.floorheight >= fs.ceilingheight then
+                dsp.sprtopclip = screenheightarray.ptr
+                dsp.tsilheight = i32.min
+                dsp.silhouette = dsp.silhouette | sil.top
+            worldhigh = bs.ceilingheight - viewz
+            worldlow = bs.floorheight - viewz
+            // hack to allow height changes in outdoor areas
+            if fs.ceilingpic == ds.skyflatnum && bs.ceilingpic == ds.skyflatnum then
+                worldtop = worldhigh
+            markfloor = worldlow != worldbottom || bs.floorpic != fs.floorpic
+                        || bs.lightlevel != fs.lightlevel
+            markceiling = worldhigh != worldtop || bs.ceilingpic != fs.ceilingpic
+                          || bs.lightlevel != fs.lightlevel
+            if bs.ceilingheight <= fs.floorheight || bs.floorheight >= fs.ceilingheight then
+                // closed door
+                markceiling = true
+                markfloor = true
+            if worldhigh < worldtop then
+                toptexture = texturetranslation[sidedef.toptexture]
+                if (linedef.flags & ml.dontpegtop) != 0 then
+                    rw_toptexturemid = worldtop
+                else
+                    let vtop = bs.ceilingheight + textureheight[sidedef.toptexture]
+                    rw_toptexturemid = vtop - viewz
+            if worldlow > worldbottom then
+                bottomtexture = texturetranslation[sidedef.bottomtexture]
+                rw_bottomtexturemid = if (linedef.flags & ml.dontpegbottom) != 0 then worldtop else worldlow
+            rw_toptexturemid = rw_toptexturemid + sidedef.rowoffset
+            rw_bottomtexturemid = rw_bottomtexturemid + sidedef.rowoffset
+            if sidedef.midtexture != 0 then
+                maskedtexture = true
+                maskedtexturecol = lastopening - rw_x
+                dsp.maskedtexturecol = maskedtexturecol
+                lastopening = lastopening + (rw_stopx - rw_x)
+        segtextured = midtexture != 0 || toptexture != 0 || bottomtexture != 0 || maskedtexture
+        if segtextured then
+            offsetangle = rw_normalangle - (u32) rw_angle1
+            if offsetangle > fx.ang180 then offsetangle = 0u32 - offsetangle
+            if offsetangle > fx.ang90 then offsetangle = fx.ang90
+            sineval = finesine(fx.fine(offsetangle))
+            rw_offset = fx.mul(hyp, sineval)
+            if rw_normalangle - (u32) rw_angle1 < fx.ang180 then rw_offset = 0 - rw_offset
+            rw_offset = rw_offset + sidedef.textureoffset + curline.offset
+            rw_centerangle = fx.ang90 + viewangle - rw_normalangle
+            if c.is_null(fixedcolormap) then
+                let mut lightnum = (fs.lightlevel >> lightsegshift) + extralight
+                if curline.v1.y == curline.v2.y then lightnum = lightnum - 1
+                else if curline.v1.x == curline.v2.x then lightnum = lightnum + 1
+                set_walllights(lightnum)
+        if fs.floorheight >= viewz then markfloor = false
+        if fs.ceilingheight <= viewz && fs.ceilingpic != ds.skyflatnum then markceiling = false
+        worldtop = worldtop >> 4
+        worldbottom = worldbottom >> 4
+        topstep = 0 - fx.mul(rw_scalestep, worldtop)
+        topfrac = (centeryfrac >> 4) - fx.mul(worldtop, rw_scale)
+        bottomstep = 0 - fx.mul(rw_scalestep, worldbottom)
+        bottomfrac = (centeryfrac >> 4) - fx.mul(worldbottom, rw_scale)
+        if c.not_null(bs) then
+            worldhigh = worldhigh >> 4
+            worldlow = worldlow >> 4
+            if worldhigh < worldtop then
+                pixhigh = (centeryfrac >> 4) - fx.mul(worldhigh, rw_scale)
+                pixhighstep = 0 - fx.mul(rw_scalestep, worldhigh)
+            if worldlow > worldbottom then
+                pixlow = (centeryfrac >> 4) - fx.mul(worldlow, rw_scale)
+                pixlowstep = 0 - fx.mul(rw_scalestep, worldlow)
+        if markceiling then ceilingplane = check_plane(ceilingplane, rw_x, rw_stopx - 1)
+        if markfloor then floorplane = check_plane(floorplane, rw_x, rw_stopx - 1)
+        render_seg_loop()
+        if ((dsp.silhouette & sil.top) != 0 || maskedtexture) && c.is_null(dsp.sprtopclip) then
+            c.memcpy((any*) lastopening, (const any*) (ceilingclip.ptr + start), 2i64 * (rw_stopx - start))
+            dsp.sprtopclip = lastopening - start
+            lastopening = lastopening + (rw_stopx - start)
+        if ((dsp.silhouette & sil.bottom) != 0 || maskedtexture) && c.is_null(dsp.sprbottomclip) then
+            c.memcpy((any*) lastopening, (const any*) (floorclip.ptr + start), 2i64 * (rw_stopx - start))
+            dsp.sprbottomclip = lastopening - start
+            lastopening = lastopening + (rw_stopx - start)
+        if maskedtexture && (dsp.silhouette & sil.top) == 0 then
+            dsp.silhouette = dsp.silhouette | sil.top
+            dsp.tsilheight = i32.min
+        if maskedtexture && (dsp.silhouette & sil.bottom) == 0 then
+            dsp.silhouette = dsp.silhouette | sil.bottom
+            dsp.bsilheight = i32.max
+        ds_p = ds_p + 1
+
+    // ===============================================================
+    // r_plane
+    // ===============================================================
+    let map_plane = (y: i32, x1: i32, x2: i32) ->
+        if x2 < x1 || x1 < 0 || x2 >= ds.viewwidth || y < 0 || y > ds.viewheight then
+            i.fatal(alloca("R_MapPlane: %d{x1}, %d{x2} at %d{y}"))
+        let mut distance = 0
+        if planeheight != cachedheight[y] then
+            cachedheight[y] = planeheight
+            distance = fx.mul(planeheight, yslope[y])
+            cacheddistance[y] = distance
+            ds_xstep = fx.mul(distance, basexscale)
+            cachedxstep[y] = ds_xstep
+            ds_ystep = fx.mul(distance, baseyscale)
+            cachedystep[y] = ds_ystep
+        else
+            distance = cacheddistance[y]
+            ds_xstep = cachedxstep[y]
+            ds_ystep = cachedystep[y]
+        let length = fx.mul(distance, distscale[x1])
+        let angle = fx.fine(viewangle + xtoviewangle[x1])
+        ds_xfrac = viewx + fx.mul(finecosine(angle), length)
+        ds_yfrac = 0 - viewy - fx.mul(finesine(angle), length)
+        if c.not_null(fixedcolormap) then ds_colormap = fixedcolormap
+        else
+            let mut index = (u32) (distance >> lightzshift)
+            if index >= (u32) maxlightz then index = (u32) (maxlightz - 1)
+            ds_colormap = *(planezlight + (i32) index)
+        ds_y = y
+        ds_x1 = x1
+        ds_x2 = x2
+        call_spanfunc()
+
+    let clear_planes = () ->
+        for k in 0..ds.viewwidth do
+            floorclip[k] = (i16) ds.viewheight
+            ceilingclip[k] = -1i16
+        lastvisplane = 0
+        lastopening = openings.ptr
+        for k in 0..200 do cachedheight[k] = 0
+        let angle = fx.fine(viewangle - fx.ang90)
+        basexscale = fx.div(finecosine(angle), centerxfrac)
+        baseyscale = 0 - fx.div(finesine(angle), centerxfrac)
+
+    let find_plane = (height0: i32, picnum: i32, lightlevel0: i32) ->
+        let mut height = height0
+        let mut lightlevel = lightlevel0
+        if picnum == ds.skyflatnum then
+            height = 0
+            lightlevel = 0
+        let mut found = -1
+        for k in 0..lastvisplane do
+            let ck = &visplanes[k]
+            if found == -1 && height == ck.height && picnum == ck.picnum && lightlevel == ck.lightlevel then
+                found = (i32) k
+        if found >= 0 then &visplanes[found]
+        else
+            if lastvisplane == maxvisplanes then i.fatal("R_FindPlane: no more visplanes")
+            let ck = &visplanes[lastvisplane]
+            lastvisplane = lastvisplane + 1
+            ck.height = height
+            ck.picnum = picnum
+            ck.lightlevel = lightlevel
+            ck.minx = sw
+            ck.maxx = -1
+            c.memset((any*) ck.top.ptr, 0xff, 322i64)
+            ck
+
+    let check_plane = (pl0: visplane*, start: i32, stop: i32) ->
+        let mut pl = pl0
+        let mut intrl = 0
+        let mut unionl = 0
+        let mut intrh = 0
+        let mut unionh = 0
+        if start < pl.minx then
+            intrl = pl.minx
+            unionl = start
+        else
+            unionl = pl.minx
+            intrl = start
+        if stop > pl.maxx then
+            intrh = pl.maxx
+            unionh = stop
+        else
+            unionh = pl.maxx
+            intrh = stop
+        let mut x = intrl
+        loop
+            if x > intrh then break
+            if pl.top[x + 1] != 0xffu8 then break
+            x = x + 1
+        if x > intrh then
+            pl.minx = unionl
+            pl.maxx = unionh
+            pl
+        else
+            // make a new visplane
+            if lastvisplane == maxvisplanes then i.fatal("R_FindPlane: no more visplanes")
+            let np = &visplanes[lastvisplane]
+            np.height = pl.height
+            np.picnum = pl.picnum
+            np.lightlevel = pl.lightlevel
+            lastvisplane = lastvisplane + 1
+            pl = np
+            pl.minx = start
+            pl.maxx = stop
+            c.memset((any*) pl.top.ptr, 0xff, 322i64)
+            pl
+
+    let make_spans = (x: i32, t1_0: i32, b1_0: i32, t2_0: i32, b2_0: i32) ->
+        let mut t1 = t1_0
+        let mut b1 = b1_0
+        let mut t2 = t2_0
+        let mut b2 = b2_0
+        loop
+            if !(t1 < t2 && t1 <= b1) then break
+            map_plane(t1, spanstart[t1], x - 1)
+            t1 = t1 + 1
+        loop
+            if !(b1 > b2 && b1 >= t1) then break
+            map_plane(b1, spanstart[b1], x - 1)
+            b1 = b1 - 1
+        loop
+            if !(t2 < t1 && t2 <= b2) then break
+            spanstart[t2] = x
+            t2 = t2 + 1
+        loop
+            if !(b2 > b1 && b2 >= t2) then break
+            spanstart[b2] = x
+            b2 = b2 - 1
+
+    let draw_planes = () ->
+        if ds_p > sil.maxdrawsegs then i.fatal(alloca("R_DrawPlanes: drawsegs overflow (%d{ds_p})"))
+        if lastvisplane > maxvisplanes then i.fatal("R_DrawPlanes: visplane overflow")
+        if (lastopening - openings.ptr) > (isize) maxopenings then
+            i.fatal("R_DrawPlanes: opening overflow")
+        for k in 0..lastvisplane do
+            let pl = &visplanes[k]
+            if pl.minx <= pl.maxx then
+                if pl.picnum == ds.skyflatnum then
+                    // sky flat
+                    dc_iscale = pspriteiscale >> detailshift
+                    dc_colormap = colormaps
+                    dc_texturemid = skytexturemid
+                    for x in pl.minx..pl.maxx + 1 do
+                        dc_yl = (i32) pl.top[x + 1]
+                        dc_yh = (i32) pl.bottom[x + 1]
+                        if dc_yl <= dc_yh then
+                            let angle = (i32) ((viewangle + xtoviewangle[x]) >> angletoskyshift)
+                            dc_x = x
+                            dc_source = get_column(ds.skytexture, angle)
+                            call_colfunc()
+                else
+                    ds_source = w.cache_lump_num(firstflat + flattranslation[pl.picnum], pu.static_x)
+                    planeheight = c.iabs(pl.height - viewz)
+                    let mut light = (pl.lightlevel >> lightsegshift) + extralight
+                    if light >= lightlevels then light = lightlevels - 1
+                    if light < 0 then light = 0
+                    planezlight = zlight.ptr + light * maxlightz
+                    pl.top[pl.maxx + 2] = 0xffu8
+                    pl.top[pl.minx] = 0xffu8
+                    let stop = pl.maxx + 1
+                    for x in pl.minx..stop + 1 do
+                        make_spans(x, (i32) pl.top[x], (i32) pl.bottom[x],
+                                   (i32) pl.top[x + 1], (i32) pl.bottom[x + 1])
+
+    // ===============================================================
+    // r_things
+    // ===============================================================
+    let install_sprite_lump = (lump: i32, frame: i32, rotation0: i32, flipped: bool) ->
+        let mut rotation = rotation0
+        if frame >= 29 || frame < 0 || rotation > 8 || rotation < 0 then
+            i.fatal(alloca("R_InstallSpriteLump: Bad frame characters in lump %d{lump}"))
+        if frame > maxframe then maxframe = frame
+        let st = &sprtemp[frame]
+        if rotation == 0 then
+            // the lump should be used for all rotations
+            if st.rotate == 0 then
+                i.fatal(alloca("R_InitSprites: Sprite %.8s{spritename} frame %c{(u8) ('A' + frame)} has multip rot=0 lump"))
+            if st.rotate == 1 then
+                i.fatal(alloca("R_InitSprites: Sprite %.8s{spritename} frame %c{(u8) ('A' + frame)} has rotations and a rot=0 lump"))
+            st.rotate = 0
+            for rr in 0..8 do
+                st.lump[rr] = lump - firstspritelump
+                st.flip[rr] = if flipped then 1u8 else 0u8
+        else
+            if st.rotate == 0 then
+                i.fatal(alloca("R_InitSprites: Sprite %.8s{spritename} frame %c{(u8) ('A' + frame)} has rotations and a rot=0 lump"))
+            st.rotate = 1
+            rotation = rotation - 1
+            if st.lump[rotation] != -1 then
+                i.fatal(alloca("R_InitSprites: Sprite %.8s{spritename} : %c{(u8) ('A' + frame)} : %c{(u8) ('1' + rotation)} has two lumps mapped to it"))
+            st.lump[rotation] = lump - firstspritelump
+            st.flip[rotation] = if flipped then 1u8 else 0u8
+
+    let init_sprite_defs = () ->
+        numsprites = spr.numsprites
+        sprites = alloc(spritedef[] { len = numsprites })!
+        let start = firstspritelump - 1
+        let end = lastspritelump + 1
+        for k in 0..numsprites do
+            spritename = info.sprnames[k]
+            for f in 0..29 do
+                sprtemp[f].rotate = -1
+                for rr in 0..8 do
+                    sprtemp[f].lump[rr] = -1
+                    sprtemp[f].flip[rr] = 0xffu8
+            maxframe = -1
+            let { k1, k2 } = w.key(spritename)
+            for l in start + 1..end do
+                let li = &w.lumpinfo[l]
+                if li.k1 == k1 then
+                    let frame = (i32) li.name[4] - 'A'
+                    let rotation = (i32) li.name[5] - '0'
+                    let patched = if ds.modifiedgame then w.get_num_for_name(c.name_view(li.name.ptr, 8)) else l
+                    install_sprite_lump(patched, frame, rotation, false)
+                    if li.name[6] != 0u8 then
+                        install_sprite_lump(l, (i32) li.name[6] - 'A', (i32) li.name[7] - '0', true)
+            if maxframe == -1 then
+                sprites[k].numframes = 0
+            else
+                maxframe = maxframe + 1
+                for f in 0..maxframe do
+                    let rot = sprtemp[f].rotate
+                    if rot == -1 then
+                        i.fatal(alloca("R_InitSprites: No patches found for %.8s{spritename} frame %c{(u8) ('A' + f)}"))
+                    if rot == 1 then
+                        for rr in 0..8 do
+                            if sprtemp[f].lump[rr] == -1 then
+                                i.fatal(alloca("R_InitSprites: Sprite %.8s{spritename} frame %c{(u8) ('A' + f)} is missing rotations"))
+                sprites[k].numframes = maxframe
+                let frames = (spriteframe*) c.zalloc((i64) maxframe * sizeof(spriteframe))
+                c.memcpy((any*) frames, (const any*) sprtemp.ptr, (i64) maxframe * sizeof(spriteframe))
+                sprites[k].spriteframes = frames
+
+    let init_sprites = () ->
+        for k in 0..sw do negonearray[k] = -1i16
+        init_sprite_defs()
+
+    let new_vis_sprite = () ->
+        if vissprite_p == maxvissprites then &overflowsprite
+        else
+            vissprite_p = vissprite_p + 1
+            &vissprites[vissprite_p - 1]
+
+    let draw_masked_column = (column0: const u8*) ->
+        let mut column = column0
+        let basetexturemid = dc_texturemid
+        loop
+            let topdelta = (i32) *column
+            if topdelta == 0xff then break
+            let length = (i32) *(column + 1)
+            let topscreen = sprtopscreen + spryscale * topdelta
+            let bottomscreen = topscreen + spryscale * length
+            dc_yl = (topscreen + fx.fracunit - 1) >> 16
+            dc_yh = (bottomscreen - 1) >> 16
+            if dc_yh >= *(mfloorclip + dc_x) then dc_yh = *(mfloorclip + dc_x) - 1
+            if dc_yl <= *(mceilingclip + dc_x) then dc_yl = *(mceilingclip + dc_x) + 1
+            if dc_yl <= dc_yh then
+                dc_source = (u8*) (column + 3)
+                dc_texturemid = basetexturemid - (topdelta << 16)
+                call_colfunc()
+            column = column + length + 4
+        dc_texturemid = basetexturemid
+
+    let draw_vis_sprite = (vis: vissprite*, x1: i32, x2: i32) ->
+        let p = (const patch*) w.cache_lump_num(vis.patch + firstspritelump, pu.cache)
+        dc_colormap = (u8*) vis.colormap
+        if c.is_null(dc_colormap) then
+            colfunc = col_fuzz
+        else if (vis.mobjflags & mf.translation) != 0 then
+            colfunc = col_trans
+            dc_translation = translationtables - 256 + ((vis.mobjflags & mf.translation) >> (mf.transshift - 8))
+        dc_iscale = c.iabs(vis.xiscale) >> detailshift
+        dc_texturemid = vis.texturemid
+        let mut frac = vis.startfrac
+        spryscale = vis.scale
+        sprtopscreen = centeryfrac - fx.mul(dc_texturemid, spryscale)
+        dc_x = vis.x1
+        loop
+            if dc_x > vis.x2 then break
+            let texturecolumn = frac >> 16
+            if texturecolumn < 0 || texturecolumn >= p.width then
+                i.fatal("R_DrawSpriteRange: bad texturecolumn")
+            draw_masked_column(patches.column(p, texturecolumn))
+            dc_x = dc_x + 1
+            frac = frac + vis.xiscale
+        colfunc = col_base
+
+    let project_sprite = (thing: mobj*) ->
+        let tr_x = thing.x - viewx
+        let tr_y = thing.y - viewy
+        let mut gxt = fx.mul(tr_x, viewcos)
+        let mut gyt = 0 - fx.mul(tr_y, viewsin)
+        let tz = gxt - gyt
+        if tz < minz then return
+        let xscale = fx.div(projection, tz)
+        gxt = 0 - fx.mul(tr_x, viewsin)
+        gyt = fx.mul(tr_y, viewcos)
+        let mut tx = 0 - (gyt + gxt)
+        if c.iabs(tx) > (tz << 2) then return
+        if thing.sprite < 0 || thing.sprite >= numsprites then
+            i.fatal(alloca("R_ProjectSprite: invalid sprite number %d{thing.sprite} "))
+        let sprdef = &sprites[thing.sprite]
+        if (thing.frame & ps.ff_framemask) >= sprdef.numframes then
+            i.fatal(alloca("R_ProjectSprite: invalid sprite frame %d{thing.sprite} : %d{thing.frame} "))
+        let sprframe = sprdef.spriteframes + (thing.frame & ps.ff_framemask)
+        let mut lump = 0
+        let mut flip = false
+        if sprframe.rotate != 0 then
+            let ang = point_to_angle(thing.x, thing.y)
+            let rot = (i32) ((ang - thing.angle + (fx.ang45 / 2u32) * 9u32) >> 29)
+            lump = sprframe.lump[rot]
+            flip = sprframe.flip[rot] != 0u8
+        else
+            lump = sprframe.lump[0]
+            flip = sprframe.flip[0] != 0u8
+        tx = tx - spriteoffset[lump]
+        let x1 = (centerxfrac + fx.mul(tx, xscale)) >> 16
+        if x1 > ds.viewwidth then return
+        tx = tx + spritewidth[lump]
+        let x2 = ((centerxfrac + fx.mul(tx, xscale)) >> 16) - 1
+        if x2 < 0 then return
+        let vis = new_vis_sprite()
+        vis.mobjflags = thing.flags
+        vis.scale = xscale << detailshift
+        vis.gx = thing.x
+        vis.gy = thing.y
+        vis.gz = thing.z
+        vis.gzt = thing.z + spritetopoffset[lump]
+        vis.texturemid = vis.gzt - viewz
+        vis.x1 = if x1 < 0 then 0 else x1
+        vis.x2 = if x2 >= ds.viewwidth then ds.viewwidth - 1 else x2
+        let iscale = fx.div(fx.fracunit, xscale)
+        if flip then
+            vis.startfrac = spritewidth[lump] - 1
+            vis.xiscale = 0 - iscale
+        else
+            vis.startfrac = 0
+            vis.xiscale = iscale
+        if vis.x1 > x1 then vis.startfrac = vis.startfrac + vis.xiscale * (vis.x1 - x1)
+        vis.patch = lump
+        if (thing.flags & mf.shadow) != 0 then
+            vis.colormap = default(const u8*)
+        else if c.not_null(fixedcolormap) then
+            vis.colormap = fixedcolormap
+        else if (thing.frame & ps.ff_fullbright) != 0 then
+            vis.colormap = colormaps
+        else
+            let mut index = xscale >> (lightscaleshift - detailshift)
+            if index >= maxlightscale then index = maxlightscale - 1
+            vis.colormap = *(spritelights + index)
+
+    let set_spritelights = (lightnum: i32) ->
+        spritelights = if lightnum < 0 then scalelight.ptr
+                       else if lightnum >= lightlevels then scalelight.ptr + (lightlevels - 1) * maxlightscale
+                       else scalelight.ptr + lightnum * maxlightscale
+
+    let add_sprites = (sec: sector*) ->
+        if sec.validcount != ds.validcount then
+            sec.validcount = ds.validcount
+            set_spritelights((sec.lightlevel >> lightsegshift) + extralight)
+            let mut thing = sec.thinglist
+            loop
+                if c.is_null(thing) then break
+                project_sprite(thing)
+                thing = thing.snext
+
+    let draw_psprite = (psp: pspdef*) ->
+        let st = psp.state
+        if st.sprite < 0 || st.sprite >= numsprites then
+            i.fatal(alloca("R_ProjectSprite: invalid sprite number %d{st.sprite} "))
+        let sprdef = &sprites[st.sprite]
+        if (st.frame & ps.ff_framemask) >= sprdef.numframes then
+            i.fatal(alloca("R_ProjectSprite: invalid sprite frame %d{st.sprite} : %d{st.frame} "))
+        let sprframe = sprdef.spriteframes + (st.frame & ps.ff_framemask)
+        let lump = sprframe.lump[0]
+        let flip = sprframe.flip[0] != 0u8
+        let mut tx = psp.sx - 160 * fx.fracunit
+        tx = tx - spriteoffset[lump]
+        let x1 = (centerxfrac + fx.mul(tx, pspritescale)) >> 16
+        if x1 > ds.viewwidth then return
+        tx = tx + spritewidth[lump]
+        let x2 = ((centerxfrac + fx.mul(tx, pspritescale)) >> 16) - 1
+        if x2 < 0 then return
+        let mut avis = default(vissprite)
+        let vis = &avis
+        vis.mobjflags = 0
+        vis.texturemid = (baseycenter << 16) + fx.fracunit / 2 - (psp.sy - spritetopoffset[lump])
+        vis.x1 = if x1 < 0 then 0 else x1
+        vis.x2 = if x2 >= ds.viewwidth then ds.viewwidth - 1 else x2
+        vis.scale = pspritescale << detailshift
+        if flip then
+            vis.xiscale = 0 - pspriteiscale
+            vis.startfrac = spritewidth[lump] - 1
+        else
+            vis.xiscale = pspriteiscale
+            vis.startfrac = 0
+        if vis.x1 > x1 then vis.startfrac = vis.startfrac + vis.xiscale * (vis.x1 - x1)
+        vis.patch = lump
+        let invis = viewplayer.powers[pw.invisibility]
+        if invis > 4 * 32 || (invis & 8) != 0 then
+            vis.colormap = default(const u8*)
+        else if c.not_null(fixedcolormap) then
+            vis.colormap = fixedcolormap
+        else if (st.frame & ps.ff_fullbright) != 0 then
+            vis.colormap = colormaps
+        else
+            vis.colormap = *(spritelights + (maxlightscale - 1))
+        draw_vis_sprite(vis, vis.x1, vis.x2)
+
+    let draw_player_sprites = () ->
+        let lightnum = (viewplayer.mo.subsector.sector.lightlevel >> lightsegshift) + extralight
+        set_spritelights(lightnum)
+        mfloorclip = screenheightarray.ptr
+        mceilingclip = negonearray.ptr
+        for k in 0..ps.numpsprites do
+            let psp = &viewplayer.psprites[k]
+            if c.not_null(psp.state) then draw_psprite(psp)
+
+    let sort_vis_sprites = () ->
+        let count = vissprite_p
+        let uns = &unsorted
+        uns.next = uns
+        uns.prev = uns
+        if count == 0 then return
+        let base = vissprites.ptr
+        for k in 0..count do
+            let d = base + k
+            d.next = d + 1
+            d.prev = d - 1
+        base.prev = uns
+        uns.next = base
+        (base + (count - 1)).next = uns
+        uns.prev = base + (count - 1)
+        let head = &vsprsortedhead
+        head.next = head
+        head.prev = head
+        for _ in 0..count do
+            let mut bestscale = i32.max
+            let mut best = uns.next
+            let mut d = uns.next
+            loop
+                if d == uns then break
+                if d.scale < bestscale then
+                    bestscale = d.scale
+                    best = d
+                d = d.next
+            best.next.prev = best.prev
+            best.prev.next = best.next
+            best.next = head
+            best.prev = head.prev
+            head.prev.next = best
+            head.prev = best
+
+    let draw_sprite = (spr: vissprite*) ->
+        for x in spr.x1..spr.x2 + 1 do
+            clipbot[x] = -2i16
+            cliptop[x] = -2i16
+        let mut k = ds_p - 1
+        loop
+            if k < 0 then break
+            let dsg = &drawsegs[k]
+            k = k - 1
+            if dsg.x1 > spr.x2 || dsg.x2 < spr.x1
+                || (dsg.silhouette == 0 && c.is_null(dsg.maskedtexturecol)) then
+                continue
+            let r1 = if dsg.x1 < spr.x1 then spr.x1 else dsg.x1
+            let r2 = if dsg.x2 > spr.x2 then spr.x2 else dsg.x2
+            let lowscale = if dsg.scale1 > dsg.scale2 then dsg.scale2 else dsg.scale1
+            let scale = if dsg.scale1 > dsg.scale2 then dsg.scale1 else dsg.scale2
+            if scale < spr.scale || (lowscale < spr.scale && !point_on_seg_side(spr.gx, spr.gy, dsg.curline)) then
+                if c.not_null(dsg.maskedtexturecol) then render_masked_seg_range(dsg, r1, r2)
+                continue
+            let mut silhouette = dsg.silhouette
+            if spr.gz >= dsg.bsilheight then silhouette = silhouette & ~sil.bottom
+            if spr.gzt <= dsg.tsilheight then silhouette = silhouette & ~sil.top
+            if silhouette == 1 then
+                for x in r1..r2 + 1 do
+                    if clipbot[x] == -2i16 then clipbot[x] = *(dsg.sprbottomclip + x)
+            else if silhouette == 2 then
+                for x in r1..r2 + 1 do
+                    if cliptop[x] == -2i16 then cliptop[x] = *(dsg.sprtopclip + x)
+            else if silhouette == 3 then
+                for x in r1..r2 + 1 do
+                    if clipbot[x] == -2i16 then clipbot[x] = *(dsg.sprbottomclip + x)
+                    if cliptop[x] == -2i16 then cliptop[x] = *(dsg.sprtopclip + x)
+        for x in spr.x1..spr.x2 + 1 do
+            if clipbot[x] == -2i16 then clipbot[x] = (i16) ds.viewheight
+            if cliptop[x] == -2i16 then cliptop[x] = -1i16
+        mfloorclip = clipbot.ptr
+        mceilingclip = cliptop.ptr
+        draw_vis_sprite(spr, spr.x1, spr.x2)
+
+    let draw_masked = () ->
+        sort_vis_sprites()
+        if vissprite_p > 0 then
+            let head = &vsprsortedhead
+            let mut spr = head.next
+            loop
+                if spr == head then break
+                draw_sprite(spr)
+                spr = spr.next
+        let mut k = ds_p - 1
+        loop
+            if k < 0 then break
+            let dsg = &drawsegs[k]
+            if c.not_null(dsg.maskedtexturecol) then render_masked_seg_range(dsg, dsg.x1, dsg.x2)
+            k = k - 1
+        if ds.viewangleoffset == 0 then draw_player_sprites()

@@ -1,0 +1,22 @@
+// doom-fc entry point.
+//
+// The forwarders below are the C engine's upward calls: the playsim calls
+// G_PlayerReborn and ST_Start, the intermission calls G_WorldDone, the
+// menu calls D_StartTitle and I_Quit... FC forbids cycles between
+// modules, and entry-file functions sit outside the module graph, so each
+// upward call goes through one of these one-line hops.
+
+let g_player_reborn = (n: i32) -> g.player_reborn(n)
+let g_death_match_spawn_player = (n: i32) -> g.death_match_spawn_player(n)
+let g_world_done = () -> g.world_done()
+let st_start = () -> st.start()
+let hu_start = () -> hu.start()
+let am_stop = () -> amap.stop()
+let d_page_ticker = () -> d.page_ticker()
+let d_start_title = () -> d.start_title()
+let i_quit = () -> d.quit()
+
+let main = (args: str[]) ->
+    d.parse_args(args)
+    d.doom_main()
+    0

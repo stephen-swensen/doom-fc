@@ -1,0 +1,367 @@
+// v_video (software 2D drawing into the 320x200 8-bit screens) and i_video
+// (the SDL2 host: window, palette, frame upload, input translation).
+// v_video is ported from linuxdoom-1.10 (GPLv2); i_video replaces the X11
+// original with SDL2.
+
+// A patch_t header; the column offset table follows at byte 8.
+struct patch =
+    width: i16
+    height: i16
+    leftoffset: i16
+    topoffset: i16
+
+module patches =
+    let column_ofs = (p: const patch*, col: i32) ->
+        *((const i32*) ((const u8*) p + 8) + col)
+    let column = (p: const patch*, col: i32) ->
+        (const u8*) p + column_ofs(p, col)
+
+module v =
+    let sw = 320
+    let sh = 200
+
+    // screens[0] is the visible frame, 1 is the wipe/background copy,
+    // 2-3 wipe scratch, 4 the status bar background.
+    let mut screens = default(u8*[])
+    let mut dirtybox = i32[] { len = 4 }
+
+    let gamma = (level: i32, v: u8) -> gammatbl.table[level * 256 + (i32) v]
+
+    let init = () ->
+        screens = alloc(u8*[] { len = 5 })!
+        for k in 0..5 do
+            screens[k] = (u8*) c.zalloc((i64) sw * sh)
+
+    let mark_rect = (x: i32, y: i32, width: i32, height: i32) ->
+        box.add(dirtybox, x, y)
+        box.add(dirtybox, x + width - 1, y + height - 1)
+
+    let copy_rect = (srcx: i32, srcy: i32, srcscrn: i32, width: i32, height: i32,
+                     destx: i32, desty: i32, destscrn: i32) ->
+        if srcx < 0 || srcx + width > sw || srcy < 0 || srcy + height > sh
+            || destx < 0 || destx + width > sw || desty < 0 || desty + height > sh
+            || srcscrn < 0 || srcscrn > 4 || destscrn < 0 || destscrn > 4 then
+            i.fatal("Bad V_CopyRect")
+        mark_rect(destx, desty, width, height)
+        let mut src = screens[srcscrn] + sw * srcy + srcx
+        let mut dest = screens[destscrn] + sw * desty + destx
+        for _ in 0..height do
+            c.memcpy((any*) dest, (const any*) src, (i64) width)
+            src = src + sw
+            dest = dest + sw
+
+    // V_DrawPatch: column-masked patch, clipped by rejection.
+    let draw_patch_flip = (x0: i32, y0: i32, scrn: i32, p: const patch*, flipped: bool) ->
+        let y = y0 - p.topoffset
+        let x = x0 - p.leftoffset
+        let w = (i32) p.width
+        if x < 0 || x + w > sw || y < 0 || y + p.height > sh || scrn < 0 || scrn > 4 then
+            // linuxdoom only warns here ("what is up with TNT.WAD?")
+            void()
+        else
+            if scrn == 0 then mark_rect(x, y, w, (i32) p.height)
+            let mut desttop = screens[scrn] + y * sw + x
+            for col in 0..w do
+                let mut column = patches.column(p, if flipped then w - 1 - col else col)
+                loop
+                    let topdelta = *column
+                    if topdelta == 0xffu8 then break
+                    let length = (i32) *(column + 1)
+                    let mut source = column + 3
+                    let mut dest = desttop + (i32) topdelta * sw
+                    for _ in 0..length do
+                        *dest = *source
+                        source = source + 1
+                        dest = dest + sw
+                    column = column + length + 4
+                desttop = desttop + 1
+
+    let draw_patch = (x: i32, y: i32, scrn: i32, p: const patch*) ->
+        draw_patch_flip(x, y, scrn, p, false)
+
+    let draw_patch_flipped = (x: i32, y: i32, scrn: i32, p: const patch*) ->
+        draw_patch_flip(x, y, scrn, p, true)
+
+    let draw_patch_direct = (x: i32, y: i32, scrn: i32, p: const patch*) ->
+        draw_patch(x, y, scrn, p)
+
+    let draw_block = (x: i32, y: i32, scrn: i32, width: i32, height: i32, src0: const u8*) ->
+        if x < 0 || x + width > sw || y < 0 || y + height > sh || scrn < 0 || scrn > 4 then
+            i.fatal("Bad V_DrawBlock")
+        mark_rect(x, y, width, height)
+        let mut src = src0
+        let mut dest = screens[scrn] + y * sw + x
+        for _ in 0..height do
+            c.memcpy((any*) dest, (const any*) src, (i64) width)
+            src = src + width
+            dest = dest + sw
+
+    let get_block = (x: i32, y: i32, scrn: i32, width: i32, height: i32, dest0: u8*) ->
+        if x < 0 || x + width > sw || y < 0 || y + height > sh || scrn < 0 || scrn > 4 then
+            i.fatal("Bad V_DrawBlock")
+        let mut src = screens[scrn] + y * sw + x
+        let mut dest = dest0
+        for _ in 0..height do
+            c.memcpy((any*) dest, (const any*) src, (i64) width)
+            src = src + sw
+            dest = dest + width
+
+    // Patch lookup by lump name, cached.
+    let patch_named = (name: const str) ->
+        (const patch*) w.cache_lump_name(name, pu.cache)
+
+    let patch_named_mut = (name: const str) ->
+        (patch*) w.cache_lump_name(name, pu.static_x)
+
+    let patch_num = (lump: i32) ->
+        (const patch*) w.cache_lump_num(lump, pu.cache)
+
+// ------------------------------------------------------------------
+// i_video: SDL2 window + input
+// ------------------------------------------------------------------
+module iv =
+    // Pixels per Doom pixel in the upload texture. The 320x200 frame is
+    // scaled up by this factor with nearest-neighbour in software, then
+    // the GPU stretches it (linear) to a 4:3 rectangle, which gives square
+    // corners with only a soft row seam from the 200 -> 240 aspect stretch.
+    let upscale = 4
+
+    let mut window = default(any*)
+    let mut renderer = default(any*)
+    let mut texture = default(any*)
+    let mut pixels = default(u32[])
+    let mut palette = u32[] { len = 256 }
+    let mut headless = false
+    let mut fullscreen = false
+    let mut grabmouse = true
+    let mut mouse_grabbed = false
+    let mut novert = true
+
+    let init_graphics = () ->
+        if headless then void()
+        else
+            if sdl2.init(sdl2.init_video | sdl2.init_audio) != 0 then
+                i.fatal(alloca("SDL_Init failed: %s{(const str) sdl2.get_error()}"))
+            ignore sdl2.set_hint(c"SDL_RENDER_SCALE_QUALITY", c"linear")
+            let flags = sdl2.window_resizable | sdl2.window_allow_highdpi
+                | (if argv.check_parm("-fullscreen") > 0 then sdl2.window_fullscreen_desktop else 0u32)
+            fullscreen = argv.check_parm("-fullscreen") > 0
+            window = sdl2.create_window(c"doom-fc", sdl2.pos_centered, sdl2.pos_centered, 960, 720, flags)
+            if c.is_null(window) then i.fatal("SDL_CreateWindow failed")
+            renderer = sdl2.create_renderer(window, -1, sdl2.renderer_accel | sdl2.renderer_vsync)
+            if c.is_null(renderer) then renderer = sdl2.create_renderer(window, -1, sdl2.renderer_sw)
+            if c.is_null(renderer) then i.fatal("SDL_CreateRenderer failed")
+            ignore sdl2.set_logical_size(renderer, 320 * upscale, 240 * upscale)
+            texture = sdl2.create_texture(renderer, sdl2.pixel_argb8888, sdl2.tex_streaming,
+                320 * upscale, 200 * upscale)
+            pixels = alloc(u32[] { len = 320 * upscale * 200 * upscale })!
+            ignore sdl2.show_cursor(0)
+            if argv.check_parm("-nomouse") > 0 then grabmouse = false
+            if argv.check_parm("-mousemove") > 0 then novert = false
+
+    let shutdown_graphics = () ->
+        if !headless then sdl2.quit()
+
+    // I_SetPalette: 768 bytes of RGB, gamma-corrected through usegamma.
+    let set_palette = (pal: const u8*) ->
+        for k in 0..256 do
+            let r = (u32) v.gamma(ds.usegamma, *(pal + k * 3))
+            let g = (u32) v.gamma(ds.usegamma, *(pal + k * 3 + 1))
+            let b = (u32) v.gamma(ds.usegamma, *(pal + k * 3 + 2))
+            palette[k] = 0xff000000u32 | (r << 16) | (g << 8) | b
+
+    // The current frame as ARGB (for screenshots).
+    let frame_argb = (out: u32[]) ->
+        let src = v.screens[0]
+        for k in 0..320 * 200 do out[k] = palette[(i32) *(src + k)]
+
+    let set_grab = (want: bool) ->
+        if !headless && want != mouse_grabbed then
+            ignore sdl2.set_relative_mouse_mode(if want then 1 else 0)
+            mouse_grabbed = want
+
+    // I_FinishUpdate
+    let finish_update = () ->
+        if headless then void()
+        else
+            let src = v.screens[0]
+            let pw = 320 * upscale
+            unguarded
+                for y in 0..200 do
+                    let row = src + y * 320
+                    let base = y * upscale * pw
+                    for x in 0..320 do
+                        let px = palette[(i32) *(row + x)]
+                        let o = base + x * upscale
+                        for k in 0..upscale do pixels[o + k] = px
+                    for r in 1..upscale do
+                        c.memcpy((any*) (pixels.ptr + base + r * pw), (const any*) (pixels.ptr + base), (i64) pw * 4)
+            ignore sdl2.update_texture(texture, default(any*), (const any*) pixels.ptr, pw * 4)
+            ignore sdl2.set_color(renderer, 0u8, 0u8, 0u8, 255u8)
+            ignore sdl2.clear(renderer)
+            ignore sdl2.render_copy(renderer, texture, default(any*), default(any*))
+            sdl2.present(renderer)
+
+    let read_screen = (dest: u8*) ->
+        c.memcpy((any*) dest, (const any*) v.screens[0], 320i64 * 200)
+
+    // xlatekey: SDL keysym -> Doom key code
+    let xlatekey = (k: i32) ->
+        if k == sdl2.key_left then dd.key_leftarrow
+        else if k == sdl2.key_right then dd.key_rightarrow
+        else if k == sdl2.key_down then dd.key_downarrow
+        else if k == sdl2.key_up then dd.key_uparrow
+        else if k == sdl2.key_escape then dd.key_escape
+        else if k == sdl2.key_return || k == sdl2.key_kp_enter then dd.key_enter
+        else if k == sdl2.key_tab then dd.key_tab
+        else if k == sdl2.key_f1 then dd.key_f1
+        else if k == sdl2.key_f2 then dd.key_f2
+        else if k == sdl2.key_f3 then dd.key_f3
+        else if k == sdl2.key_f4 then dd.key_f4
+        else if k == sdl2.key_f5 then dd.key_f5
+        else if k == sdl2.key_f6 then dd.key_f6
+        else if k == sdl2.key_f7 then dd.key_f7
+        else if k == sdl2.key_f8 then dd.key_f8
+        else if k == sdl2.key_f9 then dd.key_f9
+        else if k == sdl2.key_f10 then dd.key_f10
+        else if k == sdl2.key_f11 then dd.key_f11
+        else if k == sdl2.key_f12 then dd.key_f12
+        else if k == sdl2.key_backspace || k == sdl2.key_delete then dd.key_backspace
+        else if k == sdl2.key_pause then dd.key_pause
+        else if k == sdl2.key_equals || k == sdl2.key_kp_plus then dd.key_equals
+        else if k == sdl2.key_minus || k == sdl2.key_kp_minus then dd.key_minus
+        else if k == sdl2.key_lshift || k == sdl2.key_rshift then dd.key_rshift
+        else if k == sdl2.key_lctrl || k == sdl2.key_rctrl then dd.key_rctrl
+        else if k == sdl2.key_lalt || k == sdl2.key_ralt then dd.key_ralt
+        else if k > 0 && k < 128 then
+            if k >= 'A' && k <= 'Z' then k - 'A' + 'a' else k
+        else 0
+
+    let toggle_fullscreen = () ->
+        fullscreen = !fullscreen
+        ignore sdl2.set_fullscreen(window, if fullscreen then sdl2.window_fullscreen_desktop else 0u32)
+
+    let mut mouse_buttons = 0
+
+    // ------------------------------------------------------------------
+    // Headless scripted input (-script "w35 pesc w5 denter w1 uenter ...").
+    // Tokens run at tic boundaries: wN waits N tics, dKEY / uKEY post a
+    // key down / up, pKEY posts both, s:NAME saves shotdir/NAME.png, x
+    // exits the level (to reach intermissions and finales in tests).
+    // KEY is a single character or esc enter tab space up down left
+    // right ctrl shift alt minus equals f1..f12.
+    // ------------------------------------------------------------------
+    let mut script = default(str)
+    let mut script_pos = 0i64
+    let mut script_wait = 0
+    let mut pending_shot = default(str)
+
+    let key_named = (name: const str) ->
+        if name.len == 1 then (i32) name[0]
+        else if name == "esc" then dd.key_escape
+        else if name == "enter" then dd.key_enter
+        else if name == "tab" then dd.key_tab
+        else if name == "space" then (i32) ' '
+        else if name == "up" then dd.key_uparrow
+        else if name == "down" then dd.key_downarrow
+        else if name == "left" then dd.key_leftarrow
+        else if name == "right" then dd.key_rightarrow
+        else if name == "ctrl" then dd.key_rctrl
+        else if name == "shift" then dd.key_rshift
+        else if name == "alt" then dd.key_ralt
+        else if name == "minus" then dd.key_minus
+        else if name == "equals" then dd.key_equals
+        else if name == "pause" then dd.key_pause
+        else if name.len >= 2 && name[0] == 'f' then
+            let n = (i32) name[1] - '0'
+            let n2 = if name.len == 3 then n * 10 + (i32) name[2] - '0' else n
+            if n2 == 11 then dd.key_f11 else if n2 == 12 then dd.key_f12 else dd.key_f1 + n2 - 1
+        else 0
+
+    let run_script = () ->
+        if script_wait > 0 then
+            script_wait = script_wait - 1
+            return
+        loop
+            if script_pos >= script.len || script_wait > 0 then break
+            // next token
+            let mut e = script_pos
+            loop
+                if e >= script.len || script[e] == ' ' then break
+                e = e + 1
+            let tok = script[script_pos..e]
+            script_pos = e + 1
+            if tok.len == 0 then continue
+            let op = tok[0]
+            let arg = tok[1..]
+            if op == 'w' then
+                let mut n = 0
+                for ch in arg do n = n * 10 + (i32) ch - '0'
+                script_wait = n - 1
+            else if op == 'd' then post_key(evt.keydown, key_named(arg))
+            else if op == 'u' then post_key(evt.keyup, key_named(arg))
+            else if op == 'p' then
+                post_key(evt.keydown, key_named(arg))
+                post_key(evt.keyup, key_named(arg))
+            else if op == 'x' then
+                // test hook: exit the level (G_ExitLevel)
+                ds.g_exit_level()
+            else if op == 's' && arg.len > 1 then
+                if pending_shot.len > 0 then free(pending_shot)
+                pending_shot = alloc("%s{arg[1..]}")!
+                // the shot shows this tic; later tokens run next tic
+                break
+
+    let post_key = (type: i32, k: i32) ->
+        if k != 0 then ds.post_event(event { type = type, data1 = k })
+
+    // I_StartTic: drain SDL events into Doom's event queue.
+    let start_tic = () ->
+        if headless then run_script()
+        else
+            let mut e = default(sdl2.sdl_event)
+            let mut mdx = 0
+            let mut mdy = 0
+            let mut moved = false
+            loop
+                if sdl2.poll_event(&e) == 0 then break
+                let t = (i32) e.type
+                if t == sdl2.quit_event then
+                    quit_requested = true
+                else if t == sdl2.keydown_event || t == sdl2.keyup_event then
+                    let k = e.key.keysym.sym
+                    if t == sdl2.keydown_event && k == sdl2.key_return
+                        && (e.key.keysym.mod & sdl2.kmod_alt) != 0u16 then
+                        if e.key.repeat == 0u8 then toggle_fullscreen()
+                    else
+                        let dk = xlatekey(k)
+                        if dk != 0 then
+                            ds.post_event(event {
+                                type = if t == sdl2.keydown_event then evt.keydown else evt.keyup,
+                                data1 = dk })
+                else if t == sdl2.mousemotion_event then
+                    if mouse_grabbed then
+                        mdx = mdx + e.motion.xrel
+                        mdy = mdy + e.motion.yrel
+                        moved = true
+                else if t == sdl2.mousebuttondown_event || t == sdl2.mousebuttonup_event then
+                    if mouse_grabbed then
+                        let bit = match (i32) e.button.button with
+                                  | 1 -> 1
+                                  | 3 -> 2
+                                  | 2 -> 4
+                                  | _ -> 0
+                        if t == sdl2.mousebuttondown_event then mouse_buttons = mouse_buttons | bit
+                        else mouse_buttons = mouse_buttons & ~bit
+                        ds.post_event(event { type = evt.mouse, data1 = mouse_buttons })
+            if moved then
+                ds.post_event(event { type = evt.mouse, data1 = mouse_buttons,
+                                      data2 = mdx << 2, data3 = if novert then 0 else (0 - mdy) << 2 })
+            // grab the mouse only while actually playing
+            set_grab(grabmouse && ds.gamestate == gs.level && !ds.menuactive && !ds.paused
+                     && !ds.demoplayback)
+
+    let mut quit_requested = false
+
+    let start_frame = () -> void()
+    let update_no_blit = () -> void()

@@ -1,0 +1,9 @@
+/build/
+*.o
+a.out
+scratch*/
+*.swp
+*~
+.vscode/
+.idea/
+.DS_Store

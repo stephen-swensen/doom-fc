@@ -1,0 +1,726 @@
+// Shared Doom vocabulary: fixed-point math (m_fixed), the doomdef.h /
+// d_*.h / p_*.h / r_defs.h constants and every struct the engine passes
+// between subsystems. Ported from id Software's linuxdoom-1.10 (GPLv2).
+//
+// Structs are top-level so that every module sees them; C enums that the
+// engine does arithmetic on (weapons, ammo, gamestates, ...) are i32
+// constants in small modules named after the C prefix (wp.pistol for
+// wp_pistol, gs.level for GS_LEVEL, ...). In-memory `short` fields widen to
+// i32; the on-disk map formats are decoded explicitly in p_setup.
+
+// ------------------------------------------------------------------
+// m_fixed: 16.16 fixed point
+// ------------------------------------------------------------------
+module fx =
+    let fracbits = 16
+    let fracunit = 65536
+
+    let mul = (a: i32, b: i32) -> (i32) (((i64) a * b) >> 16)
+
+    let div2 = (a: i32, b: i32) ->
+        let cc = (f64) a / (f64) b * 65536.0
+        if cc >= 2147483648.0 || cc < -2147483648.0 then
+            i.fatal("FixedDiv: divide by zero")
+        (i32) cc
+
+    let div = (a: i32, b: i32) ->
+        if (c.iabs(a) >> 14) >= c.iabs(b) then
+            if (a ^ b) < 0 then i32.min else i32.max
+        else div2(a, b)
+
+    // Binary angles (tables.h)
+    let ang45 = 0x20000000u32
+    let ang90 = 0x40000000u32
+    let ang180 = 0x80000000u32
+    let ang270 = 0xc0000000u32
+
+    // angle_t -> fine-table index
+    let fine = (a: u32) -> (i32) (a >> 19)
+
+// ------------------------------------------------------------------
+// doomdef.h
+// ------------------------------------------------------------------
+module dd =
+    // Demo / savegame version byte. linuxdoom says 110, but its playsim is
+    // the v1.9 one, so we write 109 to play the IWADs' own demos.
+    let version = 109
+    let screenwidth = 320
+    let screenheight = 200
+    let maxplayers = 4
+    let ticrate = 35
+
+    let mtf_easy = 1
+    let mtf_normal = 2
+    let mtf_hard = 4
+    let mtf_ambush = 8
+
+    let key_rightarrow = 0xae
+    let key_leftarrow = 0xac
+    let key_uparrow = 0xad
+    let key_downarrow = 0xaf
+    let key_escape = 27
+    let key_enter = 13
+    let key_tab = 9
+    let key_f1 = 0x80 + 0x3b
+    let key_f2 = 0x80 + 0x3c
+    let key_f3 = 0x80 + 0x3d
+    let key_f4 = 0x80 + 0x3e
+    let key_f5 = 0x80 + 0x3f
+    let key_f6 = 0x80 + 0x40
+    let key_f7 = 0x80 + 0x41
+    let key_f8 = 0x80 + 0x42
+    let key_f9 = 0x80 + 0x43
+    let key_f10 = 0x80 + 0x44
+    let key_f11 = 0x80 + 0x57
+    let key_f12 = 0x80 + 0x58
+    let key_backspace = 127
+    let key_pause = 0xff
+    let key_equals = 0x3d
+    let key_minus = 0x2d
+    let key_rshift = 0x80 + 0x36
+    let key_rctrl = 0x80 + 0x1d
+    let key_ralt = 0x80 + 0x38
+    let key_lalt = key_ralt
+
+// GameMode_t
+module gmode =
+    let shareware = 0
+    let registered = 1
+    let commercial = 2
+    let retail = 3
+    let indetermined = 4
+
+// GameMission_t
+module gmission =
+    let doom = 0
+    let doom2 = 1
+    let pack_tnt = 2
+    let pack_plut = 3
+    let none_x = 4
+
+// gamestate_t
+module gs =
+    let level = 0
+    let intermission = 1
+    let finale = 2
+    let demoscreen = 3
+    // wipegamestate's "force a wipe" value
+    let force_wipe = -1
+
+// gameaction_t
+module ga =
+    let nothing = 0
+    let loadlevel = 1
+    let newgame = 2
+    let loadgame = 3
+    let savegame = 4
+    let playdemo = 5
+    let completed = 6
+    let victory = 7
+    let worlddone = 8
+    let screenshot = 9
+
+// skill_t
+module sk =
+    let baby = 0
+    let easy = 1
+    let medium = 2
+    let hard = 3
+    let nightmare = 4
+
+// card_t
+module it =
+    let bluecard = 0
+    let yellowcard = 1
+    let redcard = 2
+    let blueskull = 3
+    let yellowskull = 4
+    let redskull = 5
+    let numcards = 6
+
+// weapontype_t
+module wp =
+    let fist = 0
+    let pistol = 1
+    let shotgun = 2
+    let chaingun = 3
+    let missile = 4
+    let plasma = 5
+    let bfg = 6
+    let chainsaw = 7
+    let supershotgun = 8
+    let numweapons = 9
+    let nochange = 10
+
+// ammotype_t
+module am =
+    let clip = 0
+    let shell = 1
+    let cell = 2
+    let misl = 3
+    let numammo = 4
+    let noammo = 5
+
+// powertype_t + powerduration_t
+module pw =
+    let invulnerability = 0
+    let strength = 1
+    let invisibility = 2
+    let ironfeet = 3
+    let allmap = 4
+    let infrared = 5
+    let numpowers = 6
+
+    let invulntics = 30 * 35
+    let invistics = 60 * 35
+    let infratics = 120 * 35
+    let irontics = 60 * 35
+
+// playerstate_t
+module pst =
+    let live = 0
+    let dead = 1
+    let reborn = 2
+
+// cheat_t
+module cf =
+    let noclip = 1
+    let godmode = 2
+    let nomomentum = 4
+
+// evtype_t
+module evt =
+    let keydown = 0
+    let keyup = 1
+    let mouse = 2
+    let joystick = 3
+
+// buttoncode_t
+module bt =
+    let attack = 1
+    let use = 2
+    let special = 128
+    let specialmask = 3
+    let change = 4
+    let weaponmask = 8 + 16 + 32
+    let weaponshift = 3
+    let bts_pause = 1
+    let bts_savegame = 2
+    let bts_savemask = 4 + 8 + 16
+    let bts_saveshift = 2
+
+// doomdata.h: map lump order and linedef flags
+module ml =
+    let label = 0
+    let things = 1
+    let linedefs = 2
+    let sidedefs = 3
+    let vertexes = 4
+    let segs = 5
+    let ssectors = 6
+    let nodes = 7
+    let sectors = 8
+    let reject = 9
+    let blockmap = 10
+
+    let blocking = 1
+    let blockmonsters = 2
+    let twosided = 4
+    let dontpegtop = 8
+    let dontpegbottom = 16
+    let secret = 32
+    let soundblock = 64
+    let dontdraw = 128
+    let mapped = 256
+
+    let nf_subsector = 0x8000
+
+// mobjflag_t
+module mf =
+    let special = 1
+    let solid = 2
+    let shootable = 4
+    let nosector = 8
+    let noblockmap = 16
+    let ambush = 32
+    let justhit = 64
+    let justattacked = 128
+    let spawnceiling = 256
+    let nogravity = 512
+    let dropoff = 0x400
+    let pickup = 0x800
+    let noclip = 0x1000
+    let slide = 0x2000
+    let float = 0x4000
+    let teleport = 0x8000
+    let missile = 0x10000
+    let dropped = 0x20000
+    let shadow = 0x40000
+    let noblood = 0x80000
+    let corpse = 0x100000
+    let infloat = 0x200000
+    let countkill = 0x400000
+    let countitem = 0x800000
+    let skullfly = 0x1000000
+    let notdmatch = 0x2000000
+    let translation = 0xc000000
+    let transshift = 26
+
+// p_pspr.h
+module ps =
+    let ff_fullbright = 0x8000
+    let ff_framemask = 0x7fff
+    let weapon = 0
+    let flash = 1
+    let numpsprites = 2
+
+// slopetype_t
+module slope =
+    let horizontal = 0
+    let vertical = 1
+    let positive = 2
+    let negative = 3
+
+// r_defs.h silhouettes
+module sil =
+    let none_x = 0
+    let bottom = 1
+    let top = 2
+    let both = 3
+    let maxdrawsegs = 256
+
+// bounding-box indices (m_bbox.h)
+module box =
+    let top = 0
+    let bottom = 1
+    let left = 2
+    let right = 3
+
+    let clear = (b: i32[]) ->
+        b[top] = i32.min
+        b[right] = i32.min
+        b[bottom] = i32.max
+        b[left] = i32.max
+
+    let add = (b: i32[], x: i32, y: i32) ->
+        if x < b[left] then b[left] = x
+        else if x > b[right] then b[right] = x
+        if y < b[bottom] then b[bottom] = y
+        else if y > b[top] then b[top] = y
+
+// ------------------------------------------------------------------
+// Thinkers (d_think.h). The C version stores a function pointer; we
+// store which thinker routine runs, and p.run_thinkers dispatches.
+// `nil` is the C NULL (a ceiling/plat in stasis), `removed` the -1
+// marker P_RemoveThinker leaves for deferred freeing.
+// ------------------------------------------------------------------
+enum thinkf =
+    | nil
+    | removed
+    | mobj
+    | move_ceiling
+    | vertical_door
+    | move_floor
+    | plat_raise
+    | light_flash
+    | strobe_flash
+    | glow
+    | fire_flicker
+
+struct thinker =
+    prev: thinker*
+    next: thinker*
+    function: thinkf
+
+struct ticcmd =
+    forwardmove: i8
+    sidemove: i8
+    angleturn: i16
+    consistancy: i16
+    chatchar: u8
+    buttons: u8
+
+struct event =
+    type: i32
+    data1: i32
+    data2: i32
+    data3: i32
+
+struct mapthing =
+    x: i32
+    y: i32
+    angle: i32
+    type: i32
+    options: i32
+
+struct mobj =
+    thinker: thinker
+    x: i32
+    y: i32
+    z: i32
+    snext: mobj*
+    sprev: mobj*
+    angle: u32
+    sprite: i32
+    frame: i32
+    bnext: mobj*
+    bprev: mobj*
+    subsector: subsector*
+    floorz: i32
+    ceilingz: i32
+    radius: i32
+    height: i32
+    momx: i32
+    momy: i32
+    momz: i32
+    validcount: i32
+    type: i32
+    info: const mobjinfo*
+    tics: i32
+    state: const state*
+    flags: i32
+    health: i32
+    movedir: i32
+    movecount: i32
+    target: mobj*
+    reactiontime: i32
+    threshold: i32
+    player: player*
+    lastlook: i32
+    spawnpoint: mapthing
+    tracer: mobj*
+
+struct pspdef =
+    state: const state*
+    tics: i32
+    sx: i32
+    sy: i32
+
+struct player =
+    mo: mobj*
+    playerstate: i32
+    cmd: ticcmd
+    viewz: i32
+    viewheight: i32
+    deltaviewheight: i32
+    bob: i32
+    health: i32
+    armorpoints: i32
+    armortype: i32
+    powers: i32[6]
+    cards: bool[6]
+    backpack: bool
+    frags: i32[4]
+    readyweapon: i32
+    pendingweapon: i32
+    weaponowned: bool[9]
+    ammo: i32[4]
+    maxammo: i32[4]
+    attackdown: bool
+    usedown: bool
+    cheats: i32
+    refire: i32
+    killcount: i32
+    itemcount: i32
+    secretcount: i32
+    message: const str
+    damagecount: i32
+    bonuscount: i32
+    attacker: mobj*
+    extralight: i32
+    fixedcolormap: i32
+    colormap: i32
+    psprites: pspdef[2]
+    didsecret: bool
+
+struct wbplayerstruct =
+    in_game: bool
+    skills: i32
+    sitems: i32
+    ssecret: i32
+    stime: i32
+    frags: i32[4]
+    score: i32
+
+struct wbstartstruct =
+    epsd: i32
+    didsecret: bool
+    last: i32
+    next: i32
+    maxkills: i32
+    maxitems: i32
+    maxsecret: i32
+    maxfrags: i32
+    partime: i32
+    pnum: i32
+    plyr: wbplayerstruct[4]
+
+// ------------------------------------------------------------------
+// r_defs.h: map geometry and renderer records
+// ------------------------------------------------------------------
+struct vertex =
+    x: i32
+    y: i32
+
+// A sector's sound origin: shares mobj's first fields so S_StartSound can
+// take it as an mobj*.
+struct degenmobj =
+    thinker: thinker
+    x: i32
+    y: i32
+    z: i32
+
+struct sector =
+    floorheight: i32
+    ceilingheight: i32
+    floorpic: i32
+    ceilingpic: i32
+    lightlevel: i32
+    special: i32
+    tag: i32
+    soundtraversed: i32
+    soundtarget: mobj*
+    blockbox: i32[4]
+    soundorg: degenmobj
+    validcount: i32
+    thinglist: mobj*
+    specialdata: any*
+    linecount: i32
+    lines: line**
+
+struct side =
+    textureoffset: i32
+    rowoffset: i32
+    toptexture: i32
+    bottomtexture: i32
+    midtexture: i32
+    sector: sector*
+
+struct line =
+    v1: vertex*
+    v2: vertex*
+    dx: i32
+    dy: i32
+    flags: i32
+    special: i32
+    tag: i32
+    sidenum: i32[2]
+    bbox: i32[4]
+    slopetype: i32
+    frontsector: sector*
+    backsector: sector*
+    validcount: i32
+    specialdata: any*
+
+struct subsector =
+    sector: sector*
+    numlines: i32
+    firstline: i32
+
+struct seg =
+    v1: vertex*
+    v2: vertex*
+    offset: i32
+    angle: u32
+    sidedef: side*
+    linedef: line*
+    frontsector: sector*
+    backsector: sector*
+
+// bbox[2][4] flattened: bbox[side * 4 + box.*]
+struct node =
+    x: i32
+    y: i32
+    dx: i32
+    dy: i32
+    bbox: i32[8]
+    children: i32[2]
+
+struct drawseg =
+    curline: seg*
+    x1: i32
+    x2: i32
+    scale1: i32
+    scale2: i32
+    scalestep: i32
+    silhouette: i32
+    bsilheight: i32
+    tsilheight: i32
+    sprtopclip: i16*
+    sprbottomclip: i16*
+    maskedtexturecol: i16*
+
+struct vissprite =
+    prev: vissprite*
+    next: vissprite*
+    x1: i32
+    x2: i32
+    gx: i32
+    gy: i32
+    gz: i32
+    gzt: i32
+    startfrac: i32
+    scale: i32
+    xiscale: i32
+    texturemid: i32
+    patch: i32
+    colormap: const u8*
+    mobjflags: i32
+
+struct spriteframe =
+    rotate: i32       // -1 = not yet set (R_InitSprites), else boolean
+    lump: i32[8]
+    flip: u8[8]
+
+struct spritedef =
+    numframes: i32
+    spriteframes: spriteframe*
+
+// top/bottom carry one pad byte at each end, so index them with x + 1
+// (the C struct's pad1..pad4 serve the same purpose).
+struct visplane =
+    height: i32
+    picnum: i32
+    lightlevel: i32
+    minx: i32
+    maxx: i32
+    top: u8[322]
+    bottom: u8[322]
+
+// ------------------------------------------------------------------
+// p_spec.h thinkers and records
+// ------------------------------------------------------------------
+struct fireflicker =
+    thinker: thinker
+    sector: sector*
+    count: i32
+    maxlight: i32
+    minlight: i32
+
+struct lightflash =
+    thinker: thinker
+    sector: sector*
+    count: i32
+    maxlight: i32
+    minlight: i32
+    maxtime: i32
+    mintime: i32
+
+struct strobe =
+    thinker: thinker
+    sector: sector*
+    count: i32
+    minlight: i32
+    maxlight: i32
+    darktime: i32
+    brighttime: i32
+
+struct glow =
+    thinker: thinker
+    sector: sector*
+    minlight: i32
+    maxlight: i32
+    direction: i32
+
+struct button =
+    line: line*
+    where: i32
+    btexture: i32
+    btimer: i32
+    soundorg: mobj*
+
+struct plat =
+    thinker: thinker
+    sector: sector*
+    speed: i32
+    low: i32
+    high: i32
+    wait: i32
+    count: i32
+    status: i32
+    oldstatus: i32
+    crush: bool
+    tag: i32
+    type: i32
+
+struct vldoor =
+    thinker: thinker
+    type: i32
+    sector: sector*
+    topheight: i32
+    speed: i32
+    direction: i32
+    topwait: i32
+    topcountdown: i32
+
+struct ceiling =
+    thinker: thinker
+    type: i32
+    sector: sector*
+    bottomheight: i32
+    topheight: i32
+    speed: i32
+    crush: bool
+    direction: i32
+    tag: i32
+    olddirection: i32
+
+struct floormove =
+    thinker: thinker
+    type: i32
+    crush: bool
+    sector: sector*
+    direction: i32
+    newspecial: i32
+    texture: i32
+    floordestheight: i32
+    speed: i32
+
+struct anim =
+    istexture: bool
+    picnum: i32
+    basepic: i32
+    numpics: i32
+    speed: i32
+
+struct weaponinfo =
+    ammo: i32
+    upstate: i32
+    downstate: i32
+    readystate: i32
+    atkstate: i32
+    flashstate: i32
+
+// ------------------------------------------------------------------
+// d_items.c
+// ------------------------------------------------------------------
+module items =
+    let weaponinfo = weaponinfo[] {
+        // fist
+        weaponinfo { ammo = am.noammo, upstate = sn.punchup, downstate = sn.punchdown,
+                     readystate = sn.punch, atkstate = sn.punch1, flashstate = sn.null },
+        // pistol
+        weaponinfo { ammo = am.clip, upstate = sn.pistolup, downstate = sn.pistoldown,
+                     readystate = sn.pistol, atkstate = sn.pistol1, flashstate = sn.pistolflash },
+        // shotgun
+        weaponinfo { ammo = am.shell, upstate = sn.sgunup, downstate = sn.sgundown,
+                     readystate = sn.sgun, atkstate = sn.sgun1, flashstate = sn.sgunflash1 },
+        // chaingun
+        weaponinfo { ammo = am.clip, upstate = sn.chainup, downstate = sn.chaindown,
+                     readystate = sn.chain, atkstate = sn.chain1, flashstate = sn.chainflash1 },
+        // missile launcher
+        weaponinfo { ammo = am.misl, upstate = sn.missileup, downstate = sn.missiledown,
+                     readystate = sn.missile, atkstate = sn.missile1, flashstate = sn.missileflash1 },
+        // plasma rifle
+        weaponinfo { ammo = am.cell, upstate = sn.plasmaup, downstate = sn.plasmadown,
+                     readystate = sn.plasma, atkstate = sn.plasma1, flashstate = sn.plasmaflash1 },
+        // bfg 9000
+        weaponinfo { ammo = am.cell, upstate = sn.bfgup, downstate = sn.bfgdown,
+                     readystate = sn.bfg, atkstate = sn.bfg1, flashstate = sn.bfgflash1 },
+        // chainsaw
+        weaponinfo { ammo = am.noammo, upstate = sn.sawup, downstate = sn.sawdown,
+                     readystate = sn.saw, atkstate = sn.saw1, flashstate = sn.null },
+        // super shotgun
+        weaponinfo { ammo = am.shell, upstate = sn.dsgunup, downstate = sn.dsgundown,
+                     readystate = sn.dsgun, atkstate = sn.dsgun1, flashstate = sn.dsgunflash1 }
+    }

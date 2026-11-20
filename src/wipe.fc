@@ -1,0 +1,114 @@
+// Screen wipes (f_wipe.c): the melt between game states. Ported from
+// linuxdoom-1.10 (GPLv2).
+
+module wipe =
+    let color_xform = 0
+    let melt = 1
+
+    let mut go = false
+    let mut wipe_scr_start = default(u8*)
+    let mut wipe_scr_end = default(u8*)
+    let mut wipe_scr = default(u8*)
+    let mut ycols = default(i32[])
+
+    let shitty_col_major_xform = (array: i16*, width: i32, height: i32) ->
+        let dest = (i16*) c.zalloc((i64) width * height * 2)
+        for y in 0..height do
+            for x in 0..width do
+                *(dest + (x * height + y)) = *(array + (y * width + x))
+        c.memcpy((any*) array, (const any*) dest, (i64) width * height * 2)
+        cstdlib.c_free((any*) dest)
+
+    let init_color_xform = (width: i32, height: i32, ticks: i32) ->
+        c.memcpy((any*) wipe_scr, (const any*) wipe_scr_start, (i64) width * height)
+
+    let do_color_xform = (width: i32, height: i32, ticks: i32) ->
+        let mut changed = false
+        for k in 0..width * height do
+            let wv = (i32) *(wipe_scr + k)
+            let ev = (i32) *(wipe_scr_end + k)
+            if wv != ev then
+                if wv > ev then
+                    let newval = wv - ticks
+                    *(wipe_scr + k) = if newval < ev then (u8) ev else (u8) newval
+                    changed = true
+                else if wv < ev then
+                    let newval = wv + ticks
+                    *(wipe_scr + k) = if newval > ev then (u8) ev else (u8) newval
+                    changed = true
+        !changed
+
+    let init_melt = (width: i32, height: i32, ticks: i32) ->
+        // copy start screen to main screen
+        c.memcpy((any*) wipe_scr, (const any*) wipe_scr_start, (i64) width * height)
+        // makes this wipe faster (in theory)
+        // to have stuff in column-major format
+        shitty_col_major_xform((i16*) wipe_scr_start, width / 2, height)
+        shitty_col_major_xform((i16*) wipe_scr_end, width / 2, height)
+        // setup initial column positions
+        // (y<0 => not ready to scroll yet)
+        if ycols.len < width then ycols = alloc(i32[] { len = width })!
+        ycols[0] = 0 - (rnd.m_random() % 16)
+        for k in 1..width do
+            let rr = (rnd.m_random() % 3) - 1
+            ycols[k] = ycols[k - 1] + rr
+            if ycols[k] > 0 then ycols[k] = 0
+            else if ycols[k] == -16 then ycols[k] = -15
+
+    let do_melt = (width0: i32, height: i32, ticks0: i32) ->
+        let mut done = true
+        let width = width0 / 2
+        let mut ticks = ticks0
+        let scr_end = (i16*) wipe_scr_end
+        let scr = (i16*) wipe_scr
+        let scr_start = (i16*) wipe_scr_start
+        loop
+            if ticks <= 0 then break
+            ticks = ticks - 1
+            for k in 0..width do
+                if ycols[k] < 0 then
+                    ycols[k] = ycols[k] + 1
+                    done = false
+                else if ycols[k] < height then
+                    let mut dy = if ycols[k] < 16 then ycols[k] + 1 else 8
+                    if ycols[k] + dy >= height then dy = height - ycols[k]
+                    let mut s = scr_end + ((i32) k * height + ycols[k])
+                    let mut d = scr + (ycols[k] * width + (i32) k)
+                    let mut idx = 0
+                    for _ in 0..dy do
+                        *(d + idx) = *s
+                        s = s + 1
+                        idx = idx + width
+                    ycols[k] = ycols[k] + dy
+                    s = scr_start + ((i32) k * height)
+                    d = scr + (ycols[k] * width + (i32) k)
+                    idx = 0
+                    for _ in 0..height - ycols[k] do
+                        *(d + idx) = *s
+                        s = s + 1
+                        idx = idx + width
+                    done = false
+        done
+
+    let start_screen = (x: i32, y: i32, width: i32, height: i32) ->
+        wipe_scr_start = v.screens[2]
+        iv.read_screen(wipe_scr_start)
+
+    let end_screen = (x: i32, y: i32, width: i32, height: i32) ->
+        wipe_scr_end = v.screens[3]
+        iv.read_screen(wipe_scr_end)
+        v.draw_block(x, y, 0, width, height, wipe_scr_start)    // restore start scr.
+
+    let screen_wipe = (wipeno: i32, x: i32, y: i32, width: i32, height: i32, ticks: i32) ->
+        // initial stuff
+        if !go then
+            go = true
+            wipe_scr = v.screens[0]
+            if wipeno == melt then init_melt(width, height, ticks)
+            else init_color_xform(width, height, ticks)
+        // do a piece of wipe-in
+        v.mark_rect(0, 0, width, height)
+        let rc = if wipeno == melt then do_melt(width, height, ticks) else do_color_xform(width, height, ticks)
+        // final stuff
+        if rc then go = false
+        !go

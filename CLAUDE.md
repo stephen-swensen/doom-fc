@@ -1,0 +1,109 @@
+# CLAUDE.md
+
+## Mission
+
+doom-fc is a port of id Software's linuxdoom-1.10 to FC, and an end-to-end
+FC demo. Unlike wolf-fc, it is **not** license-clean, and that is
+deliberate. The user chose to transpose the GPL source "with abandon", so
+the code follows the C closely: names, structure, comments and bugs. The
+project is GPL v2.
+
+- **OG means `../DOOM/linuxdoom-1.10/`.** Behaviour questions are settled
+  there. The playsim must stay in sync with it tic for tic. `make check`
+  diffs `-tictrace` output against linuxdoom built from that tree
+  (`tools/refdemo`) for every IWAD demo. Any divergence in a demo trace is a
+  bug in the port.
+- **Data files are user-supplied**, following wolf-fc's precedent. IWADs go in
+  `data/` (gitignored), `$DOOM_FC_DATA_DIR`, or the install dir. The engine
+  reads WADs directly, with no conversion step.
+- **Deliberate departures from linuxdoom** are listed in README.md. Add to
+  that list whenever behaviour intentionally differs.
+
+## Sibling repositories
+
+- `../fc-lang/`: the compiler and stdlib. Read `spec/examples.fc` at the
+  start of a session. `spec/fc-spec.html` is authoritative. Use the
+  installed `fcc` on `PATH`.
+- `../DOOM/linuxdoom-1.10/`: the source being ported. Files use tabs, so
+  read them through a tab-expanding filter.
+- `../wolf-fc/`: the sister project. Its build, data-dir, headless-test and
+  SDL patterns are mirrored here.
+
+## Build and test
+
+- `make` builds `build/<os>/doom-fc`. `make check` runs `tests/run-tests.sh`
+  against a fresh binary. `make native` uses `fcc --native`.
+- Everything testable runs `-headless` (no window or audio, singletics,
+  deterministic). See README for `-script`, `-shotdir`, `-shotevery`,
+  `-quitat`, `-demostats`, `-tictrace` and `-musictest`. Screenshots are PNGs
+  you can open with the Read tool.
+- In `-script`, a key held across a tic needs `dKEY w2 uKEY`. `pKEY` presses
+  and releases before the next ticcmd is built, so the game never sees it,
+  though the menus do. `s:NAME` ends that tic's tokens.
+- The golden values in `tests/run-tests.sh` were recorded from linuxdoom.
+  Frame hashes pin the headless renderer. Update them only for intentional
+  rendering changes.
+- `tools/gen_tables.py ../DOOM/linuxdoom-1.10 src` regenerates `info.fc`,
+  `sounds.fc`, `tables.fc`, `dstrings.fc`, `gamma.fc` and `random.fc`. Never
+  hand-edit those files.
+
+## Architecture
+
+FC forbids cycles between top-level modules, and a module is one file.
+Doom's C files call each other in every direction, so:
+
+- Each strongly connected group of C files is **one module in one file**.
+  `play.fc` (module `p`) holds every `p_*.c`. `render.fc` (module `r`) holds
+  every `r_*.c`. The layering, low to high, is: libc/sdl2, tables/info,
+  `fx`/`dd`/... constants in defs.fc, `i`/`z`/`w` (system.fc), `ds`
+  (doomstat), `v`/`iv`, `r`, `isnd`/`snd`/`musplay`, `p`, `hu`/`st`,
+  `amap`, `wipe`/`f`/`wi`, `misc`/`m`, `g`, `d`.
+- **Upward calls go through the forwarders at the top of `main.fc`**
+  (`g_player_reborn`, `st_start`, `am_stop`, `g_world_done`,
+  `d_start_title`, `i_quit`, ...). Entry-file functions sit outside the
+  module graph. Add a forwarder rather than creating a cycle.
+- Calls that only set state (G_ExitLevel, G_DeferedInitNew, G_LoadGame,
+  G_SaveGame, D_AdvanceDemo, D_PostEvent) live in `ds` (doomstat.fc), so
+  lower layers can call them directly.
+- Globals are module-level `let mut`, named as in C but snake_case
+  (`ds.gametic`, `r.viewx`, `p.tmfloorz`). Unlike wolf-fc, mutable module
+  globals are fine here, because that is Doom's design.
+- C function pointers become small dispatches. A thinker's function is
+  `enum thinkf`, dispatched in `p.run_thinker`. A state's codepointer is
+  `enum actionf`, dispatched in `p.call_mobj_action` / `p.call_psp_action`.
+  Menu routines are ints, dispatched in `m.call_routine`. The column drawer
+  is `r.colfunc`.
+- C enums with arithmetic on them are `i32` constants in small modules named
+  after the C prefix: `wp.pistol`, `am.clip`, `gs.level`, `sn.play_run1`
+  (statenum), `mt.troop` (mobjtype), `spr.troo`, `sfx.pistol`, `mus.e1m1`.
+  Watch for collisions: `am` is ammo (the automap is `amap`), and `mus` is
+  the music enum (the player is `musplay`).
+- In-memory `short` fields are `i32`. On-disk map lumps are decoded
+  explicitly in `p.load_*`. `ticcmd` keeps exact widths (`i8`/`i16`/`u8`),
+  because demos depend on them.
+- Unsigned angle maths is `u32`. Where C mixes `int` and `angle_t`, mirror
+  the C conversions exactly with `(i32)` / `(u32)` casts. Demo sync depends
+  on them.
+
+## fcc corners hit in this port
+
+- **Mutual recursion inference**: a function in a call cycle needs its
+  return type anchored by an early `return <value>` before the recursive
+  call, or fcc reports "never returns" or "expected <unresolved>". See
+  `p.set_mobj_state`'s `if c.is_null(mo) then return false`. Void cycle
+  members may need restructuring to avoid bare early `return` (see
+  `p.a_lower`, `p.a_raise`). This is reported upstream as an fcc limitation.
+- **Assigning another module's `let mut` pointer global** (`p.save_p = x`
+  from module `g`) generates invalid C (a cast used as an lvalue). Use
+  accessor functions in the owning module (`p.save_set` and friends). This
+  is reported as an fcc bug.
+- An `if ... then` that ends its line inside an expression needs its `else`
+  at the enclosing statement's column (or keep `then X` on one line).
+  Continuation lines must be indented deeper than the statement.
+- Closures cannot capture `let mut` locals. Use a struct and pointer (see
+  music.fc's parser) or module state.
+- Reserved words that bite in Doom code: `error`, `free`, `ok`, `none`,
+  `in`, `from`. So it's `i.fatal` (I_Error), `z.zfree` (Z_Free),
+  `res_ok`/`okay`, `none_x`, and `in_game`.
+- A parameter or local named after a module (`z`, `r`, `p`, `c`, `i`, `w`,
+  `v`) shadows it. That's why `spawn_mobj` takes `z0`.
