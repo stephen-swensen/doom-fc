@@ -103,18 +103,15 @@ Doom's C files call each other in every direction, so:
 
 ## fcc corners hit in this port
 
-- **Mutual recursion inference**: a function in a call cycle needs its
-  return type anchored by an early `return <value>` before the recursive
-  call, or fcc reports "never returns" or "expected <unresolved>". See
-  `p.set_mobj_state`'s `if c.is_null(mo) then return false`. Void cycle
-  members may need restructuring to avoid bare early `return` (see
-  `p.a_lower`, `p.a_raise`). Filed in `../fc-lang/spec/TODO.md` under
-  "Bugs found porting doom-fc".
-- **Assigning another module's `let mut` pointer global** (`p.save_p = x`
-  from module `g`) generates invalid C (a cast used as an lvalue). Use
-  accessor functions in the owning module (`p.save_set` and friends). Only
-  `u8*` and `const u8*` globals are affected. Filed in the same TODO
-  section.
+- **Early exits from void functions in a call cycle are spelled
+  `return void()`.** A bare `return` there fails with "return type
+  mismatch: expected <unresolved>, got void", unless the function happens
+  to be the first in the cycle that fcc checks. The spec treats the two
+  spellings the same, so this is an fcc bug. See `p.a_lower` and
+  `p.a_raise`. Value-returning cycles are fine as of fcc rc.9:
+  `p.set_mobj_state` returns from inside its loop, as P_SetMobjState does.
+  Assigning another module's pointer global (`p.save_p = ...` in `g`) also
+  works now.
 - An `if ... then` that ends its line inside an expression needs its `else`
   at the enclosing statement's column (or keep `then X` on one line).
   Continuation lines must be indented deeper than the statement.

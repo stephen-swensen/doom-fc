@@ -519,17 +519,12 @@ module p =
     let friction = 0xe800
 
     let set_mobj_state = (mo: mobj*, state0: i32) ->
-        // (anchors the return type for fcc's mutual-recursion inference;
-        // mo is never null)
-        if c.is_null(mo) then return false
         let mut st_num = state0
-        let mut alive = true
         loop
             if st_num == sn.null then
                 mo.state = default(const state*)
                 remove_mobj(mo)
-                alive = false
-                break
+                return false
             let st = &info.states[st_num]
             mo.state = st
             mo.tics = st.tics
@@ -539,7 +534,7 @@ module p =
             call_mobj_action(st.action, mo)
             st_num = st.nextstate
             if mo.tics != 0 then break
-        alive
+        true
 
     let explode_missile = (mo: mobj*) ->
         mo.momx = 0
@@ -3018,27 +3013,27 @@ module p =
     let a_lower = (pl: player*, psp: pspdef*) ->
         psp.sy = psp.sy + lowerspeed
         // Is already down.
-        if psp.sy < weaponbottom then void()
+        if psp.sy < weaponbottom then return void()
         // Player is dead.
-        else if pl.playerstate == pst.dead then
+        if pl.playerstate == pst.dead then
             psp.sy = weaponbottom
             // don't bring weapon back up
-        // The old weapon has been lowered off the screen, so change the
-        // weapon and start raising it
-        else if pl.health == 0 then
+            return void()
+        // The old weapon has been lowered off the screen,
+        // so change the weapon and start raising it
+        if pl.health == 0 then
             // Player is dead, so keep the weapon off screen.
             set_psprite(pl, ps.weapon, sn.null)
-        else
-            pl.readyweapon = pl.pendingweapon
-            bring_up_weapon(pl)
+            return void()
+        pl.readyweapon = pl.pendingweapon
+        bring_up_weapon(pl)
 
     let a_raise = (pl: player*, psp: pspdef*) ->
         psp.sy = psp.sy - raisespeed
-        if psp.sy <= weapontop then raise_done(pl, psp)
-
-    let raise_done = (pl: player*, psp: pspdef*) ->
+        if psp.sy > weapontop then return void()
         psp.sy = weapontop
-        // The weapon has been raised all the way, so change to the ready state.
+        // The weapon has been raised all the way,
+        //  so change to the ready state.
         let newstate = items.weaponinfo[pl.readyweapon].readystate
         set_psprite(pl, ps.weapon, newstate)
 
@@ -5242,19 +5237,6 @@ module p =
     // p_saveg
     // ==================================================================
     let mut save_p = default(u8*)
-
-    // accessors for g_game (assigning another module's pointer global
-    // directly trips an fcc code-generation bug)
-    let save_set = (ptr: u8*) -> save_p = ptr
-    let save_get = () -> save_p
-    let save_skip = (n: i32) -> save_p = save_p + n
-    let save_write_byte = (b: i32) ->
-        *save_p = (u8) b
-        save_p = save_p + 1
-    let save_read_byte = () ->
-        let b = (i32) *save_p
-        save_p = save_p + 1
-        b
 
     // Pads save_p to a 4-byte boundary so that the load/save works on SGI&Gecko.
     let padsavep = () ->

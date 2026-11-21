@@ -460,29 +460,34 @@ module g =
         | none -> void()
         | some(buf) ->
             defer free(buf)
-            p.save_set(buf.ptr + savestringsize)
+            p.save_p = buf.ptr + savestringsize
             // skip the description field
             let vcheck = "version %d{dd.version}"
-            let have = c.name_view(p.save_get(), versionsize)
+            let have = c.name_view(p.save_p, versionsize)
             if have != vcheck then return    // bad version
-            p.save_skip(versionsize)
-            let skill = p.save_read_byte()
-            let episode = p.save_read_byte()
-            let map = p.save_read_byte()
-            for k in 0..dd.maxplayers do ds.playeringame[k] = p.save_read_byte() != 0
+            p.save_p = p.save_p + versionsize
+            // *save_p++
+            let rd = () ->
+                let b = (i32) *p.save_p
+                p.save_p = p.save_p + 1
+                b
+            let skill = rd()
+            let episode = rd()
+            let map = rd()
+            for k in 0..dd.maxplayers do ds.playeringame[k] = rd() != 0
             // load a base level
             init_new(skill, episode, map)
             // get the times
-            let a = p.save_read_byte()
-            let b = p.save_read_byte()
-            let cc = p.save_read_byte()
+            let a = rd()
+            let b = rd()
+            let cc = rd()
             ds.leveltime = (a << 16) + (b << 8) + cc
             // dearchive all the modifications
             p.unarchive_players()
             p.unarchive_world()
             p.unarchive_thinkers()
             p.unarchive_specials()
-            if *p.save_get() != 0x1du8 then i.fatal("Bad savegame")
+            if *p.save_p != 0x1du8 then i.fatal("Bad savegame")
             if ds.setsizeneeded then r.execute_set_view_size()
             // draw the pattern into the back screen
             r.fill_back_screen()
@@ -491,14 +496,16 @@ module g =
         let name = misc.save_name(ds.savegameslot)
         defer free(name)
         if c.is_null(savebuffer) then savebuffer = (u8*) c.zalloc((i64) savegamesize + 0x10000)
-        p.save_set(savebuffer)
-        c.memcpy((any*) p.save_get(), (const any*) ds.savedescription.ptr, (i64) savestringsize)
-        p.save_skip(savestringsize)
+        p.save_p = savebuffer
+        c.memcpy((any*) p.save_p, (const any*) ds.savedescription.ptr, (i64) savestringsize)
+        p.save_p = p.save_p + savestringsize
         let vs = "version %d{dd.version}"
-        let sp0 = p.save_get()
-        for k in 0..versionsize do *(sp0 + k) = if k < vs.len then vs[k] else 0u8
-        p.save_skip(versionsize)
-        let wr = (b: i32) -> p.save_write_byte(b)
+        for k in 0..versionsize do *(p.save_p + k) = if k < vs.len then vs[k] else 0u8
+        p.save_p = p.save_p + versionsize
+        // *save_p++ = b
+        let wr = (b: i32) ->
+            *p.save_p = (u8) b
+            p.save_p = p.save_p + 1
         wr(ds.gameskill)
         wr(ds.gameepisode)
         wr(ds.gamemap)
@@ -511,7 +518,7 @@ module g =
         p.archive_thinkers()
         p.archive_specials()
         wr(0x1d)    // consistancy marker
-        let length = (i64) (p.save_get() - savebuffer)
+        let length = (i64) (p.save_p - savebuffer)
         if length > (i64) savegamesize then i.fatal("Savegame buffer overrun")
         ignore misc.write_file(name, savebuffer, length)
         ds.gameaction = ga.nothing
