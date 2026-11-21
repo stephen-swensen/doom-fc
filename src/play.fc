@@ -3013,24 +3013,24 @@ module p =
     let a_lower = (pl: player*, psp: pspdef*) ->
         psp.sy = psp.sy + lowerspeed
         // Is already down.
-        if psp.sy < weaponbottom then return void()
+        if psp.sy < weaponbottom then return
         // Player is dead.
         if pl.playerstate == pst.dead then
             psp.sy = weaponbottom
             // don't bring weapon back up
-            return void()
+            return
         // The old weapon has been lowered off the screen,
         // so change the weapon and start raising it
         if pl.health == 0 then
             // Player is dead, so keep the weapon off screen.
             set_psprite(pl, ps.weapon, sn.null)
-            return void()
+            return
         pl.readyweapon = pl.pendingweapon
         bring_up_weapon(pl)
 
     let a_raise = (pl: player*, psp: pspdef*) ->
         psp.sy = psp.sy - raisespeed
-        if psp.sy > weapontop then return void()
+        if psp.sy > weapontop then return
         psp.sy = weapontop
         // The weapon has been raised all the way,
         //  so change to the ready state.

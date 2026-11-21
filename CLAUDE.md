@@ -103,15 +103,10 @@ Doom's C files call each other in every direction, so:
 
 ## fcc corners hit in this port
 
-- **Early exits from void functions in a call cycle are spelled
-  `return void()`.** A bare `return` there fails with "return type
-  mismatch: expected <unresolved>, got void", unless the function happens
-  to be the first in the cycle that fcc checks. The spec treats the two
-  spellings the same, so this is an fcc bug. See `p.a_lower` and
-  `p.a_raise`. Value-returning cycles are fine as of fcc rc.9:
-  `p.set_mobj_state` returns from inside its loop, as P_SetMobjState does.
-  Assigning another module's pointer global (`p.save_p = ...` in `g`) also
-  works now.
+- **Recursion and cross-module pointer globals need no workarounds** as of
+  fcc rc.9 (86182d3f). Early returns in call cycles are written as in the
+  C, both value-returning (`p.set_mobj_state`) and bare (`p.a_lower`,
+  `p.a_raise`). `g` assigns `p.save_p` directly.
 - An `if ... then` that ends its line inside an expression needs its `else`
   at the enclosing statement's column (or keep `then X` on one line).
   Continuation lines must be indented deeper than the statement.
