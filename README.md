@@ -123,9 +123,11 @@ deliberate exceptions:
   `if (commercial)`, an always-true constant, so it never draws the episode
   map animations. doom-fc tests the game mode, as DOS DOOM did.
 - **Sound.** It is a new SDL2 mixer with the same volume and separation
-  formula as linuxdoom's `i_sound.c`. Pitch shifting is off unless you pass
-  `-pitchshift`. The switch-button release sound plays at the sector's sound
-  origin, not at a pointer's address.
+  formula as linuxdoom's `i_sound.c`. It mixes at the output device's own
+  rate (usually 48 kHz) rather than linuxdoom's 11 kHz, at unchanged
+  pitch. Pitch shifting is off unless you pass `-pitchshift`. The
+  switch-button release sound plays at the sector's sound origin, not at a
+  pointer's address.
 - **Not ported:** network games (`d_net` is single player only), the
   multiplayer chat widgets, and the co-op/deathmatch intermission tallies.
   Screenshots are PNG, not PCX. Savegames are not interchangeable with DOS

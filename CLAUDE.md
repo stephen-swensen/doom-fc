@@ -90,7 +90,10 @@ Doom's C files call each other in every direction, so:
   close) then hangs the game. Game code posts commands on `isnd`'s ring.
   The callback alone touches the mixer channels and the music player, and
   publishes per-slot `finished` handles back. SDL audio prefers the native
-  `pipewire` driver, falling back to SDL's default list.
+  `pipewire` driver, falling back to SDL's default list. The mix runs at
+  the device's own rate (`SDL_GetDefaultAudioInfo`, else 48000) with a
+  1024-frame buffer, so SDL doesn't resample. Pitch doesn't depend on the
+  rate. Headless capture and `-musictest` are pinned at 44100.
 - In-memory `short` fields are `i32`. On-disk map lumps are decoded
   explicitly in `p.load_*`. `ticcmd` keeps exact widths (`i8`/`i16`/`u8`),
   because demos depend on them.

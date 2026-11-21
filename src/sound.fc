@@ -55,7 +55,18 @@ module isnd =
     // - Shutdown leaves the device open for the OS to reap.
 
     let num_channels = 8
-    let output_rate = 44100
+    // The mix runs at the output device's own rate, so SDL does not
+    // resample it (wolf-fc's approach): SDL_GetDefaultAudioInfo when the
+    // driver can say, else 48000, the PipeWire / modern-desktop norm.
+    // Pitch is independent of it: each effect steps through its samples at
+    // its own rate / output_rate, and the OPL2 emulator is built for the
+    // rate it is given. Headless capture and -musictest pin capture_rate so
+    // their output (and the test goldens) stay tic-aligned and fixed.
+    let fallback_rate = 48000
+    let capture_rate = 44100
+    let mut output_rate = 48000
+    // 1024 frames: PipeWire's default quantum (~21 ms at 48 kHz)
+    let buffer_frames = 1024
 
     let op_start = 1
     let op_stop = 2
@@ -95,7 +106,7 @@ module isnd =
     let mut capture = false
     let mut cap = default(i16[])
     let mut cap_frames = 0
-    let frames_per_tic = output_rate / 35
+    let frames_per_tic = capture_rate / 35
 
     // getsfx: a DMX lump is u16 format, u16 rate, u32 length, then 8-bit
     // unsigned samples.
@@ -149,6 +160,7 @@ module isnd =
                 sample_rates[k] = sample_rates[sx.link]
         mix_buf = alloc(i32[] { len = 8192 })!
         if capture then
+            output_rate = capture_rate
             cap = alloc(i16[] { len = frames_per_tic * 2 * 35 * 60 })!
             if !nomusic then musplay.init(output_rate)
             return
@@ -157,9 +169,12 @@ module isnd =
             nosound = true
             nomusic = true
             return
+        let mut pref = default(sdl2.audio_spec)
+        let detected = sdl2.get_default_audio_info(default(any*), &pref, 0) == 0 && pref.freq > 0
+        output_rate = if detected then pref.freq else fallback_rate
         let spec = sdl2.audio_spec {
             freq = output_rate, format = sdl2.audio_s16sys, channels = 2u8, silence = 0u8,
-            samples = 512u16, padding = 0u16, size = 0u32,
+            samples = (u16) buffer_frames, padding = 0u16, size = 0u32,
             callback = &callback, userdata = default(any*) }
         let mut obtained = default(sdl2.audio_spec)
         // allowed_changes 0: SDL converts to exactly this format and buffer
@@ -171,8 +186,14 @@ module isnd =
         else
             let drv = sdl2.get_current_audio_driver()
             let drvname = if c.is_null(drv) then (const str) "?" else (const str) drv
-            i.print(alloca("I_InitSound: %d{output_rate} Hz stereo (%s{drvname})\n"))
-            // the player exists before the callback can run
+            let how = if detected then (const str) "" else (const str) " (fallback)"
+            let buf_ms = (f64) obtained.samples * 1000.0 / (f64) obtained.freq
+            i.print(alloca("I_InitSound: driver %s{drvname}, device rate %d{output_rate} Hz%s{how}, stereo, %d{(i32) obtained.samples}-frame buffer (~%4.1f{buf_ms} ms)\n"))
+            // the mix buffer covers the granted buffer, and the player
+            // exists, before the callback can run
+            if (i64) obtained.samples * 2 > mix_buf.len then
+                free(mix_buf)
+                mix_buf = alloc(i32[] { len = (i64) obtained.samples * 2 })!
             if !nomusic then musplay.init(output_rate)
             sdl2.pause_audio(device, 0)
 
