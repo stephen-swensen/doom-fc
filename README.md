@@ -103,10 +103,26 @@ two traces for every IWAD demo. They are identical on every tic.
 
 ## Where doom-fc departs from linuxdoom
 
-The port reproduces linuxdoom's playsim exactly, including its bugs (the
-vile's fire spawn, the "-ANG90/20" chainsaw comparison, EV_DoDonut's
-precedence slip, the P_LoadThings early `break`, and so on). These are the
-deliberate exceptions:
+During demos the port reproduces linuxdoom's playsim exactly, bugs
+included. These are the deliberate exceptions:
+
+- **Playsim bugs fixed outside demos.** In normal play doom-fc fixes these
+  linuxdoom bugs, which DOS DOOM shares. While a demo plays or records
+  (`ds.demo_compat`) it keeps the original behaviour, so demos stay in sync
+  both ways:
+  - `P_DivlineSide` compares `x` against the node's `y` for horizontal
+    lines, which skews sight checks.
+  - `A_VileTarget` spawns the fire at `(target->x, target->x)`. The fire
+    keeps that spot's floor and ceiling heights, which can clip it and
+    change whether the vile's blast is seen.
+  - `A_Saw` compares against an unsigned `-ANG90/20`, so the chainsaw never
+    snaps onto a target to the player's right.
+  - `P_LoadThings` uses `break` for a DOOM II-only thing in a DOOM 1 map, so
+    every later thing on the map is dropped too.
+- **`EV_DoDonut`** tests `!flags & ML_TWOSIDED`, which is always false, so
+  a one-sided line could hand it a null sector. doom-fc skips one-sided
+  lines, in demos too, because the fix only changes the case that would
+  crash.
 
 - **Ultimate DOOM detection.** linuxdoom recognises Ultimate DOOM only by the
   file name `doomu.wad`. doom-fc also treats a `doom.wad` that contains E4M1
@@ -125,9 +141,10 @@ deliberate exceptions:
 - **Sound.** It is a new SDL2 mixer with the same volume and separation
   formula as linuxdoom's `i_sound.c`. It mixes at the output device's own
   rate (usually 48 kHz) rather than linuxdoom's 11 kHz, at unchanged
-  pitch. Pitch shifting is off unless you pass `-pitchshift`. The
-  switch-button release sound plays at the sector's sound origin, not at a
-  pointer's address.
+  pitch. Pitch shifting is off unless you pass `-pitchshift`. Both switch
+  sounds play at the switch's sector. linuxdoom plays the press at
+  `buttonlist[0]`'s origin, usually null, and the release at a pointer's
+  address.
 - **Not ported:** network games (`d_net` is single player only), the
   multiplayer chat widgets, and the co-op/deathmatch intermission tallies.
   Screenshots are PNG, not PCX. Savegames are not interchangeable with DOS

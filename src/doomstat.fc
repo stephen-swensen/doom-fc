@@ -62,6 +62,11 @@ module ds =
     let mut netdemo = false
     let mut timingdemo = false
 
+    // linuxdoom bugs that change gameplay are fixed in doom-fc, but demos
+    // must replay the way DOS and linuxdoom ran them. While a demo is
+    // playing or recording, the playsim keeps the original behaviour.
+    let demo_compat = () -> demoplayback || demorecording
+
     let mut gamestate = gs.demoscreen
     let mut wipegamestate = gs.demoscreen
     let mut gameaction = ga.nothing

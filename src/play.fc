@@ -1515,7 +1515,7 @@ module p =
             else (if nd.dy < 0 then 1 else 0)
         else if nd.dy == 0 then
             // (the original compares x against node->y here)
-            if x == nd.y then 2
+            if (if ds.demo_compat() then x else y) == nd.y then 2
             else if y <= nd.y then (if nd.dx < 0 then 1 else 0)
             else (if nd.dx > 0 then 1 else 0)
         else
@@ -2539,7 +2539,8 @@ module p =
         if c.is_null(actor.target) then return
         a_facetarget(actor)
         // (the original passes target->x for both x and y)
-        let fog = spawn_mobj(actor.target.x, actor.target.x, actor.target.z, mt.fire)
+        let fy = if ds.demo_compat() then actor.target.x else actor.target.y
+        let fog = spawn_mobj(actor.target.x, fy, actor.target.z, mt.fire)
         actor.tracer = fog
         fog.target = actor
         fog.tracer = actor.target
@@ -3070,8 +3071,10 @@ module p =
         let ang90_20 = fx.ang90 / 20u32
         let ang90_21 = fx.ang90 / 21u32
         if angle - pl.mo.angle > fx.ang180 then
-            // (-ANG90/20 is unsigned in the original, so this is a big number)
-            if angle - pl.mo.angle < (0u32 - fx.ang90) / 20u32 then pl.mo.angle = angle + ang90_21
+            // -ANG90/20 is unsigned in the original, so the test is never
+            // true and the saw never snaps to a target on the right
+            let lim = if ds.demo_compat() then (0u32 - fx.ang90) / 20u32 else 0u32 - ang90_20
+            if angle - pl.mo.angle < lim then pl.mo.angle = angle + ang90_21
             else pl.mo.angle = pl.mo.angle - ang90_20
         else
             if angle - pl.mo.angle > ang90_20 then pl.mo.angle = angle - ang90_21
@@ -4708,9 +4711,10 @@ module p =
                 if k >= s2.linecount then break
                 let lk = *(s2.lines + k)
                 k = k + 1
-                // (!lk->flags & ML_TWOSIDED) in the original: precedence
-                // makes this test always false
-                if (((if lk.flags == 0 then 1 else 0)) & ml.twosided) != 0 || lk.backsector == s1 then continue
+                // The original's (!lk->flags & ML_TWOSIDED) is always false,
+                // so a one-sided line here gave it a null s3. Skipping
+                // one-sided lines only changes that case.
+                if (lk.flags & ml.twosided) == 0 || lk.backsector == s1 then continue
                 let s3 = lk.backsector
                 // Spawn rising slime
                 let mut floor = (floormove*) alloc_thinker(sizeof(floormove), thinkf.move_floor)
@@ -4862,19 +4866,22 @@ module p =
         // EXIT SWITCH?
         if ln.special == 11 then sound = sfx.swtchx
         for k in 0..numswitches * 2 do
-            // (the original plays the sound at buttonlist[0]'s origin)
+            // The original plays the sound at buttonlist[0]'s origin,
+            // usually null (full volume, no position). Play it at the
+            // switch's sector instead, as start_button does for the release.
+            let org = (mobj*) &ln.frontsector.soundorg
             if switchlist[k] == tex_top then
-                snd.start_sound(buttonlist[0].soundorg, sound)
+                snd.start_sound(org, sound)
                 sd.toptexture = switchlist[k ^ 1]
                 if use_again != 0 then start_button(ln, bw_top, switchlist[k], buttontime)
                 return
             else if switchlist[k] == tex_mid then
-                snd.start_sound(buttonlist[0].soundorg, sound)
+                snd.start_sound(org, sound)
                 sd.midtexture = switchlist[k ^ 1]
                 if use_again != 0 then start_button(ln, bw_middle, switchlist[k], buttontime)
                 return
             else if switchlist[k] == tex_bot then
-                snd.start_sound(buttonlist[0].soundorg, sound)
+                snd.start_sound(org, sound)
                 sd.bottomtexture = switchlist[k ^ 1]
                 if use_again != 0 then start_button(ln, bw_bottom, switchlist[k], buttontime)
                 return
@@ -5060,10 +5067,12 @@ module p =
                 if ty == 68 || ty == 64 || ty == 88 || ty == 89 || ty == 69 || ty == 67
                     || ty == 71 || ty == 65 || ty == 66 || ty == 84 then
                     spawn = false
-            // (the original breaks out of the loop here)
-            if !spawn then break
-            spawn_map_thing(&mth)
             k = k + 1
+            // the original breaks out of the loop here, dropping every
+            // later thing on the map
+            if !spawn then
+                if ds.demo_compat() then break else continue
+            spawn_map_thing(&mth)
         z.zfree((any*) data)
 
     let load_line_defs = (lump: i32) ->

@@ -18,6 +18,12 @@ project is GPL v2.
   reads WADs directly, with no conversion step.
 - **Deliberate departures from linuxdoom** are listed in README.md. Add to
   that list whenever behaviour intentionally differs.
+- **Obvious linuxdoom playsim bugs are fixed, but only outside demos.** If a
+  fix could change a demo, keep the original behaviour while
+  `ds.demo_compat()` is true (a demo is playing or recording), so IWAD
+  demos and demos recorded here stay in sync. A fix that only changes a
+  case where the original would crash (EV_DoDonut) needs no gate. Leave the
+  original as a comment next to the fix.
 
 ## Sibling repositories
 
