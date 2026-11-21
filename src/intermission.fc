@@ -126,8 +126,13 @@ module wi =
     let plr = () -> &wbs.plyr[me]
 
     let slam_background = () ->
-        c.memcpy((any*) v.screens[0], (const any*) v.screens[1], 320i64 * 200)
+        v.copy_screen(1, 0)
         v.mark_rect(0, 0, 320, 200)
+
+    // Repaint the background into screen 1 after the screens were
+    // reallocated at a new render scale.
+    let redraw_background = () ->
+        if c.not_null(bg) then v.draw_patch(0, 0, 1, bg)
 
     let responder = (ev: event*) -> false
 

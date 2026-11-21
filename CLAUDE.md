@@ -5,9 +5,14 @@
 doom-fc is a port of id Software's linuxdoom-1.10 to FC, and an end-to-end
 FC demo. Unlike wolf-fc, it is **not** license-clean, and that is
 deliberate. The user chose to transpose the GPL source "with abandon", so
-the code follows the C closely: names, structure, comments and bugs. The
-project is GPL v2.
+the port started as a close transposition: names, structure, comments and
+bugs. The project is GPL v2.
 
+- **The port is now ours to evolve.** Since the transposition was finished,
+  the user wants the code free to depart from linuxdoom and to use FC idioms
+  where they fit, done opportunistically rather than as a rewrite. Consult
+  linuxdoom when a question needs an authoritative answer. Existing
+  linuxdoom names and comments can stay where they still help.
 - **OG means `../DOOM/linuxdoom-1.10/`.** Behaviour questions are settled
   there. The playsim must stay in sync with it tic for tic. `make check`
   diffs `-tictrace` output against linuxdoom built from that tree
@@ -52,8 +57,11 @@ project is GPL v2.
   `-sndcapture FILE` writes the mixed output as a WAV, at 1260 frames per
   gametic, so tic N starts at frame N*1260.
 - The golden values in `tests/run-tests.sh` were recorded from linuxdoom.
-  Frame hashes pin the headless renderer. Update them only for intentional
-  rendering changes.
+  Frame hashes pin the headless renderer, at 1x and at `-scale 3`. Update
+  them only for intentional rendering changes. Headless runs render at 1x
+  unless given `-scale N`. Tests that read screenshots must run under a
+  scratch `$DOOM_FC_HOME`, because the user's `default.cfg` (screen size and
+  so on) changes frames.
 - `tools/gen_tables.py ../DOOM/linuxdoom-1.10 src` regenerates `info.fc`,
   `sounds.fc`, `tables.fc`, `dstrings.fc`, `gamma.fc` and `random.fc`. Never
   hand-edit those files.
@@ -100,6 +108,20 @@ Doom's C files call each other in every direction, so:
   the device's own rate (`SDL_GetDefaultAudioInfo`, else 48000) with a
   1024-frame buffer, so SDL doesn't resample. Pitch doesn't depend on the
   rate. Headless capture and `-musictest` are pinned at 44100.
+- **Two coordinate spaces.** The screens are `v.hires` times 320x200
+  (`v.sw` x `v.sh`). Every 2D caller (status bar, menus, HUD, intermission,
+  finale) works in 320x200 units through `v.draw_patch`, `v.copy_rect`,
+  `v.fill_flat` and `v.draw_patch_column`, which scale. The renderer, the
+  automap and the wipe work in screen pixels, and so do `ds.viewwindowx`,
+  `ds.viewwidth` and the rest of the view geometry. Convert with `v.hires`
+  wherever the two meet (the pause patch, the border patches, HU erase,
+  automap marks). Never write a raw 320 or 200 against `v.screens`.
+- **The render scale changes at runtime.** `iv.want_hires` is picked from
+  the drawable (Auto) or the `scale_factor` setting. `d.apply_hires`
+  switches at the top of D_Display: `v.set_hires` reallocates the screens,
+  `r.init_resolution` the renderer buffers, and the view size, automap,
+  status bar and intermission backdrop are redone. Anything new that caches
+  a screen pointer or a screen-sized buffer must be redone there too.
 - In-memory `short` fields are `i32`. On-disk map lumps are decoded
   explicitly in `p.load_*`. `ticcmd` keeps exact widths (`i8`/`i16`/`u8`),
   because demos depend on them.

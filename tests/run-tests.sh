@@ -36,6 +36,8 @@ assert_contains() {    # name haystack needle
 }
 
 have() { [ -f "$DATA/$1" ] || [ -f "$DATA/${1,,}" ]; }
+# a PNG's width, from its IHDR
+png_w() { od -An -tu1 -j16 -N4 "$1" | awk '{ print $1 * 16777216 + $2 * 65536 + $3 * 256 + $4 }'; }
 
 run() { "$BIN" -headless "$@" 2>&1; }
 
@@ -114,6 +116,15 @@ if have DOOM.WAD; then
     assert_eq "title screen frame" 486c60240384f0c184fdf17ac6df4e67 "$(md5sum < "$TMP/title.png" | cut -c1-32)"
     run -doom1 -warp 1 1 -shotdir "$TMP" -quitat 60 -script "w40 s:e1m1" >/dev/null
     assert_eq "E1M1 start frame" b2b8efadd0f6d6ec7982a53733289ec5 "$(md5sum < "$TMP/e1m1.png" | cut -c1-32)"
+    # hires: the same frame rendered at 3x (960x600)
+    run -doom1 -scale 3 -warp 1 1 -shotdir "$TMP" -quitat 60 -script "w40 s:e1m1x3" >/dev/null
+    assert_eq "E1M1 start frame at 3x" 52caf5e133dacdc5df3090932ecdeaa8 "$(md5sum < "$TMP/e1m1x3.png" | cut -c1-32)"
+    # Options -> Graphic Detail changes the render scale mid-game: 2x, then
+    # 3x, then back down to Auto (1x headless)
+    run -doom1 -scale 2 -warp 1 1 -shotdir "$TMP" -quitat 120 \
+        -script "w40 s:sc2 pesc w2 pdown w2 penter w3 pdown w1 pdown w2 pright w2 s:sc3 pleft w2 pleft w2 pleft w2 pesc w3 s:scauto" >/dev/null
+    assert_eq "render scale switches 2x -> 3x -> auto" "640 960 320" \
+        "$(png_w "$TMP/sc2.png") $(png_w "$TMP/sc3.png") $(png_w "$TMP/scauto.png")"
 else
     skp "DOOM.WAD not in $DATA"
 fi

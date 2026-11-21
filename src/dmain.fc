@@ -37,11 +37,31 @@ module d =
             if !m.responder(ev) then ignore g.responder(ev)    // menu ate the event?
             ds.eventtail = (ds.eventtail + 1) & (ds.maxevents - 1)
 
+    // Switch to the render scale iv picked (startup, a window resize, the
+    // Options menu). Runs at the top of D_Display, never mid-wipe: new
+    // screens and renderer buffers, a view size reset, then a repaint of
+    // what lived in the old screens (border, status bar, intermission
+    // backdrop).
+    let mut hires_changed = false
+
+    let apply_hires = () ->
+        if iv.want_hires != v.hires then
+            v.set_hires(iv.want_hires)
+            r.init_resolution()
+            ds.setsizeneeded = true
+            amap.resize()
+            wi.redraw_background()
+            hires_changed = true
+
     // D_Display: draw current display, possibly wiping it from the
     // previous
     let display = () ->
         if ds.nodrawers then return    // for comparative timing / profiling
+        apply_hires()
         let mut redrawsbar = false
+        if hires_changed then
+            redrawsbar = true
+            hires_changed = false
         // change the view size if needed
         if ds.setsizeneeded then
             r.execute_set_view_size()
@@ -56,10 +76,10 @@ module d =
         if state == gs.level then
             if ds.gametic != 0 then
                 if ds.automapactive then amap.drawer()
-                if wipe_now || (ds.viewheight != 200 && fullscreen) then redrawsbar = true
+                if wipe_now || (ds.viewheight != v.sh && fullscreen) then redrawsbar = true
                 if inhelpscreensstate && !ds.inhelpscreens then redrawsbar = true    // just put away the help screen
-                st.drawer(ds.viewheight == 200, redrawsbar)
-                fullscreen = ds.viewheight == 200
+                st.drawer(ds.viewheight == v.sh, redrawsbar)
+                fullscreen = ds.viewheight == v.sh
         else if state == gs.intermission then wi.drawer()
         else if state == gs.finale then f.drawer()
         else if state == gs.demoscreen then page_drawer()
@@ -75,7 +95,7 @@ module d =
             viewactivestate = false    // view was not active
             r.fill_back_screen()    // draw the pattern into the back screen
         // see if the border needs to be updated to the screen
-        if ds.gamestate == gs.level && !ds.automapactive && ds.scaledviewwidth != 320 then
+        if ds.gamestate == gs.level && !ds.automapactive && ds.scaledviewwidth != v.sw then
             if ds.menuactive || menuactivestate || !viewactivestate then borderdrawcount = 3
             if borderdrawcount != 0 then
                 r.draw_view_border()    // erase old menu stuff
@@ -87,8 +107,9 @@ module d =
         ds.wipegamestate = ds.gamestate
         // draw pause pic
         if ds.paused then
-            let y = if ds.automapactive then 4 else ds.viewwindowy + 4
-            v.draw_patch_direct(ds.viewwindowx + (ds.scaledviewwidth - 68) / 2, y, 0, v.patch_named("M_PAUSE"))
+            let n = v.hires
+            let y = if ds.automapactive then 4 else ds.viewwindowy / n + 4
+            v.draw_patch_direct((ds.viewwindowx + (ds.scaledviewwidth - 68 * n) / 2) / n, y, 0, v.patch_named("M_PAUSE"))
         // menus go directly to the screen
         m.drawer()    // menu is drawn even on top of everything
         test_hooks()
@@ -125,21 +146,21 @@ module d =
     let test_hooks = () ->
         isnd.capture_tic()
         if iv.pending_shot.len > 0 then
-            let fb = alloc(u32[] { len = 320 * 200 })!
+            let fb = alloc(u32[] { len = v.sw * v.sh })!
             defer free(fb)
             iv.frame_argb(fb)
             let name = alloc("%s{shotdir}/%s{iv.pending_shot}.png")!
             defer free(name)
-            ignore png.write(name, fb, 320, 200, "")
+            ignore png.write(name, fb, v.sw, v.sh, "")
             free(iv.pending_shot)
             iv.pending_shot = default(str)
         if shotevery > 0 && ds.gametic % shotevery == 0 then
-            let fb = alloc(u32[] { len = 320 * 200 })!
+            let fb = alloc(u32[] { len = v.sw * v.sh })!
             defer free(fb)
             iv.frame_argb(fb)
             let name = alloc("%s{shotdir}/shot%06d{ds.gametic}.png")!
             defer free(name)
-            ignore png.write(name, fb, 320, 200, "")
+            ignore png.write(name, fb, v.sw, v.sh, "")
 
     // -sndcapture FILE: the captured mix as a 16-bit stereo WAV.
     let write_capture = () ->
@@ -269,6 +290,8 @@ module d =
                 m.ticker()
                 return
             i.sleep_ms(1)
+        iv.dbg_mark_work_start()
+        iv.dbg_tics_run(counts)
         // run the count * ticdup dics
         loop
             if counts <= 0 then break

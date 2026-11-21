@@ -98,8 +98,16 @@ module z =
 
     let init = () -> void()
 
+    // Every block carries 128 zeroed bytes past its end. The column
+    // drawers wrap the texel index with & 127, so a texture shorter than
+    // 128 rows (the "tutti-frutti" case) reads up to 127 bytes past its
+    // column, which for the last column of a lump is past the lump. In the
+    // original's single zone that read landed in a neighbouring block; here
+    // it stays inside this one.
+    let overread_pad = 128i64
+
     let malloc = (size: i64, tag: i32, user: any**) ->
-        let raw = c.zalloc(size + (i64) header)
+        let raw = c.zalloc(size + (i64) header + overread_pad)
         let b = (memblock*) raw
         b.size = size
         b.user = user

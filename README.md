@@ -6,9 +6,11 @@ It plays the original IWADs, Ultimate DOOM and DOOM II, and replays their
 demos in sync with linuxdoom itself, tic for tic.
 
 The playsim, renderer, status bar, automap, menus, intermission, finale,
-savegames and demo code are all straight transpositions of the C. Video,
-input and sound are new, because linuxdoom's X11 and `/dev/dsp` layers have
-no modern equivalent. They sit behind the same `I_*` boundaries. Music is
+savegames and demo code started as straight transpositions of the C. The
+renderer has since grown a higher internal resolution (see
+[Display](#display)). Video, input and sound are new, because linuxdoom's X11
+and `/dev/dsp` layers have no modern equivalent. They sit behind the same
+`I_*` boundaries. Music is
 OPL2 FM synthesis driven by the WAD's own GENMIDI instruments, as DOS DOOM
 played it on an AdLib or Sound Blaster.
 
@@ -58,7 +60,11 @@ automap, **Esc** opens the menu, **F1-F11** are the usual function keys (F11
 cycles gamma), **Pause** pauses, and **-** / **=** change the view size. The
 mouse is captured while you are playing a level. It turns and fires. Forward
 and back on the mouse are off by default; `-mousemove` turns them on, and
-`-nomouse` disables the mouse. **Alt+Enter** toggles fullscreen.
+`-nomouse` disables the mouse. **Alt+Enter** toggles fullscreen. **`**
+(backquote) toggles the debug overlay.
+
+**Options → Graphic Detail** sets the render scale: Auto, or 1x to 12x (see
+[Display](#display)).
 
 Keys are configurable in `~/.doom-fc/default.cfg` (linuxdoom's format and
 names, Doom key codes).
@@ -78,6 +84,9 @@ II), `-skill N`, `-episode N`, `-nomonsters`, `-respawn`, `-fast`,
 | `-nosound`, `-nomusic` | silence |
 | `-pitchshift` | linuxdoom's random sound pitch (DOS v1.9 plays sounds unshifted, which is the default) |
 | `-nomouse`, `-mousemove` | see Controls |
+| `-scale N` | render at N times 320x200 for this session (0 = Auto, 1..12), overriding the saved setting |
+| `-maxscale N` | cap Auto's pick (default 6) |
+| `-debug` | start with the debug overlay on |
 
 ### Headless / test mode
 
@@ -97,9 +106,77 @@ regression suite is built on it:
 | `-sndcapture FILE` | run the real mixer (effects and music) one tic at a time and write the run to a WAV |
 | `-musictest LUMP` | render 20 s of a music lump to `musictest.wav` and report its level |
 
+Headless runs render at 1x unless `-scale N` says otherwise, so the golden
+frame hashes stay fixed.
+
 `tools/refdemo/build.sh` builds linuxdoom-1.10 itself, from `../DOOM`, as a
 headless demo player with the same `-tictrace` output. `make check` diffs the
 two traces for every IWAD demo. They are identical on every tic.
+
+## Display
+
+The game draws into 8-bit screens of `hires` times 320x200 (`v.hires`,
+`v.sw` x `v.sh`). Each frame goes through the palette into one ARGB
+streaming texture. SDL stretches that texture to 4:3, which restores the
+original's tall pixels, and letterboxes it into the window. Video work in
+SDL stops at that one texture.
+
+- **The 3D view renders at full resolution.** Walls, flats, sprites and the
+  sky are drawn at `v.sw` x `v.sh`, with the original's projection, field
+  of view and light levels. The weapon sprite and the sky keep their size
+  relative to the 320-wide original.
+- **The 2D layer keeps its 320x200 coordinates.** Status bar, menus, HUD
+  text, intermission and finale call the same `v.draw_patch` and
+  `v.copy_rect` as before, and those drawers scale each patch pixel into a
+  `hires` x `hires` block. The automap and the wipe work in screen pixels.
+  Automap lines get thicker as the scale rises.
+- **Scale factor** (Options → Graphic Detail, saved as `scale_factor`).
+  Auto picks the largest integer factor whose 4:3 output fits the drawable
+  in both axes, capped at 6 (`-maxscale N` raises or lowers the cap). A
+  pinned 1x..12x ignores the cap. Auto re-picks when the window is resized,
+  goes fullscreen, or moves to a display with a different DPI. The switch
+  happens at the next frame: the screens and renderer buffers are
+  reallocated and the border, status bar and intermission backdrop
+  repainted.
+- **Below the drawable's size** (a pinned low factor, or the cap), the frame
+  is replicated in software up to the size the drawable could take, so SDL's
+  linear stretch stays sharp. At 1x in a 960x720 window that is the old
+  4x replication.
+
+These are the Auto picks for some full-screen drawables:
+
+| Drawable | Scale | Render | Shown at | Notes |
+|---|---|---|---|---|
+| 1280 x 720 | 3 | 960 x 600 | 960 x 720 | |
+| 1920 x 1080 | 4 | 1280 x 800 | 1280 x 960 | height-bound |
+| 1920 x 1200 | 5 | 1600 x 1000 | 1600 x 1200 | 1:1 horizontally |
+| 2560 x 1440 | 6 | 1920 x 1200 | 1920 x 1440 | |
+| 3840 x 2160 | 6 (cap) | 1920 x 1200 | 2880 x 2160 | `-maxscale 9` renders 2880 x 1800 |
+
+The texture is always 200 rows per factor and is shown at 240, so the 4:3
+stretch is a 5:6 vertical resample. At 5x on a 1920x1200 panel that means
+1000 rows shown as 1200. Columns map 1:1.
+
+Rendering at 5x costs about 1.3 ms a frame on the development machine (2000
+tics of DEMO1 in 2.6 s headless), well inside the 28.6 ms tic.
+
+**Debug overlay** (`-debug`, or **`**). This is a top-right readout drawn into
+the upload buffer after the frame is converted, so it is never in
+screenshots. It shows:
+
+- **fps**: the displayed frame rate. Doom draws one frame per tic, so it
+  reads 35.
+- **work**: the time spent running the frame's tics, rendering and
+  uploading, against the 28.6 ms tic budget.
+- **drops**: tics that ran without being displayed, because a frame took
+  longer than a tic.
+- **jit**: the average distance of each displayed-frame period from 28.6 ms.
+  On a 60 Hz display, 35 fps presents as alternating one- and two-refresh
+  frames, so a few ms here is the normal 35-on-60 cadence.
+- the render size, its scale and whether that is Auto, and the drawable
+  with its refresh rate.
+
+The first line turns red while work is over budget or just after a drop.
 
 ## Where doom-fc departs from linuxdoom
 
@@ -145,6 +222,18 @@ included. These are the deliberate exceptions:
   sounds play at the switch's sector. linuxdoom plays the press at
   `buttonlist[0]`'s origin, usually null, and the release at a pointer's
   address.
+- **Higher internal resolution.** See [Display](#display). To keep the
+  original's look at any scale, the renderer divides the scale back out of
+  its light-level index, sizes the weapon sprite and the sky against 320
+  columns, and gives the fuzz effect a block grain one 320x200 pixel across.
+  It also scales the cap on wall scale with the screen, so walls close up
+  are not cut short, and does wall and sprite edge maths in 64 bits, where
+  the higher scales would overflow 32. The visplane rows are 16-bit. At 1x
+  the golden test frames are unchanged.
+- **Graphic Detail is the render scale.** linuxdoom's low-detail toggle on
+  that menu row printed "low detail mode n.a." and did nothing. The row now
+  sets the scale factor, and its value is drawn in the HUD font. F5 still
+  behaves as in linuxdoom.
 - **Not ported:** network games (`d_net` is single player only), the
   multiplayer chat widgets, and the co-op/deathmatch intermission tallies.
   Screenshots are PNG, not PCX. Savegames are not interchangeable with DOS

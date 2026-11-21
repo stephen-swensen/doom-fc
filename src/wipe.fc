@@ -11,20 +11,12 @@ module wipe =
     let mut wipe_scr = default(u8*)
     let mut ycols = default(i32[])
 
-    let shitty_col_major_xform = (array: i16*, width: i32, height: i32) ->
-        let dest = (i16*) c.zalloc((i64) width * height * 2)
-        for y in 0..height do
-            for x in 0..width do
-                *(dest + (x * height + y)) = *(array + (y * width + x))
-        c.memcpy((any*) array, (const any*) dest, (i64) width * height * 2)
-        cstdlib.c_free((any*) dest)
-
     let init_color_xform = (width: i32, height: i32, ticks: i32) ->
-        c.memcpy((any*) wipe_scr, (const any*) wipe_scr_start, (i64) width * height)
+        c.memcpy((any*) wipe_scr, (const any*) wipe_scr_start, (i64) v.sw * v.sh)
 
     let do_color_xform = (width: i32, height: i32, ticks: i32) ->
         let mut changed = false
-        for k in 0..width * height do
+        for k in 0..v.sw * v.sh do
             let wv = (i32) *(wipe_scr + k)
             let ev = (i32) *(wipe_scr_end + k)
             if wv != ev then
@@ -38,15 +30,18 @@ module wipe =
                     changed = true
         !changed
 
+    // The melt runs on Doom's 320x200 grid: 160 two-pixel columns, each
+    // with a 0..200 drop. ycols is in those rows; each column is drawn over
+    // its 2 * hires screen pixels. (The original sliced the screen into
+    // shorts in column-major order; drawing each column from its drop
+    // gives the same frames.)
     let init_melt = (width: i32, height: i32, ticks: i32) ->
         // copy start screen to main screen
-        c.memcpy((any*) wipe_scr, (const any*) wipe_scr_start, (i64) width * height)
-        // makes this wipe faster (in theory)
-        // to have stuff in column-major format
-        shitty_col_major_xform((i16*) wipe_scr_start, width / 2, height)
-        shitty_col_major_xform((i16*) wipe_scr_end, width / 2, height)
+        c.memcpy((any*) wipe_scr, (const any*) wipe_scr_start, (i64) v.sw * v.sh)
         // setup initial column positions
-        // (y<0 => not ready to scroll yet)
+        // (y<0 => not ready to scroll yet). Like the original this draws
+        // `width` positions though the melt uses only the first half,
+        // which keeps M_Random's sequence.
         if ycols.len < width then ycols = alloc(i32[] { len = width })!
         ycols[0] = 0 - (rnd.m_random() % 16)
         for k in 1..width do
@@ -55,38 +50,36 @@ module wipe =
             if ycols[k] > 0 then ycols[k] = 0
             else if ycols[k] == -16 then ycols[k] = -15
 
-    let do_melt = (width0: i32, height: i32, ticks0: i32) ->
+    // Redraw melt column k: the end screen above its drop, the start
+    // screen shifted down below it.
+    let draw_melt_column = (k: i32, drop: i32) ->
+        let n = v.hires
+        let pitch = v.sw
+        let x0 = k * 2 * n
+        let cw = 2 * n
+        let split = drop * n
+        for y in 0..v.sh do
+            let dest = wipe_scr + y * pitch + x0
+            let src = if y < split then wipe_scr_end + y * pitch + x0
+                      else wipe_scr_start + (y - split) * pitch + x0
+            c.memcpy((any*) dest, (const any*) src, (i64) cw)
+
+    let do_melt = (width: i32, height: i32, ticks0: i32) ->
         let mut done = true
-        let width = width0 / 2
+        let cols = width / 2
         let mut ticks = ticks0
-        let scr_end = (i16*) wipe_scr_end
-        let scr = (i16*) wipe_scr
-        let scr_start = (i16*) wipe_scr_start
         loop
             if ticks <= 0 then break
             ticks = ticks - 1
-            for k in 0..width do
+            for k in 0..cols do
                 if ycols[k] < 0 then
                     ycols[k] = ycols[k] + 1
                     done = false
                 else if ycols[k] < height then
                     let mut dy = if ycols[k] < 16 then ycols[k] + 1 else 8
                     if ycols[k] + dy >= height then dy = height - ycols[k]
-                    let mut s = scr_end + ((i32) k * height + ycols[k])
-                    let mut d = scr + (ycols[k] * width + (i32) k)
-                    let mut idx = 0
-                    for _ in 0..dy do
-                        *(d + idx) = *s
-                        s = s + 1
-                        idx = idx + width
                     ycols[k] = ycols[k] + dy
-                    s = scr_start + ((i32) k * height)
-                    d = scr + (ycols[k] * width + (i32) k)
-                    idx = 0
-                    for _ in 0..height - ycols[k] do
-                        *(d + idx) = *s
-                        s = s + 1
-                        idx = idx + width
+                    draw_melt_column((i32) k, ycols[k])
                     done = false
         done
 
@@ -97,7 +90,7 @@ module wipe =
     let end_screen = (x: i32, y: i32, width: i32, height: i32) ->
         wipe_scr_end = v.screens[3]
         iv.read_screen(wipe_scr_end)
-        v.draw_block(x, y, 0, width, height, wipe_scr_start)    // restore start scr.
+        v.copy_screen(2, 0)    // restore start scr.
 
     let screen_wipe = (wipeno: i32, x: i32, y: i32, width: i32, height: i32, ticks: i32) ->
         // initial stuff

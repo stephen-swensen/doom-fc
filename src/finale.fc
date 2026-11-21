@@ -125,12 +125,7 @@ module f =
 
     let text_write = () ->
         // erase the entire screen to a tiled background
-        let src = w.cache_lump_name(finaleflat, pu.cache)
-        let mut dest = v.screens[0]
-        for y in 0..200 do
-            for _ in 0..320 / 64 do
-                c.memcpy((any*) dest, (const any*) (src + ((y & 63) << 6)), 64i64)
-                dest = dest + 64
+        v.fill_flat(0, 0, 320, 200, 0, w.cache_lump_name(finaleflat, pu.cache))
         v.mark_rect(0, 0, 320, 200)
         // draw some of the text onto the screen
         let mut cx = 10
@@ -278,20 +273,7 @@ module f =
         else v.draw_patch(160, 170, 0, pt)
 
     let draw_patch_col = (x: i32, pt: const patch*, col: i32) ->
-        let mut column = patches.column(pt, col)
-        let desttop = v.screens[0] + x
-        // step through the posts in a column
-        loop
-            let topdelta = (i32) *column
-            if topdelta == 0xff then break
-            let length = (i32) *(column + 1)
-            let mut source = column + 3
-            let mut dest = desttop + topdelta * 320
-            for _ in 0..length do
-                *dest = *source
-                source = source + 1
-                dest = dest + 320
-            column = column + length + 4
+        v.draw_patch_column(x, 0, 0, pt, col)
 
     let bunny_scroll = () ->
         let p1 = (const patch*) w.cache_lump_name("PFUB2", pu.level)

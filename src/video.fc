@@ -1,7 +1,12 @@
-// v_video (software 2D drawing into the 320x200 8-bit screens) and i_video
-// (the SDL2 host: window, palette, frame upload, input translation).
-// v_video is ported from linuxdoom-1.10 (GPLv2); i_video replaces the X11
-// original with SDL2.
+// v_video (software 2D drawing into the 8-bit screens) and i_video (the
+// SDL2 host: window, palette, frame upload, input translation). v_video is
+// ported from linuxdoom-1.10 (GPLv2); i_video replaces the X11 original
+// with SDL2.
+//
+// The screens are `hires` times 320x200 in each axis. Every 2D caller
+// (status bar, menus, intermission, HUD text) still works in Doom's
+// 320x200 coordinates; the drawers here scale them up. Only the 3D
+// renderer, the automap and the wipe work in screen pixels.
 
 // A patch_t header; the column offset table follows at byte 8.
 struct patch =
@@ -17,8 +22,14 @@ module patches =
         (const u8*) p + column_ofs(p, col)
 
 module v =
-    let sw = 320
-    let sh = 200
+    // Doom's 2D coordinate space.
+    let basew = 320
+    let baseh = 200
+
+    // Screen pixels per 2D unit, and the screen size that gives.
+    let mut hires = 1
+    let mut sw = 320
+    let mut sh = 200
 
     // screens[0] is the visible frame, 1 is the wipe/background copy,
     // 2-3 wipe scratch, 4 the status bar background.
@@ -29,6 +40,17 @@ module v =
 
     let init = () ->
         screens = alloc(u8*[] { len = 5 })!
+        set_hires(1)
+
+    // (Re)allocate the screens at `n` times 320x200, cleared to black.
+    // Callers above this layer redraw whatever lived in them (see
+    // d.apply_hires).
+    let set_hires = (n: i32) ->
+        for k in 0..5 do
+            if c.not_null(screens[k]) then cstdlib.c_free((any*) screens[k])
+        hires = n
+        sw = basew * n
+        sh = baseh * n
         for k in 0..5 do
             screens[k] = (u8*) c.zalloc((i64) sw * sh)
 
@@ -38,43 +60,58 @@ module v =
 
     let copy_rect = (srcx: i32, srcy: i32, srcscrn: i32, width: i32, height: i32,
                      destx: i32, desty: i32, destscrn: i32) ->
-        if srcx < 0 || srcx + width > sw || srcy < 0 || srcy + height > sh
-            || destx < 0 || destx + width > sw || desty < 0 || desty + height > sh
+        if srcx < 0 || srcx + width > basew || srcy < 0 || srcy + height > baseh
+            || destx < 0 || destx + width > basew || desty < 0 || desty + height > baseh
             || srcscrn < 0 || srcscrn > 4 || destscrn < 0 || destscrn > 4 then
             i.fatal("Bad V_CopyRect")
         mark_rect(destx, desty, width, height)
-        let mut src = screens[srcscrn] + sw * srcy + srcx
-        let mut dest = screens[destscrn] + sw * desty + destx
-        for _ in 0..height do
-            c.memcpy((any*) dest, (const any*) src, (i64) width)
+        let n = hires
+        let mut src = screens[srcscrn] + sw * srcy * n + srcx * n
+        let mut dest = screens[destscrn] + sw * desty * n + destx * n
+        for _ in 0..height * n do
+            c.memcpy((any*) dest, (const any*) src, (i64) width * n)
             src = src + sw
             dest = dest + sw
+
+    // One patch column, its top at 2D row y, into 2D column x. Each source
+    // pixel becomes a hires x hires block.
+    let draw_patch_column = (x: i32, y: i32, scrn: i32, p: const patch*, col: i32) ->
+        let n = hires
+        let pitch = sw
+        let desttop = screens[scrn] + y * n * pitch + x * n
+        let mut column = patches.column(p, col)
+        loop
+            let topdelta = *column
+            if topdelta == 0xffu8 then break
+            let length = (i32) *(column + 1)
+            let mut source = column + 3
+            let mut dest = desttop + (i32) topdelta * n * pitch
+            if n == 1 then
+                for _ in 0..length do
+                    *dest = *source
+                    source = source + 1
+                    dest = dest + pitch
+            else
+                for _ in 0..length do
+                    let px = *source
+                    for _ in 0..n do
+                        for k in 0..n do *(dest + k) = px
+                        dest = dest + pitch
+                    source = source + 1
+            column = column + length + 4
 
     // V_DrawPatch: column-masked patch, clipped by rejection.
     let draw_patch_flip = (x0: i32, y0: i32, scrn: i32, p: const patch*, flipped: bool) ->
         let y = y0 - p.topoffset
         let x = x0 - p.leftoffset
         let w = (i32) p.width
-        if x < 0 || x + w > sw || y < 0 || y + p.height > sh || scrn < 0 || scrn > 4 then
+        if x < 0 || x + w > basew || y < 0 || y + p.height > baseh || scrn < 0 || scrn > 4 then
             // linuxdoom only warns here ("what is up with TNT.WAD?")
             void()
         else
             if scrn == 0 then mark_rect(x, y, w, (i32) p.height)
-            let mut desttop = screens[scrn] + y * sw + x
             for col in 0..w do
-                let mut column = patches.column(p, if flipped then w - 1 - col else col)
-                loop
-                    let topdelta = *column
-                    if topdelta == 0xffu8 then break
-                    let length = (i32) *(column + 1)
-                    let mut source = column + 3
-                    let mut dest = desttop + (i32) topdelta * sw
-                    for _ in 0..length do
-                        *dest = *source
-                        source = source + 1
-                        dest = dest + sw
-                    column = column + length + 4
-                desttop = desttop + 1
+                draw_patch_column(x + col, y, scrn, p, if flipped then w - 1 - col else col)
 
     let draw_patch = (x: i32, y: i32, scrn: i32, p: const patch*) ->
         draw_patch_flip(x, y, scrn, p, false)
@@ -85,26 +122,24 @@ module v =
     let draw_patch_direct = (x: i32, y: i32, scrn: i32, p: const patch*) ->
         draw_patch(x, y, scrn, p)
 
-    let draw_block = (x: i32, y: i32, scrn: i32, width: i32, height: i32, src0: const u8*) ->
-        if x < 0 || x + width > sw || y < 0 || y + height > sh || scrn < 0 || scrn > 4 then
-            i.fatal("Bad V_DrawBlock")
-        mark_rect(x, y, width, height)
-        let mut src = src0
-        let mut dest = screens[scrn] + y * sw + x
-        for _ in 0..height do
-            c.memcpy((any*) dest, (const any*) src, (i64) width)
-            src = src + width
-            dest = dest + sw
+    // Tile a 64x64 flat over a 2D rectangle (the finale text background,
+    // the border around a reduced view).
+    let fill_flat = (x: i32, y: i32, width: i32, height: i32, scrn: i32, flat: const u8*) ->
+        let n = hires
+        let x0 = x * n
+        let x1 = (x + width) * n
+        unguarded
+            for py in y * n..(y + height) * n do
+                let src = flat + (((py / n) & 63) << 6)
+                let dest = screens[scrn] + py * sw
+                if n == 1 then
+                    for px in x0..x1 do *(dest + px) = *(src + (px & 63))
+                else
+                    for px in x0..x1 do *(dest + px) = *(src + ((px / n) & 63))
 
-    let get_block = (x: i32, y: i32, scrn: i32, width: i32, height: i32, dest0: u8*) ->
-        if x < 0 || x + width > sw || y < 0 || y + height > sh || scrn < 0 || scrn > 4 then
-            i.fatal("Bad V_DrawBlock")
-        let mut src = screens[scrn] + y * sw + x
-        let mut dest = dest0
-        for _ in 0..height do
-            c.memcpy((any*) dest, (const any*) src, (i64) width)
-            src = src + sw
-            dest = dest + width
+    // Copy a whole screen.
+    let copy_screen = (srcscrn: i32, destscrn: i32) ->
+        c.memcpy((any*) screens[destscrn], (const any*) screens[srcscrn], (i64) sw * sh)
 
     // Patch lookup by lump name, cached.
     let patch_named = (name: const str) ->
@@ -120,12 +155,6 @@ module v =
 // i_video: SDL2 window + input
 // ------------------------------------------------------------------
 module iv =
-    // Pixels per Doom pixel in the upload texture. The 320x200 frame is
-    // scaled up by this factor with nearest-neighbour in software, then
-    // the GPU stretches it (linear) to a 4:3 rectangle, which gives square
-    // corners with only a soft row seam from the 200 -> 240 aspect stretch.
-    let upscale = 4
-
     let mut window = default(any*)
     let mut renderer = default(any*)
     let mut texture = default(any*)
@@ -137,8 +166,73 @@ module iv =
     let mut mouse_grabbed = false
     let mut novert = true
 
+    // ------------------------------------------------------------------
+    // Render scale (wolf-fc's Scale Factor). The game renders at v.hires
+    // times 320x200; SDL then stretches that to 4:3 (the 1.2 pixel aspect)
+    // and letterboxes it into the drawable. scale_factor 0 is Auto: the
+    // largest factor whose 4:3 output fits the drawable in both axes,
+    // capped at max_scale. 1..12 pins it (and ignores the cap).
+    // ------------------------------------------------------------------
+    let max_factor = 12
+    let mut scale_factor = 0       // the "scale_factor" config entry
+    let mut scale_override = -1    // -scale N: this session only
+    let mut max_scale = 6          // -maxscale N
+    let mut want_hires = 1         // applied at a frame boundary by d.apply_hires
+    let mut drawable_w = 0
+    let mut drawable_h = 0
+    let mut refresh_hz = 0
+    // Texture pixels per screen pixel. When the render factor is below
+    // what the drawable could take (a pinned low factor, or the max_scale
+    // cap), the frame is replicated in software up to that size, so SDL's
+    // linear stretch stays sharp.
+    let mut present = 1
+    let mut tex_w = 0
+    let mut tex_h = 0
+
+    // The largest integer factor whose 4:3 output fits out_w x out_h.
+    let fit_factor = (out_w: i32, out_h: i32) ->
+        if out_w <= 0 || out_h <= 0 then 1
+        else
+            let sw = out_w / v.basew
+            let sh = out_h / (v.baseh * 6 / 5)
+            let s = if sw < sh then sw else sh
+            if s < 1 then 1 else if s > max_factor then max_factor else s
+
+    let effective_pref = () -> if scale_override >= 0 then scale_override else scale_factor
+
+    let pick_hires = () ->
+        let pref = effective_pref()
+        if pref > 0 then (if pref > max_factor then max_factor else pref)
+        else if headless then 1
+        else
+            let s = fit_factor(drawable_w, drawable_h)
+            if s > max_scale then max_scale else s
+
+    // Re-pick after a drawable or preference change.
+    let repick = () -> want_hires = pick_hires()
+
+    let query_display = () ->
+        let mut ow = 0
+        let mut oh = 0
+        ignore sdl2.get_output_size(renderer, &ow, &oh)
+        drawable_w = ow
+        drawable_h = oh
+        let disp = sdl2.window_display_index(window)
+        let mut mode = default(sdl_display_mode)
+        refresh_hz = if disp >= 0 && sdl2.current_display_mode(disp, (any*) &mode) == 0 then mode.refresh_rate else 0
+
     let init_graphics = () ->
-        if headless then void()
+        let pm = argv.check_parm("-maxscale")
+        if pm > 0 && pm < argv.count() - 1 then
+            let n = cstdlib.atoi(alloca((cstr) argv.get(pm + 1)))
+            max_scale = if n < 1 then 1 else if n > max_factor then max_factor else n
+        let ps = argv.check_parm("-scale")
+        if ps > 0 && ps < argv.count() - 1 then
+            let n = cstdlib.atoi(alloca((cstr) argv.get(ps + 1)))
+            scale_override = if n < 0 then 0 else if n > max_factor then max_factor else n
+        if argv.check_parm("-debug") > 0 then dbg_on = true
+        if headless then
+            repick()
         else
             // audio is brought up separately, by isnd.init
             if sdl2.init(sdl2.init_video) != 0 then
@@ -152,20 +246,39 @@ module iv =
             renderer = sdl2.create_renderer(window, -1, sdl2.renderer_accel | sdl2.renderer_vsync)
             if c.is_null(renderer) then renderer = sdl2.create_renderer(window, -1, sdl2.renderer_sw)
             if c.is_null(renderer) then i.fatal("SDL_CreateRenderer failed")
-            ignore sdl2.set_logical_size(renderer, 320 * upscale, 240 * upscale)
-            texture = sdl2.create_texture(renderer, sdl2.pixel_argb8888, sdl2.tex_streaming,
-                320 * upscale, 200 * upscale)
-            pixels = alloc(u32[] { len = 320 * upscale * 200 * upscale })!
             ignore sdl2.show_cursor(0)
             if argv.check_parm("-nomouse") > 0 then grabmouse = false
             if argv.check_parm("-mousemove") > 0 then novert = false
+            query_display()
+            repick()
+            i.print(alloca("I_InitGraphics: drawable %d{drawable_w}x%d{drawable_h}, render scale %d{want_hires}x\n"))
+
+    // Match the streaming texture to the screens and the drawable.
+    let sync_texture = () ->
+        let fit = fit_factor(drawable_w, drawable_h)
+        let mut k = fit / v.hires
+        if k < 1 then k = 1
+        let w = v.sw * k
+        let h = v.sh * k
+        // set even when the size holds: 640x400 at k=2 and 1280x800 at k=1
+        // share a texture, and finish_update replicates by `present`
+        present = k
+        if w != tex_w || h != tex_h then
+            if c.not_null(texture) then sdl2.destroy_texture(texture)
+            if pixels.len > 0 then free(pixels)
+            tex_w = w
+            tex_h = h
+            texture = sdl2.create_texture(renderer, sdl2.pixel_argb8888, sdl2.tex_streaming, w, h)
+            pixels = alloc(u32[] { len = (i64) w * h })!
+            ignore sdl2.set_logical_size(renderer, w, h * 6 / 5)
+            dbg_reset()
 
     // I_ShutdownGraphics. Not SDL_Quit: that also closes the audio device,
     // which joins the audio thread and hangs forever if the sound server
     // has wedged it (see isnd). The OS reaps the rest at exit.
     let shutdown_graphics = () ->
         if !headless then
-            sdl2.destroy_texture(texture)
+            if c.not_null(texture) then sdl2.destroy_texture(texture)
             sdl2.destroy_renderer(renderer)
             sdl2.destroy_window(window)
 
@@ -177,10 +290,11 @@ module iv =
             let b = (u32) v.gamma(ds.usegamma, *(pal + k * 3 + 2))
             palette[k] = 0xff000000u32 | (r << 16) | (g << 8) | b
 
-    // The current frame as ARGB (for screenshots).
+    // The current frame as ARGB, v.sw x v.sh (for screenshots).
     let frame_argb = (out: u32[]) ->
         let src = v.screens[0]
-        for k in 0..320 * 200 do out[k] = palette[(i32) *(src + k)]
+        unguarded
+            for k in 0..v.sw * v.sh do out[k] = palette[(i32) *(src + k)]
 
     let set_grab = (want: bool) ->
         if !headless && want != mouse_grabbed then
@@ -191,26 +305,175 @@ module iv =
     let finish_update = () ->
         if headless then void()
         else
+            sync_texture()
             let src = v.screens[0]
-            let pw = 320 * upscale
+            let sw = v.sw
+            let sh = v.sh
+            let k = present
+            let pw = tex_w
             unguarded
-                for y in 0..200 do
-                    let row = src + y * 320
-                    let base = y * upscale * pw
-                    for x in 0..320 do
-                        let px = palette[(i32) *(row + x)]
-                        let o = base + x * upscale
-                        for k in 0..upscale do pixels[o + k] = px
-                    for r in 1..upscale do
-                        c.memcpy((any*) (pixels.ptr + base + r * pw), (const any*) (pixels.ptr + base), (i64) pw * 4)
+                if k == 1 then
+                    for j in 0..sw * sh do pixels[j] = palette[(i32) *(src + j)]
+                else
+                    for y in 0..sh do
+                        let row = src + y * sw
+                        let base = y * k * pw
+                        for x in 0..sw do
+                            let px = palette[(i32) *(row + x)]
+                            let o = base + x * k
+                            for j in 0..k do pixels[o + j] = px
+                        for rr in 1..k do
+                            c.memcpy((any*) (pixels.ptr + base + rr * pw), (const any*) (pixels.ptr + base), (i64) pw * 4)
+            if dbg_on then dbg_draw()
             ignore sdl2.update_texture(texture, default(any*), (const any*) pixels.ptr, pw * 4)
             ignore sdl2.set_color(renderer, 0u8, 0u8, 0u8, 255u8)
             ignore sdl2.clear(renderer)
             ignore sdl2.render_copy(renderer, texture, default(any*), default(any*))
+            dbg_mark_work_end()
             sdl2.present(renderer)
+            dbg_frame_presented()
 
     let read_screen = (dest: u8*) ->
-        c.memcpy((any*) dest, (const any*) v.screens[0], 320i64 * 200)
+        c.memcpy((any*) dest, (const any*) v.screens[0], (i64) v.sw * v.sh)
+
+    // ------------------------------------------------------------------
+    // Debug overlay (-debug, or the ` key): frame rate, per-frame work
+    // against the 35 Hz tic budget, dropped tics, presentation jitter, and
+    // the render / output geometry. Drawn into the upload buffer after the
+    // frame is converted, so it never lands in screenshots, and never in
+    // -headless runs.
+    // ------------------------------------------------------------------
+    let tic_ms = 1000.0 / 35.0
+    let mut dbg_on = false
+    let mut dbg_work_start = 0i64
+    let mut dbg_work_us = 0i64
+    let mut dbg_last_present = 0i64
+    let mut dbg_ms = 0.0            // EMA of the displayed-frame period
+    let mut dbg_work_ms = 0.0       // EMA of the work before present()
+    let mut dbg_jitter_ms = 0.0     // EMA of |period - tic|
+    let mut dbg_drops = 0           // tics run without being displayed
+    let mut dbg_hitch = 0           // frames left to show the hitch colour
+    let mut dbg_font = default((const patch*)[])
+
+    let dbg_reset = () ->
+        dbg_ms = 0.0
+        dbg_work_ms = 0.0
+        dbg_jitter_ms = 0.0
+        dbg_drops = 0
+        dbg_hitch = 0
+        dbg_last_present = 0i64
+
+    // Called once the frame's tics are due, before they run.
+    let dbg_mark_work_start = () -> dbg_work_start = i.get_time_us()
+
+    // TryRunTics ran `n` tics for this frame; all but one go unseen.
+    let dbg_tics_run = (n: i32) ->
+        if n > 1 && dbg_last_present > 0i64 then
+            dbg_drops = dbg_drops + n - 1
+            dbg_hitch = 18
+
+    let dbg_mark_work_end = () ->
+        dbg_work_us = i.get_time_us() - dbg_work_start
+
+    let dbg_frame_presented = () ->
+        let now = i.get_time_us()
+        let work = (f64) dbg_work_us / 1000.0
+        dbg_work_ms = if dbg_work_ms > 0.0 then dbg_work_ms * 0.9 + work * 0.1 else work
+        if dbg_last_present > 0i64 then
+            let ms = (f64) (now - dbg_last_present) / 1000.0
+            let dev = if ms > tic_ms then ms - tic_ms else tic_ms - ms
+            dbg_jitter_ms = if dbg_ms > 0.0 then dbg_jitter_ms * 0.9 + dev * 0.1 else dev
+            dbg_ms = if dbg_ms > 0.0 then dbg_ms * 0.9 + ms * 0.1 else ms
+        dbg_last_present = now
+        if dbg_hitch > 0 then dbg_hitch = dbg_hitch - 1
+
+    let toggle_debug = () ->
+        dbg_on = !dbg_on
+        dbg_reset()
+
+    // The HUD font (STCFN033..STCFN095), straight from the WAD.
+    let dbg_glyph = (ch0: i32) ->
+        if dbg_font.len == 0 then
+            dbg_font = alloc((const patch*)[] { len = 64 })!
+            for k in 0..63 do
+                let lump = w.check_num_for_name(alloca("STCFN%03d{k + 33}"))
+                if lump >= 0 then dbg_font[k] = v.patch_num(lump)
+        let ch = if ch0 >= 'a' && ch0 <= 'z' then ch0 - 'a' + 'A' else ch0
+        if ch < 33 || ch > 95 then default(const patch*) else dbg_font[ch - 33]
+
+    // One glyph at texture pixel (x, y), each font pixel an s x s block:
+    // in the font's own red when `red`, else as grey of the same
+    // brightness. Returns the advance.
+    let dbg_char = (x: i32, y0: i32, ch: i32, red: bool, s: i32) ->
+        let p = dbg_glyph(ch)
+        if c.is_null(p) then return 4 * s
+        let pw = tex_w
+        let y = y0 - (i32) p.topoffset * s
+        for col in 0..(i32) p.width do
+            let mut column = patches.column(p, col)
+            loop
+                let topdelta = (i32) *column
+                if topdelta == 0xff then break
+                let length = (i32) *(column + 1)
+                for row in topdelta..topdelta + length do
+                    let c0 = palette[(i32) *(column + 3 + (row - topdelta))]
+                    let r = (c0 >> 16) & 0xffu32
+                    let g = (c0 >> 8) & 0xffu32
+                    let b = c0 & 0xffu32
+                    let hi = if r > g && r > b then r else if g > b then g else b
+                    let grey = if hi * 3u32 / 2u32 > 255u32 then 255u32 else hi * 3u32 / 2u32
+                    let color = if red then c0 else 0xff000000u32 | (grey << 16) | (grey << 8) | grey
+                    for sy in 0..s do
+                        let py = y + row * s + sy
+                        if py >= 0 && py < tex_h then
+                            for sx in 0..s do
+                                let px = x + col * s + sx
+                                if px >= 0 && px < pw then pixels[py * pw + px] = color
+                column = column + length + 4
+        ((i32) p.width + 1) * s
+
+    let dbg_text_width = (text: const str, s: i32) ->
+        let mut wd = 0
+        for ch in text do
+            let p = dbg_glyph((i32) ch)
+            wd = wd + (if c.is_null(p) then 4 * s else ((i32) p.width + 1) * s)
+        wd
+
+    // Darken a texture rectangle behind the text.
+    let dbg_dim = (x0: i32, y0: i32, x1: i32, y1: i32) ->
+        for y in y0..y1 do
+            if y >= 0 && y < tex_h then
+                for x in x0..x1 do
+                    if x >= 0 && x < tex_w then
+                        let o = y * tex_w + x
+                        pixels[o] = 0xff000000u32 | ((pixels[o] >> 2) & 0x3f3f3fu32)
+
+    let dbg_draw = () ->
+        let s = let t = (v.hires * present + 1) / 2 in if t < 1 then 1 else t
+        let fps = if dbg_ms > 0.0 then (i32) (1000.0 / dbg_ms + 0.5) else 0
+        let work = (i32) (dbg_work_ms + 0.5)
+        let budget = (i32) (tic_ms + 0.5)
+        let mode = if effective_pref() == 0 then "auto" else "fixed"
+        let hz = if refresh_hz > 0 then (const str) alloca(" %d{refresh_hz}hz") else ""
+        let lines = str[] { len = 4,
+            alloca("fps %d{fps}  %d{work}/%d{budget} ms"),
+            alloca("drops %d{dbg_drops}  jit %3.1f{dbg_jitter_ms} ms"),
+            alloca("%d{v.sw}x%d{v.sh} %d{v.hires}x %s{mode}"),
+            alloca("out %d{drawable_w}x%d{drawable_h}%s{hz}")
+        }
+        let line_h = 9 * s
+        let margin = 3 * s
+        let mut maxw = 0
+        for ln in lines do
+            let lw = dbg_text_width(ln, s)
+            if lw > maxw then maxw = lw
+        let right = tex_w - margin
+        dbg_dim(right - maxw - 2 * s, 0, tex_w, margin + line_h * 4 + s)
+        let over = dbg_work_ms > tic_ms
+        for k in 0..4 do
+            let red = k == 0 && (dbg_hitch > 0 || over)
+            let mut x = right - dbg_text_width(lines[k], s)
+            for ch in lines[k] do x = x + dbg_char(x, margin + k * line_h, (i32) ch, red, s)
 
     // xlatekey: SDL keysym -> Doom key code
     let xlatekey = (k: i32) ->
@@ -341,11 +604,19 @@ module iv =
                 let t = (i32) e.type
                 if t == sdl2.quit_event then
                     quit_requested = true
+                else if t == sdl2.windowevent then
+                    // a resize, fullscreen toggle or DPI change: re-pick
+                    // the render scale for the new drawable
+                    if e.window.event == sdl2.windowevent_size_changed then
+                        query_display()
+                        repick()
                 else if t == sdl2.keydown_event || t == sdl2.keyup_event then
                     let k = e.key.keysym.sym
                     if t == sdl2.keydown_event && k == sdl2.key_return
                         && (e.key.keysym.mod & sdl2.kmod_alt) != 0u16 then
                         if e.key.repeat == 0u8 then toggle_fullscreen()
+                    else if k == sdl2.key_backquote then
+                        if t == sdl2.keydown_event && e.key.repeat == 0u8 then toggle_debug()
                     else
                         let dk = xlatekey(k)
                         if dk != 0 then

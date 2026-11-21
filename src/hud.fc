@@ -158,18 +158,22 @@ module hulib =
         // the text must either need updating or refreshing (because
         // of a recent change back from the automap)
         if !ds.automapactive && ds.viewwindowx != 0 && l.needsupdate != 0 then
+            // the line is in 320x200 rows; the view and the erase are in
+            // screen pixels
+            let n = v.hires
+            let sw = v.sw
             let lh = (i32) font[0].height + 1
-            let mut y = l.y
-            let mut yoffset = y * 320
+            let mut y = l.y * n
+            let mut yoffset = y * sw
             loop
-                if y >= l.y + lh then break
+                if y >= (l.y + lh) * n then break
                 if y < ds.viewwindowy || y >= ds.viewwindowy + ds.viewheight then
-                    r.video_erase(yoffset, 320)    // erase entire line
+                    r.video_erase(yoffset, sw)    // erase entire line
                 else
                     r.video_erase(yoffset, ds.viewwindowx)    // erase left border
                     r.video_erase(yoffset + ds.viewwindowx + ds.viewwidth, ds.viewwindowx)    // erase right border
                 y = y + 1
-                yoffset = yoffset + 320
+                yoffset = yoffset + sw
         if l.needsupdate != 0 then l.needsupdate = l.needsupdate - 1
 
     let init_stext = (s: hu_stext*, x: i32, y: i32, h: i32, startchar: i32, on: bool*) ->

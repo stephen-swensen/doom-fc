@@ -271,6 +271,7 @@ module sdl2 from "SDL2/SDL.h" =
     extern SDLK_F9 as key_f9: i32
     extern SDLK_F10 as key_f10: i32
     extern SDLK_F12 as key_f12: i32
+    extern SDLK_BACKQUOTE as key_backquote: i32
     extern SDLK_RSHIFT as key_rshift: i32
     extern SDLK_RCTRL as key_rctrl: i32
     extern SDLK_RALT as key_ralt: i32

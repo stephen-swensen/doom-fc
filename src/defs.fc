@@ -584,8 +584,9 @@ struct visplane =
     lightlevel: i32
     minx: i32
     maxx: i32
-    top: u8[322]
-    bottom: u8[322]
+    // per screen column plus a sentinel at each end; 0xffff = unused
+    top: u16[]
+    bottom: u16[]
 
 // ------------------------------------------------------------------
 // p_spec.h thinkers and records
