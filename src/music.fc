@@ -5,9 +5,9 @@
 // player vendored from fc-lang's demos/shared (opl2.fc, opl_midi.fc),
 // using the IWAD's own GENMIDI patches.
 //
-// This module runs inside the SDL audio callback (render) and from the main
-// thread (play/stop/...); snd and isnd hold the audio lock around the
-// main-thread calls.
+// Threads: `song_for` and `set_volume` are called from the main thread;
+// everything that touches the player (`render`, `apply_*`) runs only on
+// the audio callback, which receives songs from isnd's command ring.
 
 module musplay =
     import opl_midi from shared::
@@ -16,12 +16,16 @@ module musplay =
     let mut player = default(opl_midi.player*)
     let mut bank = default(opl_midi.bank)
     let mut have_bank = false
-    let mut song = default(opl_midi.song)
-    let mut have_song = false
-    let mut volume = 8
+    let mut volume = 8           // atomic: written by main, read by audio
     let mut rate = 44100
+    // audio thread only
     let mut active = false
     let mut paused = false
+    // main thread only: every MUS lump converted so far, by lump address,
+    // kept for the life of the process
+    let mut cache_keys = default((const u8*)[])
+    let mut cache_songs = default(opl_midi.song[])
+    let mut cache_n = 0
 
     let init = (r: i32) ->
         rate = r
@@ -33,15 +37,17 @@ module musplay =
             | ok(b) ->
                 bank = b
                 have_bank = true
+                // an idle player, so the callback never allocates
+                player = opl_midi.init(rate, default(opl_midi.song), bank)
             | err(_) -> i.print("I_InitMusic: bad GENMIDI lump, music disabled\n")
 
     // Music volume 0..15 as a mix gain.
-    let set_volume = (v: i32) -> volume = v
+    let set_volume = (v: i32) -> atomic_store_release(&volume, v)
 
     // SDL audio callback side: mix `frames` stereo frames of music into buf.
     let render = (buf: i32[], frames: i32) ->
         if !active || paused || c.is_null(player) then return
-        let gain = volume
+        let gain = atomic_load_acquire(&volume)
         for fr in 0..frames do
             opl_midi.advance(player)
             let s = opl2.sample(player.chip) * gain / 15
@@ -152,7 +158,9 @@ module musplay =
     let render_test = (lumpname: const str) ->
         init(44100)
         let lump = w.get_num_for_name(lumpname)
-        play(w.lump_bytes(lump), false)
+        match song_for(w.lump_bytes(lump)) with
+        | none -> void()
+        | some(tune) -> apply_play(tune, false)
         let secs = 20
         let frames = 44100 * secs
         let buf = alloc(i32[] { len = 2 * 4096 })!
@@ -193,38 +201,58 @@ module musplay =
         put32(40, frames * 4)
         ignore misc.write_file("musictest.wav", out.ptr, out.len)
         let rms = math_sqrt(sumsq / ((f64) frames * 2.0))
-        i.print(alloca("musictest %s{lumpname}: events=%d{(i32) song.events.len} peak=%d{peak} rms=%5.0f{rms}\n"))
+        i.print(alloca("musictest %s{lumpname}: events=%d{(i32) player.tune.events.len} peak=%d{peak} rms=%5.0f{rms}\n"))
 
     let math_sqrt = (x: f64) ->
         let mut g0 = if x > 1.0 then x / 2.0 else 1.0
         for _ in 0..40 do g0 = 0.5 * (g0 + x / g0)
         g0
 
-    // I_PlaySong
-    let play = (data: const u8[], looping: bool) ->
-        if !have_bank then return
+    // Main thread: the song for a MUS lump, converted on first use.
+    let song_for = (data: const u8[]) ->
+        if !have_bank then return none(opl_midi.song)
+        let mut found = -1
+        for k in 0..cache_n do
+            if found == -1 && cache_keys[k] == data.ptr then found = (i32) k
+        if found >= 0 then return some(cache_songs[found])
         match mus_to_song(data) with
-        | none -> void()
-        | some(newsong) ->
-            stop()
-            if have_song then opl_midi.free_song(song)
-            song = newsong
-            have_song = true
-            if c.is_null(player) then player = opl_midi.init(rate, song, bank)
-            else opl_midi.set_song(player, song)
-            opl_midi.set_loop(player, looping)
-            opl_midi.start(player)
-            active = true
-            paused = false
+        | none -> none(opl_midi.song)
+        | some(tune) ->
+            if cache_n >= (i32) cache_keys.len then
+                let n = if cache_n == 0 then 16 else cache_n * 2
+                let keys = alloc((const u8*)[] { len = n })!
+                let songs = alloc(opl_midi.song[] { len = n })!
+                for k in 0..cache_n do
+                    keys[k] = cache_keys[k]
+                    songs[k] = cache_songs[k]
+                if cache_n > 0 then
+                    free(cache_keys)
+                    free(cache_songs)
+                cache_keys = keys
+                cache_songs = songs
+            cache_keys[cache_n] = data.ptr
+            cache_songs[cache_n] = tune
+            cache_n = cache_n + 1
+            some(tune)
 
-    let stop = () ->
+    // Audio thread: I_PlaySong, I_StopSong, I_PauseSong, I_ResumeSong.
+    let apply_play = (tune: opl_midi.song, looping: bool) ->
+        if c.is_null(player) then return
+        opl_midi.stop(player)
+        opl_midi.set_song(player, tune)
+        opl_midi.set_loop(player, looping)
+        opl_midi.start(player)
+        active = true
+        paused = false
+
+    let apply_stop = () ->
         if c.not_null(player) then opl_midi.stop(player)
         active = false
 
-    let pause = () ->
+    let apply_pause = () ->
         if c.not_null(player) then opl_midi.pause(player)
         paused = true
 
-    let resume = () ->
+    let apply_resume = () ->
         if c.not_null(player) && paused then opl_midi.resume(player)
         paused = false

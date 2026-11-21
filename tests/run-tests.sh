@@ -151,6 +151,29 @@ else
 fi
 
 # ----------------------------------------------------------------------
+section "sound effects"
+if have DOOM.WAD; then
+    # E1M2: face the barrel 45 degrees off the start and shoot it. The
+    # second pistol shot also lands on a zombieman, so the trace names
+    # sounds from several parts of the table (S_sfx was once off by one,
+    # which played the "oof" grunt for the barrel).
+    out=$(run -doom1 -warp 1 2 -nomusic -sndtrace -sndcapture "$TMP/sfx.wav" -quitat 160 -script "w20 t45 w5 dctrl w80 uctrl w50")
+    for want in "S 29 start pistol" "S 43 start posact" "S 44 start barexp" "S 73 start popain" "S 89 start podth1" "S 74 stop barexp"; do
+        assert_contains "sndtrace: $want" "$out" "$want"
+    done
+    # the capture is the real mixer's output: the explosion must be loud
+    peak=$(python3 -c '
+import struct,sys
+d=open(sys.argv[1],"rb").read()[44:]
+s=struct.unpack("<%dh"%(len(d)//2),d)
+f=1260*2
+print(max(abs(x) for x in s[44*f:74*f]))' "$TMP/sfx.wav" 2>/dev/null)
+    if [ -n "$peak" ] && [ "$peak" -gt 3000 ]; then ok "barrel explosion is in the mixed output (peak $peak)"; else bad "barrel explosion is in the mixed output" "peak [$peak]"; fi
+else
+    skp "DOOM.WAD not in $DATA"
+fi
+
+# ----------------------------------------------------------------------
 section "music (MUS -> OPL2 via GENMIDI)"
 if have DOOM.WAD; then
     out=$( cd "$TMP" && DOOM_FC_DATA_DIR="$(cd "$OLDPWD" && cd "$DATA" && pwd)" "$OLDPWD/$BIN" -headless -doom1 -musictest D_E1M1 2>&1 | grep musictest)

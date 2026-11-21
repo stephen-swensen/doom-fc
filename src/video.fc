@@ -140,7 +140,8 @@ module iv =
     let init_graphics = () ->
         if headless then void()
         else
-            if sdl2.init(sdl2.init_video | sdl2.init_audio) != 0 then
+            // audio is brought up separately, by isnd.init
+            if sdl2.init(sdl2.init_video) != 0 then
                 i.fatal(alloca("SDL_Init failed: %s{(const str) sdl2.get_error()}"))
             ignore sdl2.set_hint(c"SDL_RENDER_SCALE_QUALITY", c"linear")
             let flags = sdl2.window_resizable | sdl2.window_allow_highdpi
@@ -159,8 +160,14 @@ module iv =
             if argv.check_parm("-nomouse") > 0 then grabmouse = false
             if argv.check_parm("-mousemove") > 0 then novert = false
 
+    // I_ShutdownGraphics. Not SDL_Quit: that also closes the audio device,
+    // which joins the audio thread and hangs forever if the sound server
+    // has wedged it (see isnd). The OS reaps the rest at exit.
     let shutdown_graphics = () ->
-        if !headless then sdl2.quit()
+        if !headless then
+            sdl2.destroy_texture(texture)
+            sdl2.destroy_renderer(renderer)
+            sdl2.destroy_window(window)
 
     // I_SetPalette: 768 bytes of RGB, gamma-corrected through usegamma.
     let set_palette = (pal: const u8*) ->
@@ -303,6 +310,12 @@ module iv =
             else if op == 'p' then
                 post_key(evt.keydown, key_named(arg))
                 post_key(evt.keyup, key_named(arg))
+            else if op == 't' then
+                // test hook: face DEG degrees (0 = east, 90 = north)
+                let mut n = 0
+                for ch in arg do n = n * 10 + (i32) ch - '0'
+                let mo = ds.players[ds.consoleplayer].mo
+                if c.not_null(mo) then mo.angle = (u32) (((i64) n << 32) / 360)
             else if op == 'x' then
                 // test hook: exit the level (G_ExitLevel)
                 ds.g_exit_level()

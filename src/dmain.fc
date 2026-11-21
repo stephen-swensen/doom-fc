@@ -123,6 +123,7 @@ module d =
     // -shotdir DIR -shotevery N: dump a PNG every N gametics (headless
     // inspection of demos, intermission screens, ...); -quitat TIC.
     let test_hooks = () ->
+        isnd.capture_tic()
         if iv.pending_shot.len > 0 then
             let fb = alloc(u32[] { len = 320 * 200 })!
             defer free(fb)
@@ -140,8 +141,38 @@ module d =
             defer free(name)
             ignore png.write(name, fb, 320, 200, "")
 
+    // -sndcapture FILE: the captured mix as a 16-bit stereo WAV.
+    let write_capture = () ->
+        let k = argv.check_parm("-sndcapture")
+        if k == 0 || k >= argv.count() - 1 then return
+        let frames = isnd.cap_frames
+        let out = alloc(u8[] { len = 44 + frames * 4 })!
+        defer free(out)
+        let put32 = (o: i64, v: i32) ->
+            out[o] = (u8) (v & 255)
+            out[o + 1] = (u8) ((v >> 8) & 255)
+            out[o + 2] = (u8) ((v >> 16) & 255)
+            out[o + 3] = (u8) ((v >> 24) & 255)
+        let hdr = "RIFF----WAVEfmt "
+        for j in 0..16 do out[j] = hdr[j]
+        put32(4, 36 + frames * 4)
+        put32(16, 16)
+        put32(20, 1 | (2 << 16))
+        put32(24, isnd.output_rate)
+        put32(28, isnd.output_rate * 4)
+        put32(32, 4 | (16 << 16))
+        let dh = "data"
+        for j in 0..4 do out[36 + j] = dh[j]
+        put32(40, frames * 4)
+        for j in 0..frames * 2 do
+            let s = (i32) isnd.cap[j]
+            out[44 + j * 2] = (u8) (s & 255)
+            out[45 + j * 2] = (u8) ((s >> 8) & 255)
+        ignore misc.write_file(argv.get(k + 1), out.ptr, out.len)
+
     // I_Quit
     let quit = () ->
+        if isnd.capture then write_capture()
         isnd.shutdown()
         if !iv.headless then misc.save_defaults()
         iv.shutdown_graphics()

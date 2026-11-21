@@ -42,7 +42,7 @@ module i =
         ignore cstdio.fwrite(msg.ptr, 1usize, (usize) msg.len, stderr)
         ignore cstdio.fputs(c"\n", stderr)
         ignore cstdio.fflush(stderr)
-        sdl2.quit()
+        // no SDL_Quit: it joins the audio thread, which may be wedged (isnd)
         cstdlib.exit(-1)
 
     let print = (msg: const str) ->

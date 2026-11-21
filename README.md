@@ -87,12 +87,14 @@ regression suite is built on it:
 
 | option | |
 |---|---|
-| `-script "..."` | scripted input, one token per tic boundary: `wN` waits N tics, `dKEY`/`uKEY` key down/up, `pKEY` both, `s:NAME` writes `NAME.png` to the shot dir, `x` exits the level. KEY is a character or `esc enter tab space up down left right ctrl shift alt minus equals pause f1`..`f12`. |
+| `-script "..."` | scripted input, one token per tic boundary: `wN` waits N tics, `dKEY`/`uKEY` key down/up, `pKEY` both, `s:NAME` writes `NAME.png` to the shot dir, `tDEG` turns the player to face DEG degrees (0 = east, 90 = north), `x` exits the level. KEY is a character or `esc enter tab space up down left right ctrl shift alt minus equals pause f1`..`f12`. |
 | `-shotdir DIR` | where screenshots go |
 | `-shotevery N` | a screenshot every N gametics |
 | `-quitat TIC` | quit at that gametic |
 | `-demostats` | print the player's end state when a demo or run ends |
 | `-tictrace` | print `T gametic rndindex x y health` every tic |
+| `-sndtrace` | print `S gametic start\|stop NAME ...` for every sound effect started or stopped |
+| `-sndcapture FILE` | run the real mixer (effects and music) one tic at a time and write the run to a WAV |
 | `-musictest LUMP` | render 20 s of a music lump to `musictest.wav` and report its level |
 
 `tools/refdemo/build.sh` builds linuxdoom-1.10 itself, from `../DOOM`, as a

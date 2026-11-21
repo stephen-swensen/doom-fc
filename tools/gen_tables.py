@@ -202,7 +202,8 @@ def gen_sounds(src, out):
     music = re.findall(r'\{\s*(?:"(\w+)"\s*,\s*0|0)\s*\}', m.group(1))
     m = re.search(r'S_sfx\s*\[\s*\]\s*=\s*\{(.*?)\};', c, flags=re.S)
     sfx = re.findall(r'\{\s*"(\w+)"\s*,\s*(\w+)\s*,\s*(-?\d+)\s*,\s*([^,]+?)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*\}', m.group(1))
-    assert len(sfx) == len(sfxnames) - 1, (len(sfx), len(sfxnames))
+    # one row per sfxenum_t value (sfxnames ends with NUMSFX)
+    assert len(sfx) == len(sfxnames) - 1 and sfx[0][0] == 'none', (len(sfx), len(sfxnames))
     with open(os.path.join(out, 'sounds.fc'), 'w') as f:
         f.write(HEADER)
         f.write("// Sound and music tables (sounds.h, sounds.c).\n\n")
@@ -229,7 +230,8 @@ def gen_sounds(src, out):
             rows.append('        musicinfo { name = "%s", lumpnum = 0, handle = 0 }' % name)
         f.write(",\n".join(rows) + "\n    }\n\n")
         f.write("    let mut s_sfx = sfxinfo[] {\n")
-        rows = ['        sfxinfo { name = "none", singularity = false, priority = 0, link = -1, pitch = -1, volume = -1, usefulness = 0, lumpnum = 0 }']
+        # S_sfx[0] is the C table's own "none" dummy, matched like any row
+        rows = []
         for s in sfx:
             link = s[3]
             if link == '0':

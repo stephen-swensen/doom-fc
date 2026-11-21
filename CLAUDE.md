@@ -39,7 +39,12 @@ project is GPL v2.
   you can open with the Read tool.
 - In `-script`, a key held across a tic needs `dKEY w2 uKEY`. `pKEY` presses
   and releases before the next ticcmd is built, so the game never sees it,
-  though the menus do. `s:NAME` ends that tic's tokens.
+  though the menus do. `s:NAME` ends that tic's tokens. `tDEG` sets the
+  player's facing, so you can aim at a target without fiddling with turn
+  tics.
+- Sound is testable headless: `-sndtrace` logs each effect by name, and
+  `-sndcapture FILE` writes the mixed output as a WAV, at 1260 frames per
+  gametic, so tic N starts at frame N*1260.
 - The golden values in `tests/run-tests.sh` were recorded from linuxdoom.
   Frame hashes pin the headless renderer. Update them only for intentional
   rendering changes.
@@ -78,6 +83,14 @@ Doom's C files call each other in every direction, so:
   (statenum), `mt.troop` (mobjtype), `spr.troo`, `sfx.pistol`, `mus.e1m1`.
   Watch for collisions: `am` is ammo (the automap is `amap`), and `mus` is
   the music enum (the player is `musplay`).
+- **Audio threading follows wolf-fc, and it is load-bearing.** The main
+  thread never takes SDL's audio lock and never closes the device or calls
+  `SDL_Quit`, not even in `I_Error`. On this machine PipeWire can wedge the
+  audio thread, and anything that waits on it (a lock, or the join inside a
+  close) then hangs the game. Game code posts commands on `isnd`'s ring.
+  The callback alone touches the mixer channels and the music player, and
+  publishes per-slot `finished` handles back. SDL audio prefers the native
+  `pipewire` driver, falling back to SDL's default list.
 - In-memory `short` fields are `i32`. On-disk map lumps are decoded
   explicitly in `p.load_*`. `ticcmd` keeps exact widths (`i8`/`i16`/`u8`),
   because demos depend on them.
@@ -92,11 +105,13 @@ Doom's C files call each other in every direction, so:
   call, or fcc reports "never returns" or "expected <unresolved>". See
   `p.set_mobj_state`'s `if c.is_null(mo) then return false`. Void cycle
   members may need restructuring to avoid bare early `return` (see
-  `p.a_lower`, `p.a_raise`). This is reported upstream as an fcc limitation.
+  `p.a_lower`, `p.a_raise`). Filed in `../fc-lang/spec/TODO.md` under
+  "Bugs found porting doom-fc".
 - **Assigning another module's `let mut` pointer global** (`p.save_p = x`
   from module `g`) generates invalid C (a cast used as an lvalue). Use
-  accessor functions in the owning module (`p.save_set` and friends). This
-  is reported as an fcc bug.
+  accessor functions in the owning module (`p.save_set` and friends). Only
+  `u8*` and `const u8*` globals are affected. Filed in the same TODO
+  section.
 - An `if ... then` that ends its line inside an expression needs its `else`
   at the enclosing statement's column (or keep `then X` on one line).
   Continuation lines must be indented deeper than the statement.

@@ -279,7 +279,6 @@ module sounds =
 
     let mut s_sfx = sfxinfo[] {
         sfxinfo { name = "none", singularity = false, priority = 0, link = -1, pitch = -1, volume = -1, usefulness = 0, lumpnum = 0 },
-        sfxinfo { name = "none", singularity = false, priority = 0, link = -1, pitch = -1, volume = -1, usefulness = 0, lumpnum = 0 },
         sfxinfo { name = "pistol", singularity = false, priority = 64, link = -1, pitch = -1, volume = -1, usefulness = 0, lumpnum = 0 },
         sfxinfo { name = "shotgn", singularity = false, priority = 64, link = -1, pitch = -1, volume = -1, usefulness = 0, lumpnum = 0 },
         sfxinfo { name = "sgcock", singularity = false, priority = 64, link = -1, pitch = -1, volume = -1, usefulness = 0, lumpnum = 0 },
