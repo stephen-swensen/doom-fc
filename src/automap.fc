@@ -101,7 +101,7 @@ module amap =
     let mut leveljuststarted = 1
     // The map window is the screen above the status bar, in screen pixels.
     let finit_width = () -> v.sw
-    let finit_height = () -> v.sh - 32 * v.hires
+    let finit_height = () -> v.sh - 32 * v.hy
     // Line width in pixels, so the map reads the same at a higher scale.
     let mut thick = 1
     // location of window on screen
@@ -703,8 +703,9 @@ module amap =
                 let fx0 = cxmtof(markpoints_x[k])
                 let fy0 = cymtof(markpoints_y[k])
                 let n = v.hires
-                if fx0 >= f_x && fx0 <= f_w - w * n && fy0 >= f_y && fy0 <= f_h - h * n then
-                    v.draw_patch(fx0 / n, fy0 / n, 0, marknums[k])
+                let ny = v.hy
+                if fx0 >= f_x && fx0 <= f_w - w * n && fy0 >= f_y && fy0 <= f_h - h * ny then
+                    v.draw_patch(fx0 / n, fy0 / ny, 0, marknums[k])
 
     let draw_crosshair = (color: i32) ->
         put(f_w / 2, (f_h + 1) / 2, color)    // single point for now

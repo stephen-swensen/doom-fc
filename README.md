@@ -63,8 +63,8 @@ and back on the mouse are off by default; `-mousemove` turns them on, and
 `-nomouse` disables the mouse. **Alt+Enter** toggles fullscreen. **`**
 (backquote) toggles the debug overlay.
 
-**Options → Graphic Detail** sets the render scale: Auto, or 1x to 12x (see
-[Display](#display)).
+**Options → Graphic Detail** sets the render scale: Auto, or 1x to 12x, plus
+5x 4:3 and 10x 4:3 for native 4:3 rendering (see [Display](#display)).
 
 Keys are configurable in `~/.doom-fc/default.cfg` (linuxdoom's format and
 names, Doom key codes).
@@ -84,7 +84,7 @@ II), `-skill N`, `-episode N`, `-nomonsters`, `-respawn`, `-fast`,
 | `-nosound`, `-nomusic` | silence |
 | `-pitchshift` | linuxdoom's random sound pitch (DOS v1.9 plays sounds unshifted, which is the default) |
 | `-nomouse`, `-mousemove` | see Controls |
-| `-scale N` | render at N times 320x200 for this session (0 = Auto, 1..12), overriding the saved setting |
+| `-scale N` | render at N times 320x200 for this session (0 = Auto, 1..12), overriding the saved setting; `5n` or `10n` renders native 4:3 |
 | `-maxscale N` | cap Auto's pick (default 6) |
 | `-debug` | start with the debug overlay on |
 
@@ -121,6 +121,13 @@ streaming texture. SDL stretches that texture to 4:3, which restores the
 original's tall pixels, and letterboxes it into the window. Video work in
 SDL stops at that one texture.
 
+In **native 4:3** the screens are `hires` times 320 by `hy` = `hires` x 6/5
+times 200: 1600x1200 at 5x, square pixels, so SDL copies the texture
+without stretching it. It is offered only where 6/5 of the factor is a
+whole number (5x and 10x), so every 2D pixel is a whole block (5x6 at 5x)
+and nothing is resampled in either axis. See
+[Native 4:3](#native-43).
+
 - **The 3D view renders at full resolution.** Walls, flats, sprites and the
   sky are drawn at `v.sw` x `v.sh`, with the original's projection, field
   of view and light levels. The weapon sprite and the sky keep their size
@@ -128,12 +135,15 @@ SDL stops at that one texture.
 - **The 2D layer keeps its 320x200 coordinates.** Status bar, menus, HUD
   text, intermission and finale call the same `v.draw_patch` and
   `v.copy_rect` as before, and those drawers scale each patch pixel into a
-  `hires` x `hires` block. The automap and the wipe work in screen pixels.
+  `hires` x `hy` block. The automap and the wipe work in screen pixels.
   Automap lines get thicker as the scale rises.
 - **Scale factor** (Options → Graphic Detail, saved as `scale_factor`).
   Auto picks the largest integer factor whose 4:3 output fits the drawable
-  in both axes, capped at 6 (`-maxscale N` raises or lowers the cap). A
-  pinned 1x..12x ignores the cap. Auto re-picks when the window is resized,
+  in both axes, capped at 6 (`-maxscale N` raises or lowers the cap), and
+  renders native 4:3 when that factor is 5 or 10. The picker runs Auto, 1X
+  .. 5X, 5X 4:3, 6X .. 10X, 10X 4:3, 11X, 12X; a pinned factor ignores the
+  cap. `scale_factor` saves Auto as 0, a stretched factor as N and a
+  native one as 100 + N. Auto re-picks when the window is resized,
   goes fullscreen, or moves to a display with a different DPI. The switch
   happens at the next frame: the screens and renderer buffers are
   reallocated and the border, status bar and intermission backdrop
@@ -149,13 +159,41 @@ These are the Auto picks for some full-screen drawables:
 |---|---|---|---|---|
 | 1280 x 720 | 3 | 960 x 600 | 960 x 720 | |
 | 1920 x 1080 | 4 | 1280 x 800 | 1280 x 960 | height-bound |
-| 1920 x 1200 | 5 | 1600 x 1000 | 1600 x 1200 | 1:1 horizontally |
+| 1920 x 1200 | 5, native | 1600 x 1200 | 1600 x 1200 | 1:1 both ways |
 | 2560 x 1440 | 6 | 1920 x 1200 | 1920 x 1440 | |
 | 3840 x 2160 | 6 (cap) | 1920 x 1200 | 2880 x 2160 | `-maxscale 9` renders 2880 x 1800 |
 
-The texture is always 200 rows per factor and is shown at 240, so the 4:3
-stretch is a 5:6 vertical resample. At 5x on a 1920x1200 panel that means
-1000 rows shown as 1200. Columns map 1:1.
+Outside native 4:3 the texture is 200 rows per factor and is shown at 240,
+so the 4:3 stretch is a 5:6 vertical resample: pinned 5X on a 1920x1200
+panel shows 1000 rows as 1200, though its columns map 1:1.
+
+### Native 4:3
+
+The original's 320x200 was shown on a 4:3 monitor, so its pixels were 1.2
+times as tall as wide, and the stretched path above reproduces that by
+resampling rows. Every resample of 5 rows to 6 either repeats a row
+(nearest) or blends neighbours (linear). On Doom's perspective-textured
+floors and ceilings, and its distance light bands, that shows as a
+regular stepping that crawls as you move.
+
+Native 4:3 renders the stretch instead of resampling it:
+
+- **3D view.** The vertical projection (`r.projectiony`) is 6/5 of the
+  horizontal one. Every scale the renderer compares or draws with
+  (`rw_scale`, drawseg and vissprite scales, `spryscale`, the flat row
+  distances in `yslope`) is vertical and built from it, and the texture
+  step down a sprite or the sky is the horizontal step times 5/6. Sprite
+  x positions and the step across a sprite stay horizontal. Light levels
+  divide `hy` back out, so they are unchanged.
+- **2D layer.** Each patch pixel is a `hires` x `hy` block, so the status
+  bar, menus and text are exact.
+- **Automap.** It draws in square screen pixels, so the map has its true
+  proportions rather than the original's 1.2x vertical stretch.
+
+At 5x it draws 20% more pixels than stretched 5x: DEMO1 renders headless
+in 1.47 s against 1.14 s, about 0.9 ms a frame. Frames match stretched
+5x scaled to 4:3 except along edges, where the 1200-row render is more
+precise. Rendering is outside the playsim, so demos are unaffected.
 
 Rendering at 5x costs about 1.3 ms a frame on the development machine (2000
 tics of DEMO1 in 2.6 s headless), well inside the 28.6 ms tic.
@@ -173,7 +211,8 @@ screenshots. It shows:
 - **jit**: the average distance of each displayed-frame period from 28.6 ms.
   On a 60 Hz display, 35 fps presents as alternating one- and two-refresh
   frames, so a few ms here is the normal 35-on-60 cadence.
-- the render size, its scale and whether that is Auto, and the drawable
+- the render size, its scale (with "4:3" when native) and whether that is
+  Auto, and the drawable
   with its refresh rate.
 
 The first line turns red while work is over budget or just after a drop.
@@ -230,6 +269,10 @@ included. These are the deliberate exceptions:
   are not cut short, and does wall and sprite edge maths in 64 bits, where
   the higher scales would overflow 32. The visplane rows are 16-bit. At 1x
   the golden test frames are unchanged.
+- **Native 4:3 rendering.** At 5x and 10x the renderer can draw square
+  pixels with a 6/5 vertical projection, instead of drawing 320x200
+  proportions for SDL to stretch. See [Native 4:3](#native-43). The
+  automap then shows true proportions.
 - **Graphic Detail is the render scale.** linuxdoom's low-detail toggle on
   that menu row printed "low detail mode n.a." and did nothing. The row now
   sets the scale factor, and its value is drawn in the HUD font. F5 still

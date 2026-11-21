@@ -32,7 +32,7 @@ module wipe =
 
     // The melt runs on Doom's 320x200 grid: 160 two-pixel columns, each
     // with a 0..200 drop. ycols is in those rows; each column is drawn over
-    // its 2 * hires screen pixels. (The original sliced the screen into
+    // its 2 * hires screen pixels, each drop row over hy screen rows. (The original sliced the screen into
     // shorts in column-major order; drawing each column from its drop
     // gives the same frames.)
     let init_melt = (width: i32, height: i32, ticks: i32) ->
@@ -57,7 +57,7 @@ module wipe =
         let pitch = v.sw
         let x0 = k * 2 * n
         let cw = 2 * n
-        let split = drop * n
+        let split = drop * v.hy
         for y in 0..v.sh do
             let dest = wipe_scr + y * pitch + x0
             let src = if y < split then wipe_scr_end + y * pitch + x0

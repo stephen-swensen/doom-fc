@@ -108,16 +108,22 @@ Doom's C files call each other in every direction, so:
   the device's own rate (`SDL_GetDefaultAudioInfo`, else 48000) with a
   1024-frame buffer, so SDL doesn't resample. Pitch doesn't depend on the
   rate. Headless capture and `-musictest` are pinned at 44100.
-- **Two coordinate spaces.** The screens are `v.hires` times 320x200
-  (`v.sw` x `v.sh`). Every 2D caller (status bar, menus, HUD, intermission,
-  finale) works in 320x200 units through `v.draw_patch`, `v.copy_rect`,
-  `v.fill_flat` and `v.draw_patch_column`, which scale. The renderer, the
-  automap and the wipe work in screen pixels, and so do `ds.viewwindowx`,
-  `ds.viewwidth` and the rest of the view geometry. Convert with `v.hires`
-  wherever the two meet (the pause patch, the border patches, HU erase,
-  automap marks). Never write a raw 320 or 200 against `v.screens`.
-- **The render scale changes at runtime.** `iv.want_hires` is picked from
-  the drawable (Auto) or the `scale_factor` setting. `d.apply_hires`
+- **Two coordinate spaces.** The screens are `v.hires` times 320 across and
+  `v.hy` times 200 down (`v.sw` x `v.sh`). `v.hy` equals `v.hires` except in
+  native 4:3 (`v.native`, 5x and 10x only), where it is `hires * 6/5`.
+  Every 2D caller (status bar, menus, HUD, intermission, finale) works in
+  320x200 units through `v.draw_patch`, `v.copy_rect`, `v.fill_flat` and
+  `v.draw_patch_column`, which scale. The renderer, the automap and the
+  wipe work in screen pixels, and so do `ds.viewwindowx`, `ds.viewwidth`
+  and the rest of the view geometry. Convert wherever the two meet (the
+  pause patch, the border patches, HU erase, automap marks), with
+  `v.hires` for x and `v.hy` for y. Never write a raw
+  320 or 200 against `v.screens`. In the renderer, every "scale" is
+  vertical (built from `r.projectiony`); `r.aspect_y` / `r.aspect_iy`
+  convert horizontal scales and texture steps.
+- **The render scale changes at runtime.** `iv.want_hires` and
+  `iv.want_native` are picked from the drawable (Auto) or the
+  `scale_factor` setting. `d.apply_hires`
   switches at the top of D_Display: `v.set_hires` reallocates the screens,
   `r.init_resolution` the renderer buffers, and the view size, automap,
   status bar and intermission backdrop are redone. Anything new that caches

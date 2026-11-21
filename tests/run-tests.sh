@@ -38,6 +38,7 @@ assert_contains() {    # name haystack needle
 have() { [ -f "$DATA/$1" ] || [ -f "$DATA/${1,,}" ]; }
 # a PNG's width, from its IHDR
 png_w() { od -An -tu1 -j16 -N4 "$1" | awk '{ print $1 * 16777216 + $2 * 65536 + $3 * 256 + $4 }'; }
+png_h() { od -An -tu1 -j20 -N4 "$1" | awk '{ print $1 * 16777216 + $2 * 65536 + $3 * 256 + $4 }'; }
 
 run() { "$BIN" -headless "$@" 2>&1; }
 
@@ -125,6 +126,15 @@ if have DOOM.WAD; then
         -script "w40 s:sc2 pesc w2 pdown w2 penter w3 pdown w1 pdown w2 pright w2 s:sc3 pleft w2 pleft w2 pleft w2 pesc w3 s:scauto" >/dev/null
     assert_eq "render scale switches 2x -> 3x -> auto" "640 960 320" \
         "$(png_w "$TMP/sc2.png") $(png_w "$TMP/sc3.png") $(png_w "$TMP/scauto.png")"
+    # native 4:3: the same frame at 5x with square pixels (1600x1200)
+    run -doom1 -scale 5n -warp 1 1 -shotdir "$TMP" -quitat 60 -script "w40 s:e1m1x5n" >/dev/null
+    assert_eq "E1M1 start frame at 5x native 4:3" 48570ada12ffa032589561ac46e72253 "$(md5sum < "$TMP/e1m1x5n.png" | cut -c1-32)"
+    # the picker puts 5X 4:3 between 5X and 6X, both ways
+    run -doom1 -scale 4 -warp 1 1 -shotdir "$TMP" -quitat 160 \
+        -script "w40 pesc w2 pdown w2 penter w3 pdown w1 pdown w2 pright w2 s:p5 pright w2 s:p5n pright w2 s:p6 pleft w2 s:q5n pleft w2 s:q5" >/dev/null
+    sizes=""
+    for f in p5 p5n p6 q5n q5; do sizes="$sizes $(png_w "$TMP/$f.png")x$(png_h "$TMP/$f.png")"; done
+    assert_eq "render scale switches 5x -> 5x 4:3 -> 6x and back" " 1600x1000 1600x1200 1920x1200 1600x1200 1600x1000" "$sizes"
 else
     skp "DOOM.WAD not in $DATA"
 fi

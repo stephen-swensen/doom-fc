@@ -45,8 +45,8 @@ module d =
     let mut hires_changed = false
 
     let apply_hires = () ->
-        if iv.want_hires != v.hires then
-            v.set_hires(iv.want_hires)
+        if iv.want_hires != v.hires || (iv.want_native && v.native_ok(iv.want_hires)) != v.native then
+            v.set_hires(iv.want_hires, iv.want_native)
             r.init_resolution()
             ds.setsizeneeded = true
             amap.resize()
@@ -108,7 +108,7 @@ module d =
         // draw pause pic
         if ds.paused then
             let n = v.hires
-            let y = if ds.automapactive then 4 else ds.viewwindowy / n + 4
+            let y = if ds.automapactive then 4 else ds.viewwindowy / v.hy + 4
             v.draw_patch_direct((ds.viewwindowx + (ds.scaledviewwidth - 68 * n) / 2) / n, y, 0, v.patch_named("M_PAUSE"))
         // menus go directly to the screen
         m.drawer()    // menu is drawn even on top of everything

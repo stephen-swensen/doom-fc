@@ -3,10 +3,16 @@
 // ported from linuxdoom-1.10 (GPLv2); i_video replaces the X11 original
 // with SDL2.
 //
-// The screens are `hires` times 320x200 in each axis. Every 2D caller
-// (status bar, menus, intermission, HUD text) still works in Doom's
+// The screens are `hires` times 320 wide and `hy` times 200 tall. Every 2D
+// caller (status bar, menus, intermission, HUD text) still works in Doom's
 // 320x200 coordinates; the drawers here scale them up. Only the 3D
 // renderer, the automap and the wipe work in screen pixels.
+//
+// Normally hy == hires and SDL stretches the frame to 4:3, as a VGA
+// monitor stretched 320x200. In native 4:3 mode (`native`, offered when
+// hires is a multiple of 5) hy is hires * 6/5: the screens already have
+// square pixels (1600x1200 at 5x), every 2D pixel is a whole 5x6 block,
+// and the presentation is a 1:1 copy.
 
 // A patch_t header; the column offset table follows at byte 8.
 struct patch =
@@ -26,8 +32,11 @@ module v =
     let basew = 320
     let baseh = 200
 
-    // Screen pixels per 2D unit, and the screen size that gives.
+    // Screen pixels per 2D unit across (hires) and down (hy), and the
+    // screen size that gives.
     let mut hires = 1
+    let mut hy = 1
+    let mut native = false
     let mut sw = 320
     let mut sh = 200
 
@@ -40,17 +49,22 @@ module v =
 
     let init = () ->
         screens = alloc(u8*[] { len = 5 })!
-        set_hires(1)
+        set_hires(1, false)
 
-    // (Re)allocate the screens at `n` times 320x200, cleared to black.
-    // Callers above this layer redraw whatever lived in them (see
-    // d.apply_hires).
-    let set_hires = (n: i32) ->
+    // Native 4:3 needs a whole number of rows per 2D row.
+    let native_ok = (n: i32) -> n % 5 == 0
+
+    // (Re)allocate the screens at factor `n` (native 4:3 or not), cleared
+    // to black. Callers above this layer redraw whatever lived in them
+    // (see d.apply_hires).
+    let set_hires = (n: i32, nat: bool) ->
         for k in 0..5 do
             if c.not_null(screens[k]) then cstdlib.c_free((any*) screens[k])
         hires = n
+        native = nat && native_ok(n)
+        hy = if native then n * 6 / 5 else n
         sw = basew * n
-        sh = baseh * n
+        sh = baseh * hy
         for k in 0..5 do
             screens[k] = (u8*) c.zalloc((i64) sw * sh)
 
@@ -66,27 +80,28 @@ module v =
             i.fatal("Bad V_CopyRect")
         mark_rect(destx, desty, width, height)
         let n = hires
-        let mut src = screens[srcscrn] + sw * srcy * n + srcx * n
-        let mut dest = screens[destscrn] + sw * desty * n + destx * n
-        for _ in 0..height * n do
+        let mut src = screens[srcscrn] + sw * srcy * hy + srcx * n
+        let mut dest = screens[destscrn] + sw * desty * hy + destx * n
+        for _ in 0..height * hy do
             c.memcpy((any*) dest, (const any*) src, (i64) width * n)
             src = src + sw
             dest = dest + sw
 
     // One patch column, its top at 2D row y, into 2D column x. Each source
-    // pixel becomes a hires x hires block.
+    // pixel becomes a hires x hy block.
     let draw_patch_column = (x: i32, y: i32, scrn: i32, p: const patch*, col: i32) ->
         let n = hires
+        let ny = hy
         let pitch = sw
-        let desttop = screens[scrn] + y * n * pitch + x * n
+        let desttop = screens[scrn] + y * ny * pitch + x * n
         let mut column = patches.column(p, col)
         loop
             let topdelta = *column
             if topdelta == 0xffu8 then break
             let length = (i32) *(column + 1)
             let mut source = column + 3
-            let mut dest = desttop + (i32) topdelta * n * pitch
-            if n == 1 then
+            let mut dest = desttop + (i32) topdelta * ny * pitch
+            if n == 1 && ny == 1 then
                 for _ in 0..length do
                     *dest = *source
                     source = source + 1
@@ -94,7 +109,7 @@ module v =
             else
                 for _ in 0..length do
                     let px = *source
-                    for _ in 0..n do
+                    for _ in 0..ny do
                         for k in 0..n do *(dest + k) = px
                         dest = dest + pitch
                     source = source + 1
@@ -126,11 +141,12 @@ module v =
     // the border around a reduced view).
     let fill_flat = (x: i32, y: i32, width: i32, height: i32, scrn: i32, flat: const u8*) ->
         let n = hires
+        let ny = hy
         let x0 = x * n
         let x1 = (x + width) * n
         unguarded
-            for py in y * n..(y + height) * n do
-                let src = flat + (((py / n) & 63) << 6)
+            for py in y * ny..(y + height) * ny do
+                let src = flat + (((py / ny) & 63) << 6)
                 let dest = screens[scrn] + py * sw
                 if n == 1 then
                     for px in x0..x1 do *(dest + px) = *(src + (px & 63))
@@ -169,15 +185,21 @@ module iv =
     // ------------------------------------------------------------------
     // Render scale (wolf-fc's Scale Factor). The game renders at v.hires
     // times 320x200; SDL then stretches that to 4:3 (the 1.2 pixel aspect)
-    // and letterboxes it into the drawable. scale_factor 0 is Auto: the
-    // largest factor whose 4:3 output fits the drawable in both axes,
-    // capped at max_scale. 1..12 pins it (and ignores the cap).
+    // and letterboxes it into the drawable. Or, in native 4:3, it renders
+    // square pixels at hires times 320x240 and SDL only copies it.
+    //
+    // A scale preference is a code: 0 is Auto, the largest factor whose
+    // 4:3 output fits the drawable in both axes, capped at max_scale, and
+    // native whenever that factor allows it. 1..12 pins a stretched
+    // factor (ignoring the cap), and native_code + N pins native N.
     // ------------------------------------------------------------------
     let max_factor = 12
+    let native_code = 100
     let mut scale_factor = 0       // the "scale_factor" config entry
-    let mut scale_override = -1    // -scale N: this session only
+    let mut scale_override = -1    // -scale N (or Nn, native): this session only
     let mut max_scale = 6          // -maxscale N
     let mut want_hires = 1         // applied at a frame boundary by d.apply_hires
+    let mut want_native = false
     let mut drawable_w = 0
     let mut drawable_h = 0
     let mut refresh_hz = 0
@@ -188,6 +210,7 @@ module iv =
     let mut present = 1
     let mut tex_w = 0
     let mut tex_h = 0
+    let mut tex_native = false
 
     // The largest integer factor whose 4:3 output fits out_w x out_h.
     let fit_factor = (out_w: i32, out_h: i32) ->
@@ -200,16 +223,49 @@ module iv =
 
     let effective_pref = () -> if scale_override >= 0 then scale_override else scale_factor
 
+    // A code from the config or the command line, made valid.
+    let clamp_code = (code: i32) ->
+        let nat = code >= native_code
+        let n0 = if nat then code - native_code else code
+        let n = if n0 < 0 then 0 else if n0 > max_factor then max_factor else n0
+        if nat && n > 0 && v.native_ok(n) then native_code + n else n
+
     let pick_hires = () ->
-        let pref = effective_pref()
-        if pref > 0 then (if pref > max_factor then max_factor else pref)
+        let pref = clamp_code(effective_pref())
+        if pref > 0 then pref % native_code
         else if headless then 1
         else
             let s = fit_factor(drawable_w, drawable_h)
             if s > max_scale then max_scale else s
 
     // Re-pick after a drawable or preference change.
-    let repick = () -> want_hires = pick_hires()
+    let repick = () ->
+        want_hires = pick_hires()
+        let pref = clamp_code(effective_pref())
+        want_native = if pref == 0 then v.native_ok(want_hires) else pref >= native_code
+
+    // The picker's order: Auto, 1X .. 12X, each native factor right after
+    // its stretched one.
+    let next_code = (code0: i32, dir: i32) ->
+        let codes = i32[] { len = 2 * max_factor + 1 }
+        let mut n = 0
+        codes[n] = 0
+        n = n + 1
+        for f in 1..max_factor + 1 do
+            codes[n] = f
+            n = n + 1
+            if v.native_ok(f) then
+                codes[n] = native_code + f
+                n = n + 1
+        let code = clamp_code(code0)
+        let mut at = 0
+        for k in 0..n do
+            if codes[k] == code then at = k
+        codes[(at + dir + n) % n]
+
+    // A code's factor, and its label suffix after "5X".
+    let code_factor = (code: i32) -> code % native_code
+    let code_suffix = (code: i32) -> if code >= native_code then " 4:3" else ""
 
     let query_display = () ->
         let mut ow = 0
@@ -228,8 +284,10 @@ module iv =
             max_scale = if n < 1 then 1 else if n > max_factor then max_factor else n
         let ps = argv.check_parm("-scale")
         if ps > 0 && ps < argv.count() - 1 then
-            let n = cstdlib.atoi(alloca((cstr) argv.get(ps + 1)))
-            scale_override = if n < 0 then 0 else if n > max_factor then max_factor else n
+            let arg = argv.get(ps + 1)
+            let n = cstdlib.atoi(alloca((cstr) arg))
+            let nat = arg.len > 0 && (arg[arg.len - 1] == 'n' || arg[arg.len - 1] == 'N')
+            scale_override = clamp_code(if nat then native_code + n else n)
         if argv.check_parm("-debug") > 0 then dbg_on = true
         if headless then
             repick()
@@ -251,7 +309,8 @@ module iv =
             if argv.check_parm("-mousemove") > 0 then novert = false
             query_display()
             repick()
-            i.print(alloca("I_InitGraphics: drawable %d{drawable_w}x%d{drawable_h}, render scale %d{want_hires}x\n"))
+            let how = if want_native then " native 4:3" else ""
+            i.print(alloca("I_InitGraphics: drawable %d{drawable_w}x%d{drawable_h}, render scale %d{want_hires}x%s{how}\n"))
 
     // Match the streaming texture to the screens and the drawable.
     let sync_texture = () ->
@@ -263,14 +322,16 @@ module iv =
         // set even when the size holds: 640x400 at k=2 and 1280x800 at k=1
         // share a texture, and finish_update replicates by `present`
         present = k
-        if w != tex_w || h != tex_h then
+        if w != tex_w || h != tex_h || v.native != tex_native then
             if c.not_null(texture) then sdl2.destroy_texture(texture)
             if pixels.len > 0 then free(pixels)
             tex_w = w
             tex_h = h
+            tex_native = v.native
             texture = sdl2.create_texture(renderer, sdl2.pixel_argb8888, sdl2.tex_streaming, w, h)
             pixels = alloc(u32[] { len = (i64) w * h })!
-            ignore sdl2.set_logical_size(renderer, w, h * 6 / 5)
+            // native screens are already 4:3
+            ignore sdl2.set_logical_size(renderer, w, if v.native then h else h * 6 / 5)
             dbg_reset()
 
     // I_ShutdownGraphics. Not SDL_Quit: that also closes the audio device,
@@ -454,11 +515,12 @@ module iv =
         let work = (i32) (dbg_work_ms + 0.5)
         let budget = (i32) (tic_ms + 0.5)
         let mode = if effective_pref() == 0 then "auto" else "fixed"
+        let aspect = if v.native then " 4:3" else ""
         let hz = if refresh_hz > 0 then (const str) alloca(" %d{refresh_hz}hz") else ""
         let lines = str[] { len = 4,
             alloca("fps %d{fps}  %d{work}/%d{budget} ms"),
             alloca("drops %d{dbg_drops}  jit %3.1f{dbg_jitter_ms} ms"),
-            alloca("%d{v.sw}x%d{v.sh} %d{v.hires}x %s{mode}"),
+            alloca("%d{v.sw}x%d{v.sh} %d{v.hires}x%s{aspect} %s{mode}"),
             alloca("out %d{drawable_w}x%d{drawable_h}%s{hz}")
         }
         let line_h = 9 * s

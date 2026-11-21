@@ -616,7 +616,11 @@ module m =
         v.draw_patch_direct(108, 15, 0, v.patch_named("M_OPTTTL"))
         // the render scale, in the HUD font (there are no patches for it)
         let pref = iv.effective_pref()
-        let label = if pref == 0 then alloca("AUTO (%d{iv.want_hires}X)") else alloca("%d{pref}X")
+        let code = if pref != 0 then iv.clamp_code(pref)
+                   else if iv.want_native then iv.native_code + iv.want_hires else iv.want_hires
+        let n = iv.code_factor(code)
+        let suffix = iv.code_suffix(code)
+        let label = if pref == 0 then alloca("AUTO %d{n}X%s{suffix}") else alloca("%d{n}X%s{suffix}")
         write_text(options_def.x + 177, options_def.y + lineheight * detail + 6, label)
         v.draw_patch_direct(options_def.x + 120, options_def.y + lineheight * messages, 0,
                             v.patch_named(msg_names[ds.show_messages]))
@@ -675,13 +679,12 @@ module m =
         else if choice == 1 then
             if ds.mouse_sensitivity < 9 then ds.mouse_sensitivity = ds.mouse_sensitivity + 1
 
-    // Render scale: Auto, 1x..12x, wrapping both ways as wolf-fc's picker
-    // does. A pinned factor ignores -maxscale. Takes effect at the next
-    // frame.
+    // Render scale: Auto, 1x..12x with native 4:3 after 5x and 10x,
+    // wrapping both ways as wolf-fc's picker does. A pinned factor ignores
+    // -maxscale. Takes effect at the next frame.
     let change_scale = (choice: i32) ->
-        let n = iv.max_factor + 1
         let dir = if choice == 0 then -1 else 1
-        iv.scale_factor = (iv.effective_pref() + dir + n) % n
+        iv.scale_factor = iv.next_code(iv.effective_pref(), dir)
         iv.scale_override = -1
         iv.repick()
 

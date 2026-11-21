@@ -4,10 +4,17 @@
 // (r_state.h) live here too; p_setup fills them.
 //
 // The renderer works in screen pixels: v.sw x v.sh, which is v.hires times
-// 320x200. Everything sized by the screen is allocated by init_resolution.
-// Projection, lighting and the weapon sprite are kept relative to the
-// 320-wide original, so a frame at any scale shows the same view and the
-// same light levels as the original, at more pixels.
+// 320 by v.hy times 200. Everything sized by the screen is allocated by
+// init_resolution. Projection, lighting and the weapon sprite are kept
+// relative to the 320-wide original, so a frame at any scale shows the same
+// view and the same light levels as the original, at more pixels.
+//
+// In native 4:3 (v.hy = v.hires * 6/5) the vertical projection is 6/5 of
+// the horizontal one, which is what the original's stretched display did
+// to it. Every "scale" (rw_scale, drawseg and vissprite scales, spryscale)
+// is a vertical scale, built from projectiony; only sprite x positions
+// and the texture steps across a sprite use the horizontal projection.
+// Outside native mode the two are equal and nothing changes.
 
 struct texpatch =
     originx: i32
@@ -76,6 +83,7 @@ module r =
     let mut centerxfrac = 0
     let mut centeryfrac = 0
     let mut projection = 0
+    let mut projectiony = 0
     let mut framecount = 0
     let mut sscount = 0
     let mut viewx = 0
@@ -156,7 +164,7 @@ module r =
     let mut colfunc = 0
 
     // FUZZTABLE, as rows down (+1) or up (-1); one row is a 320 base row,
-    // so hires screens step v.hires screen rows.
+    // so hires screens step v.hy screen rows.
     let fuzzoffset = i32[] {
         1, -1, 1, -1, 1, 1, -1,
         1, 1, -1, 1, 1, 1, -1,
@@ -247,6 +255,7 @@ module r =
     // ---------------------------------------------------------------
     let mut pspritescale = 0
     let mut pspriteiscale = 0
+    let mut pspritescaley = 0
     let mut spritelights = default(u8**)
     let mut negonearray = default(i16[])
     let mut screenheightarray = default(i16[])
@@ -287,10 +296,17 @@ module r =
         else if y > 0x40000000i64 then 0x40000000
         else (i32) y
 
-    // Index into scalelight for a projected scale. Scales grow with
-    // v.hires, so divide that back out to keep the original light levels.
+    // Horizontal to vertical, for a scale and for an inverse scale (a
+    // texture step). Identity unless native 4:3.
+    let aspect_y = (x: i32) ->
+        if v.hy == v.hires then x else (i32) ((i64) x * v.hy / v.hires)
+    let aspect_iy = (x: i32) ->
+        if v.hy == v.hires then x else (i32) ((i64) x * v.hires / v.hy)
+
+    // Index into scalelight for a projected (vertical) scale. Scales grow
+    // with v.hy, so divide that back out to keep the original light levels.
     let scale_light_index = (scale: i32, shift: i32) ->
-        let idx = (u32) ((scale / v.hires) >> shift)
+        let idx = (u32) ((scale / v.hy) >> shift)
         if idx >= (u32) maxlightscale then maxlightscale - 1 else (i32) idx
 
     // Allocate everything sized by the screen; called at startup and when
@@ -430,10 +446,10 @@ module r =
         let angleb = (i32) (fx.ang90 + (visangle - rw_normalangle))
         let sinea = finesine(anglea >> 19)
         let sineb = finesine(angleb >> 19)
-        let num = fx.mul(projection, sineb) << detailshift
+        let num = fx.mul(projectiony, sineb) << detailshift
         let den = fx.mul(rw_distance, sinea)
         // the cap scales with the screen, or walls close up come out short
-        let maxscale = 64 * fx.fracunit * v.hires
+        let maxscale = 64 * fx.fracunit * v.hy
         if den > num >> 16 then
             let scale = fx.div(num, den)
             if scale > maxscale then maxscale
@@ -487,7 +503,7 @@ module r =
             ds.viewheight = v.sh
         else
             ds.scaledviewwidth = setblocks * 32 * v.hires
-            ds.viewheight = ((setblocks * 168 / 10) & ~7) * v.hires
+            ds.viewheight = ((setblocks * 168 / 10) & ~7) * v.hy
         detailshift = setdetail
         ds.viewwidth = ds.scaledviewwidth >> detailshift
         centery = ds.viewheight / 2
@@ -495,6 +511,7 @@ module r =
         centerxfrac = centerx << 16
         centeryfrac = centery << 16
         projection = centerxfrac
+        projectiony = aspect_y(centerxfrac)
         colfunc = col_base
         init_buffer(ds.scaledviewwidth, ds.viewheight)
         init_texture_mapping()
@@ -502,10 +519,11 @@ module r =
         // their size at any scale
         pspritescale = fx.fracunit * ds.viewwidth / v.basew
         pspriteiscale = fx.fracunit * v.basew / ds.viewwidth
+        pspritescaley = aspect_y(pspritescale)
         for k in 0..ds.viewwidth do screenheightarray[k] = (i16) ds.viewheight
         for k in 0..ds.viewheight do
             let dy = c.iabs(((k - ds.viewheight / 2) << 16) + fx.fracunit / 2)
-            yslope[k] = fx.div((ds.viewwidth << detailshift) / 2 * fx.fracunit, dy)
+            yslope[k] = fx.div(aspect_y((ds.viewwidth << detailshift) / 2 * fx.fracunit), dy)
         for k in 0..ds.viewwidth do
             let cosadj = c.iabs(finecosine(fx.fine(xtoviewangle[k])))
             distscale[k] = fx.div(fx.fracunit, cosadj)
@@ -819,10 +837,11 @@ module r =
                 frac = frac + fracstep
 
     // At hires the fuzz keeps the original's grain: each table step covers
-    // hires rows, reads hires rows away, and every column of a hires-wide
-    // block replays the same steps.
+    // hy rows, reads hy rows away, and every column of a hires-wide block
+    // replays the same steps.
     let draw_fuzz_column = () ->
-        let n = v.hires
+        let n = v.hy
+        let nx = v.hires
         // the original clamps rows 0 and viewheight-1 (the reads go a row
         // up and down)
         if dc_yl < n then dc_yl = n
@@ -833,8 +852,8 @@ module r =
                 i.fatal(alloca("R_DrawFuzzColumn: %d{dc_yl} to %d{dc_yh} at %d{dc_x}"))
             let pitch = v.sw
             let step = pitch * n
-            if n > 1 then
-                if dc_x % n == 0 then fuzzblockpos = fuzzpos else fuzzpos = fuzzblockpos
+            if nx > 1 then
+                if dc_x % nx == 0 then fuzzblockpos = fuzzpos else fuzzpos = fuzzblockpos
             let mut dest = ylookup[dc_yl] + columnofs[dc_x]
             let mut y = dc_yl
             for _ in 0..count + 1 do
@@ -919,7 +938,7 @@ module r =
     let init_buffer = (width: i32, height: i32) ->
         ds.viewwindowx = (v.sw - width) >> 1
         for k in 0..width do columnofs[k] = ds.viewwindowx + k
-        ds.viewwindowy = if width == v.sw then 0 else (v.sh - sbarheight * v.hires - height) >> 1
+        ds.viewwindowy = if width == v.sw then 0 else (v.sh - sbarheight * v.hy - height) >> 1
         for k in 0..height do ylookup[k] = v.screens[0] + (k + ds.viewwindowy) * v.sw
 
     let fill_back_screen = () ->
@@ -931,9 +950,9 @@ module r =
             // the border patches go in 320x200 coordinates
             let n = v.hires
             let vx = ds.viewwindowx / n
-            let vy = ds.viewwindowy / n
+            let vy = ds.viewwindowy / v.hy
             let svw = ds.scaledviewwidth / n
-            let vh = ds.viewheight / n
+            let vh = ds.viewheight / v.hy
             let mut x = 0
             loop
                 if x >= svw then break
@@ -958,7 +977,7 @@ module r =
         let sw = v.sw
         if ds.scaledviewwidth == sw then void()
         else
-            let top = ((v.sh - sbarheight * v.hires) - ds.viewheight) / 2
+            let top = ((v.sh - sbarheight * v.hy) - ds.viewheight) / 2
             let mut side = (sw - ds.scaledviewwidth) / 2
             video_erase(0, top * sw + side)
             let mut ofs = (ds.viewheight + top) * sw - side
@@ -1585,7 +1604,7 @@ module r =
             if pl.minx <= pl.maxx then
                 if pl.picnum == ds.skyflatnum then
                     // sky flat
-                    dc_iscale = pspriteiscale >> detailshift
+                    dc_iscale = aspect_iy(pspriteiscale) >> detailshift
                     dc_colormap = colormaps
                     dc_texturemid = skytexturemid
                     for x in pl.minx..pl.maxx + 1 do
@@ -1727,7 +1746,7 @@ module r =
         else if (vis.mobjflags & mf.translation) != 0 then
             colfunc = col_trans
             dc_translation = translationtables - 256 + ((vis.mobjflags & mf.translation) >> (mf.transshift - 8))
-        dc_iscale = c.iabs(vis.xiscale) >> detailshift
+        dc_iscale = aspect_iy(c.iabs(vis.xiscale)) >> detailshift
         dc_texturemid = vis.texturemid
         let mut frac = vis.startfrac
         spryscale = vis.scale
@@ -1751,6 +1770,7 @@ module r =
         let tz = gxt - gyt
         if tz < minz then return
         let xscale = fx.div(projection, tz)
+        let yscale = fx.div(projectiony, tz)
         gxt = 0 - fx.mul(tr_x, viewsin)
         gyt = fx.mul(tr_y, viewcos)
         let mut tx = 0 - (gyt + gxt)
@@ -1779,7 +1799,7 @@ module r =
         if x2 < 0 then return
         let vis = new_vis_sprite()
         vis.mobjflags = thing.flags
-        vis.scale = xscale << detailshift
+        vis.scale = yscale << detailshift
         vis.gx = thing.x
         vis.gy = thing.y
         vis.gz = thing.z
@@ -1803,7 +1823,7 @@ module r =
         else if (thing.frame & ps.ff_fullbright) != 0 then
             vis.colormap = colormaps
         else
-            vis.colormap = *(spritelights + scale_light_index(xscale, lightscaleshift - detailshift))
+            vis.colormap = *(spritelights + scale_light_index(yscale, lightscaleshift - detailshift))
 
     let set_spritelights = (lightnum: i32) ->
         spritelights = if lightnum < 0 then scalelight.ptr
@@ -1843,7 +1863,7 @@ module r =
         vis.texturemid = (baseycenter << 16) + fx.fracunit / 2 - (psp.sy - spritetopoffset[lump])
         vis.x1 = if x1 < 0 then 0 else x1
         vis.x2 = if x2 >= ds.viewwidth then ds.viewwidth - 1 else x2
-        vis.scale = pspritescale << detailshift
+        vis.scale = pspritescaley << detailshift
         if flip then
             vis.xiscale = 0 - pspriteiscale
             vis.startfrac = spritewidth[lump] - 1
