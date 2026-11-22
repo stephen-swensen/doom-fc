@@ -35,7 +35,7 @@ GEN_FC := $(BUILD_DIR)/install_path.fc
 # Low-level first, entry point last (fcc doesn't care about order).
 SRCS_FC := $(addprefix src/,sdl2.fc libc.fc png.fc gamma.fc random.fc opl2_tables.fc opl2.fc opl_midi.fc tables.fc info.fc sounds.fc dstrings.fc \
            defs.fc system.fc doomstat.fc video.fc render.fc sound.fc music.fc play.fc hud.fc \
-           automap.fc wipe.fc finale.fc intermission.fc menu.fc game.fc \
+           automap.fc wipe.fc finale.fc intermission.fc menu.fc game.fc interp.fc \
            dmain.fc main.fc)
 SRCS_FC := $(filter $(wildcard src/*.fc),$(SRCS_FC))
 

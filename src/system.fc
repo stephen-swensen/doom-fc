@@ -58,6 +58,11 @@ module i =
         let elapsed = sdl2.get_perf_counter() - base_counter
         (i32) (elapsed * 35u64 / counter_freq)
 
+    // Same clock in fractional tics (frame interpolation).
+    let get_tic_pos = () ->
+        let elapsed = sdl2.get_perf_counter() - base_counter
+        (f64) elapsed * 35.0 / (f64) counter_freq
+
     // Same clock in microseconds (frame pacing).
     let get_time_us = () ->
         let elapsed = sdl2.get_perf_counter() - base_counter

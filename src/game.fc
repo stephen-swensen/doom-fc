@@ -22,6 +22,14 @@ module g =
     // mouse values are used once
     let mut mousex = 0
     let mut mousey = 0
+    // the part of the last ticcmd's angleturn that came from the mouse
+    let mut last_mouse_turn = 0
+
+    // The turn the mouse has collected for the next ticcmd, in angleturn
+    // units (frame interpolation shows it before the tic runs).
+    let pending_mouse_turn = () ->
+        if gamekeydown[misc.key_strafe] || mousebuttons[misc.mousebstrafe] then 0
+        else 0 - mousex * 0x8
     let mut dclicktime = 0
     let mut dclickstate = false
     let mut dclicks = 0
@@ -116,6 +124,7 @@ module g =
         forward = forward + mousey
         if strafe then side = side + mousex * 2
         else cmd.angleturn = (i16) ((i32) cmd.angleturn - mousex * 0x8)
+        last_mouse_turn = if strafe then 0 else 0 - mousex * 0x8
         mousex = 0
         mousey = 0
         if forward > maxplmove then forward = maxplmove
@@ -198,8 +207,10 @@ module g =
             mousebuttons[0] = (ev.data1 & 1) != 0
             mousebuttons[1] = (ev.data1 & 2) != 0
             mousebuttons[2] = (ev.data1 & 4) != 0
-            mousex = ev.data2 * (ds.mouse_sensitivity + 5) / 10
-            mousey = ev.data3 * (ds.mouse_sensitivity + 5) / 10
+            // accumulate: with frame interpolation input is read every
+            // frame, so several mouse events can arrive per ticcmd
+            mousex = mousex + ev.data2 * (ds.mouse_sensitivity + 5) / 10
+            mousey = mousey + ev.data3 * (ds.mouse_sensitivity + 5) / 10
             return true    // eat events
         false
 

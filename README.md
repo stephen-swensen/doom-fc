@@ -87,6 +87,7 @@ II), `-skill N`, `-episode N`, `-nomonsters`, `-respawn`, `-fast`,
 | `-scale N` | render at N times 320x200 for this session (0 = Auto, 1..12), overriding the saved setting; `5n` or `10n` renders native 4:3 |
 | `-maxscale N` | cap Auto's pick (default 6) |
 | `-debug` | start with the debug overlay on |
+| `-nointerp` | draw one frame per tic, as linuxdoom does, instead of interpolating frames at the display's refresh rate (see [Frame interpolation](#frame-interpolation)) |
 
 ### Headless / test mode
 
@@ -105,6 +106,7 @@ regression suite is built on it:
 | `-sndtrace` | print `S gametic start\|stop NAME ...` for every sound effect started or stopped |
 | `-sndcapture FILE` | run the real mixer (effects and music) one tic at a time and write the run to a WAV |
 | `-musictest LUMP` | render 20 s of a music lump to `musictest.wav` and report its level |
+| `-interptest` | draw every frame half way through its tic (frame interpolation's blend), to check it never reaches the playsim |
 
 Headless runs render at 1x unless `-scale N` says otherwise, so the golden
 frame hashes stay fixed.
@@ -198,22 +200,55 @@ precise. Rendering is outside the playsim, so demos are unaffected.
 Rendering at 5x costs about 1.3 ms a frame on the development machine (2000
 tics of DEMO1 in 2.6 s headless), well inside the 28.6 ms tic.
 
+### Frame interpolation
+
+The playsim runs at 35 tics a second. Drawing one frame per tic, as
+linuxdoom does, cannot pace evenly on a 60 Hz or faster display: each frame
+stays up for one refresh or two in an uneven pattern, and motion judders.
+So by default doom-fc draws a frame per display refresh and shows the world
+part of the way through the latest tic (`interp.fc`). `-nointerp` turns it
+off. Headless and `-timedemo` runs always draw one frame per tic.
+
+- Before each tic, `interp.snapshot` records everything that moves: mobj
+  positions and angles (`mobj.interp`), the player's view height and
+  weapon sprite, sector floor and ceiling heights, and scrolling walls.
+- Each frame, `interp.begin` writes values blended between that snapshot
+  and the current state into the live fields, D_Display draws, and
+  `interp.finish` puts the real values back. No tic runs in between, so the
+  playsim never sees a blended value; demos play identically with every
+  frame blended (`-interptest`, in `make check`).
+- The blend shows the world up to one tic behind, except the player's own
+  turn: mouse movement that has not reached a ticcmd yet is added to the
+  view angle, and the latest tic's mouse turn is shown in full, so mouse
+  turning has less latency than drawing one frame per tic. Keyboard
+  turning is blended like everything else.
+- New, respawned and teleported things, and anything that moved more than
+  128 units in a tic, are drawn where they are. A level load starts
+  blending from the next tic. Animation frames, lighting and flats still
+  change once per tic.
+- Input is read every frame, so mouse events now add up until the next
+  ticcmd (G_Responder used to keep only the last event).
+- `SDL_RenderPresent` waits for vsync. Since a renderer can claim vsync
+  without waiting for it, each frame is also held to at least 3/4 of a
+  refresh period, which never delays a real vsync present.
+
 **Debug overlay** (`-debug`, or **`**). This is a top-right readout drawn into
 the upload buffer after the frame is converted, so it is never in
 screenshots. It shows:
 
-- **fps**: the displayed frame rate. Doom draws one frame per tic, so it
-  reads 35.
+- **fps**: the displayed frame rate: the display's refresh rate with frame
+  interpolation, 35 with `-nointerp`.
 - **work**: the time spent running the frame's tics, rendering and
-  uploading, against the 28.6 ms tic budget.
+  uploading, against the frame budget (a refresh period, or the 28.6 ms
+  tic with `-nointerp`).
 - **drops**: tics that ran without being displayed, because a frame took
   longer than a tic.
-- **jit**: the average distance of each displayed-frame period from 28.6 ms.
-  On a 60 Hz display, 35 fps presents as alternating one- and two-refresh
-  frames, so a few ms here is the normal 35-on-60 cadence.
+- **jit**: the average distance of each displayed-frame period from the
+  frame budget. With frame interpolation it should be near 0. With
+  `-nointerp` on a 60 Hz display, 35 fps presents as alternating one- and
+  two-refresh frames, so a few ms here is the normal 35-on-60 cadence.
 - the render size, its scale (with "4:3" when native) and whether that is
-  Auto, and the drawable
-  with its refresh rate.
+  Auto, and the drawable with its refresh rate.
 
 The first line turns red while work is over budget or just after a drop.
 
@@ -273,6 +308,12 @@ included. These are the deliberate exceptions:
   pixels with a 6/5 vertical projection, instead of drawing 320x200
   proportions for SDL to stretch. See [Native 4:3](#native-43). The
   automap then shows true proportions.
+- **Frame interpolation.** linuxdoom draws one frame per tic. doom-fc draws
+  one per display refresh, blending positions between tics, and turns the
+  view with mouse input that has not reached a tic yet. See
+  [Frame interpolation](#frame-interpolation). `-nointerp` restores one
+  frame per tic. Mouse events also add up between ticcmds instead of the
+  last one winning.
 - **Graphic Detail is the render scale.** linuxdoom's low-detail toggle on
   that menu row printed "low detail mode n.a." and did nothing. The row now
   sets the scale factor, and its value is drawn in the HUD font. F5 still
@@ -301,5 +342,6 @@ Every `src/*.fc` file maps to one or more of id's C files.
 | `wipe.fc`, `finale.fc`, `intermission.fc` | f_wipe, f_finale, wi_stuff | |
 | `menu.fc` | m_misc, m_menu | |
 | `game.fc` | g_game | |
+| `interp.fc` | (new) | frame interpolation |
 | `dmain.fc` | d_main, d_net (single player) | |
 | `info.fc`, `sounds.fc`, `tables.fc`, `dstrings.fc`, `gamma.fc`, `random.fc` | info, sounds, tables, d_englsh, v_video's gamma table, m_random | generated by `tools/gen_tables.py` |

@@ -3392,6 +3392,7 @@ module p =
                             thing.momx = 0
                             thing.momy = 0
                             thing.momz = 0
+                            thing.interp.snap = 0    // draw it there, don't slide
                             return 1
                     th = th.next
         0
@@ -5188,7 +5189,12 @@ module p =
             block = if block < 0 then 0 else block
             sector.blockbox[box.left] = block
 
+    // Bumped per level load, so a frame interpolation snapshot from before
+    // it is not blended into the new level.
+    let mut setup_count = 0
+
     let setup_level = (episode: i32, map: i32, playermask: i32, skill: i32) ->
+        setup_count = setup_count + 1
         ds.totalkills = 0
         ds.totalitems = 0
         ds.totalsecret = 0
@@ -5347,6 +5353,10 @@ module p =
     let tc_end = 0
     let tc_mobj = 1
 
+    // A saved mobj leaves off the trailing interpolation state, so saves
+    // keep the layout they had before it.
+    let saved_mobj_size = sizeof(mobj) - sizeof(mobj_interp)
+
     let archive_thinkers = () ->
         // save off the current thinkers
         let cap = &ds.thinkercap
@@ -5358,8 +5368,8 @@ module p =
                 save_p = save_p + 1
                 padsavep()
                 let mo = (mobj*) save_p
-                c.memcpy((any*) mo, (const any*) th, sizeof(mobj))
-                save_p = save_p + sizeof(mobj)
+                c.memcpy((any*) mo, (const any*) th, saved_mobj_size)
+                save_p = save_p + saved_mobj_size
                 mo.state = (const state*) idx_ptr((i64) mobj_index(mo.state))
                 if c.not_null(mo.player) then
                     mo.player = (player*) idx_ptr((i64) (player_index(mo.player) + 1))
@@ -5387,8 +5397,8 @@ module p =
             if tclass == tc_mobj then
                 padsavep()
                 let mo = (mobj*) z.malloc(sizeof(mobj), pu.level, default(any**))
-                c.memcpy((any*) mo, (const any*) save_p, sizeof(mobj))
-                save_p = save_p + sizeof(mobj)
+                c.memcpy((any*) mo, (const any*) save_p, saved_mobj_size)
+                save_p = save_p + saved_mobj_size
                 mo.state = &info.states[ptr_idx(mo.state)]
                 mo.target = default(mobj*)
                 if c.not_null(mo.player) then

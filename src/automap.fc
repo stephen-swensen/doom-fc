@@ -712,6 +712,8 @@ module amap =
 
     let drawer = () ->
         if !ds.automapactive then return
+        // again here, for frame interpolation's in-between positions
+        if followplayer then do_follow_player()
         clear_fb(background)
         if grid then draw_grid(gridcolors)
         draw_walls()

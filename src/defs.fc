@@ -353,6 +353,19 @@ struct mapthing =
     type: i32
     options: i32
 
+// Where a mobj was at the start of the last tic, for frame interpolation
+// (see interp.fc). `snap` is the snapshot it belongs to; 0 means none, so
+// a new or teleported mobj is drawn where it is. Not saved: savegames
+// store a mobj without it (p.saved_mobj_size), so it must stay last in
+// mobj and a multiple of 8 bytes.
+struct mobj_interp =
+    x: i32
+    y: i32
+    z: i32
+    angle: u32
+    viewz: i32
+    snap: i32
+
 struct mobj =
     thinker: thinker
     x: i32
@@ -389,6 +402,7 @@ struct mobj =
     lastlook: i32
     spawnpoint: mapthing
     tracer: mobj*
+    interp: mobj_interp
 
 struct pspdef =
     state: const state*
@@ -487,6 +501,9 @@ struct sector =
     specialdata: any*
     linecount: i32
     lines: line**
+    // heights at the start of the last tic (frame interpolation)
+    oldfloorheight: i32
+    oldceilingheight: i32
 
 struct side =
     textureoffset: i32

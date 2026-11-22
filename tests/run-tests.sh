@@ -140,6 +140,23 @@ else
 fi
 
 # ----------------------------------------------------------------------
+section "frame interpolation"
+if have DOOM.WAD; then
+    # -interptest draws every frame half way through its tic; the blend is
+    # undone after each frame, so the playsim must not notice
+    for dm in demo1 demo2 demo3; do
+        a=$(trace_md5 -doom1 -playdemo $dm)
+        b=$(trace_md5 -doom1 -playdemo $dm -interptest)
+        assert_eq "$dm plays identically with every frame blended" "$a" "$b"
+    done
+    # a frame half way through a keyboard turn
+    run -doom1 -warp 1 1 -shotdir "$TMP" -quitat 50 -interptest -script "w40 dleft w5 s:turnmid" >/dev/null
+    assert_eq "blended frame mid-turn" 70607d1e2f821be9119fb0a35bf323e4 "$(md5sum < "$TMP/turnmid.png" | cut -c1-32)"
+else
+    skp "DOOM.WAD not in $DATA"
+fi
+
+# ----------------------------------------------------------------------
 section "game flow"
 if have DOOM.WAD; then
     # menu -> new game -> E1M1, walk forward

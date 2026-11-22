@@ -1,0 +1,192 @@
+// Frame interpolation. The playsim runs at 35 tics a second; with this on
+// (the default outside -headless, -nointerp turns it off), the display
+// runs at the monitor's rate and each frame shows the world part of the
+// way from the start of the latest tic to its end.
+//
+// snapshot() records, before each tic runs, where everything that moves
+// is: mobj positions and angles (mobj.interp), the console player's view
+// height and weapon sprite, sector floor and ceiling heights, and scrolling
+// wall offsets. begin(f) writes the blended values into the live fields
+// just before D_Display, and finish() puts the real values back right
+// after it, so the renderer, the automap and everything else that draws
+// see a consistent in-between world while the playsim never does: nothing
+// runs a tic between the two calls.
+//
+// The player's own turn is shown ahead of the tic: mouse movement that
+// has not reached a ticcmd yet is added to the view angle, and the mouse
+// part of the latest tic is shown in full rather than blended, so turning
+// has no added latency. Keyboard turning is blended like everything else.
+
+struct interp_saved =
+    mo: mobj*
+    x: i32
+    y: i32
+    z: i32
+    angle: u32
+
+module interp =
+    // Movement in one tic past this is a teleport or a respawn; draw it
+    // where it ends up.
+    let max_step = 128 * 65536
+
+    let mut snap_id = 0
+    let mut snap_setup = -1    // p.setup_count at the last snapshot; -1 none
+    let mut active = false
+
+    // the console player's weapon sprites at the snapshot
+    let mut psp_sx = i32[] { len = 2 }
+    let mut psp_sy = i32[] { len = 2 }
+    let mut psp_state = usize[] { len = 2 }
+    // scrolling walls (special 48), by linespeciallist index
+    let mut scroll_prev = i32[] { len = 64 }
+
+    // the real values begin() overwrote, for finish()
+    let mut saved = default(interp_saved[])
+    let mut nsaved = 0
+    let mut sec_floor = default(i32[])
+    let mut sec_ceil = default(i32[])
+    let mut scroll_cur = i32[] { len = 64 }
+    let mut cur_viewz = 0
+    let mut cur_psp_sx = i32[] { len = 2 }
+    let mut cur_psp_sy = i32[] { len = 2 }
+
+    let lerp = (a: i32, b: i32, f: i32) ->
+        a + (i32) ((((i64) b - (i64) a) * (i64) f) >> 16)
+
+    let lerp_angle = (a: u32, b: u32, f: i32) ->
+        a + (u32) (i32) (((i64) (i32) (b - a) * (i64) f) >> 16)
+
+    let far = (a: i32, b: i32) ->
+        let d = (i64) b - (i64) a
+        d > (i64) max_step || d < (i64) (0 - max_step)
+
+    // Before a tic runs.
+    let snapshot = () ->
+        if ds.gamestate != gs.level then
+            snap_setup = -1
+            return
+        snap_id = if snap_id >= 0x40000000 then 1 else snap_id + 1
+        snap_setup = p.setup_count
+        let cap = &ds.thinkercap
+        let mut th = cap.next
+        loop
+            if th == cap then break
+            if th.function == thinkf.mobj then
+                let mo = (mobj*) th
+                mo.interp.x = mo.x
+                mo.interp.y = mo.y
+                mo.interp.z = mo.z
+                mo.interp.angle = mo.angle
+                mo.interp.viewz = if c.not_null(mo.player) then mo.player.viewz else 0
+                mo.interp.snap = snap_id
+            th = th.next
+        for k in 0..r.numsectors do
+            let sec = &r.sectors[k]
+            sec.oldfloorheight = sec.floorheight
+            sec.oldceilingheight = sec.ceilingheight
+        for k in 0..p.numlinespecials do
+            let ln = p.linespeciallist[k]
+            if ln.special == 48 then scroll_prev[k] = r.sides[ln.sidenum[0]].textureoffset
+        let pl = &ds.players[ds.consoleplayer]
+        for k in 0..2 do
+            psp_sx[k] = pl.psprites[k].sx
+            psp_sy[k] = pl.psprites[k].sy
+            psp_state[k] = (usize) pl.psprites[k].state
+
+    private let save_mobj = (mo: mobj*) ->
+        if (i64) nsaved == saved.len then
+            let bigger = alloc(interp_saved[] { len = if saved.len == 0 then 1024i64 else saved.len * 2 })!
+            for k in 0..nsaved do bigger[k] = saved[k]
+            if saved.len > 0 then free(saved)
+            saved = bigger
+        saved[nsaved] = interp_saved { mo = mo, x = mo.x, y = mo.y, z = mo.z, angle = mo.angle }
+        nsaved = nsaved + 1
+
+    // The console player's view angle: the blended keyboard turn, the
+    // latest tic's mouse turn in full, and the mouse turn still pending.
+    private let player_angle = (pl: player*, mo: mobj*, f: i32) ->
+        let predict = !ds.paused && !ds.menuactive && !ds.demoplayback
+                      && pl.playerstate == pst.live && mo.reactiontime == 0
+        if !predict then lerp_angle(mo.interp.angle, mo.angle, f)
+        else
+            let mouse = (u32) ((i64) g.last_mouse_turn << 16)
+            let keys = (i32) (mo.angle - mo.interp.angle - mouse)
+            let behind = (u32) (i32) (((i64) keys * (i64) (65536 - f)) >> 16)
+            mo.angle - behind + (u32) ((i64) g.pending_mouse_turn() << 16)
+
+    // Blend to fraction f (0..65536) of the way through the latest tic.
+    let begin = (f: i32) ->
+        active = false
+        if snap_setup != p.setup_count || ds.gamestate != gs.level then return
+        active = true
+        nsaved = 0
+        let pl = &ds.players[ds.consoleplayer]
+        let cap = &ds.thinkercap
+        let mut th = cap.next
+        loop
+            if th == cap then break
+            if th.function == thinkf.mobj then
+                let mo = (mobj*) th
+                let ip = &mo.interp
+                if ip.snap == snap_id && !far(ip.x, mo.x) && !far(ip.y, mo.y) && !far(ip.z, mo.z) then
+                    save_mobj(mo)
+                    let angle = if mo == pl.mo then player_angle(pl, mo, f)
+                                else lerp_angle(ip.angle, mo.angle, f)
+                    mo.x = lerp(ip.x, mo.x, f)
+                    mo.y = lerp(ip.y, mo.y, f)
+                    mo.z = lerp(ip.z, mo.z, f)
+                    mo.angle = angle
+            th = th.next
+        cur_viewz = pl.viewz
+        if c.not_null(pl.mo) && pl.mo.interp.snap == snap_id && !far(pl.mo.interp.viewz, pl.viewz) then
+            pl.viewz = lerp(pl.mo.interp.viewz, pl.viewz, f)
+        if sec_floor.len < r.numsectors then
+            if sec_floor.len > 0 then
+                free(sec_floor)
+                free(sec_ceil)
+            sec_floor = alloc(i32[] { len = r.numsectors })!
+            sec_ceil = alloc(i32[] { len = r.numsectors })!
+        for k in 0..r.numsectors do
+            let sec = &r.sectors[k]
+            sec_floor[k] = sec.floorheight
+            sec_ceil[k] = sec.ceilingheight
+            sec.floorheight = lerp(sec.oldfloorheight, sec.floorheight, f)
+            sec.ceilingheight = lerp(sec.oldceilingheight, sec.ceilingheight, f)
+        for k in 0..p.numlinespecials do
+            let ln = p.linespeciallist[k]
+            if ln.special == 48 then
+                let sd = &r.sides[ln.sidenum[0]]
+                scroll_cur[k] = sd.textureoffset
+                sd.textureoffset = lerp(scroll_prev[k], sd.textureoffset, f)
+        for k in 0..2 do
+            let psp = &pl.psprites[k]
+            cur_psp_sx[k] = psp.sx
+            cur_psp_sy[k] = psp.sy
+            if (usize) psp.state == psp_state[k] then
+                psp.sx = lerp(psp_sx[k], psp.sx, f)
+                psp.sy = lerp(psp_sy[k], psp.sy, f)
+
+    // Put back everything begin() changed, in reverse order.
+    let finish = () ->
+        if !active then return
+        active = false
+        let pl = &ds.players[ds.consoleplayer]
+        for k in 0..2 do
+            pl.psprites[1 - k].sx = cur_psp_sx[1 - k]
+            pl.psprites[1 - k].sy = cur_psp_sy[1 - k]
+        let mut k = p.numlinespecials - 1
+        loop
+            if k < 0 then break
+            let ln = p.linespeciallist[k]
+            if ln.special == 48 then r.sides[ln.sidenum[0]].textureoffset = scroll_cur[k]
+            k = k - 1
+        for j in 0..r.numsectors do
+            r.sectors[j].floorheight = sec_floor[j]
+            r.sectors[j].ceilingheight = sec_ceil[j]
+        pl.viewz = cur_viewz
+        for j in 0..nsaved do
+            let s = &saved[j]
+            s.mo.x = s.x
+            s.mo.y = s.y
+            s.mo.z = s.z
+            s.mo.angle = s.angle

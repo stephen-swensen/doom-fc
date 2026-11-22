@@ -76,7 +76,7 @@ Doom's C files call each other in every direction, so:
   every `r_*.c`. The layering, low to high, is: libc/sdl2, tables/info,
   `fx`/`dd`/... constants in defs.fc, `i`/`z`/`w` (system.fc), `ds`
   (doomstat), `v`/`iv`, `r`, `isnd`/`snd`/`musplay`, `p`, `hu`/`st`,
-  `amap`, `wipe`/`f`/`wi`, `misc`/`m`, `g`, `d`.
+  `amap`, `wipe`/`f`/`wi`, `misc`/`m`, `g`, `interp`, `d`.
 - **Upward calls go through the forwarders at the top of `main.fc`**
   (`g_player_reborn`, `st_start`, `am_stop`, `g_world_done`,
   `d_start_title`, `i_quit`, ...). Entry-file functions sit outside the
@@ -128,6 +128,15 @@ Doom's C files call each other in every direction, so:
   `r.init_resolution` the renderer buffers, and the view size, automap,
   status bar and intermission backdrop are redone. Anything new that caches
   a screen pointer or a screen-sized buffer must be redone there too.
+- **Frame interpolation (`interp.fc`, between `g` and `d`) writes blended
+  values into live playsim fields around D_Display and restores them
+  after.** So D_Display and everything it calls must never change playsim
+  state, or the restore will clobber it. Something new that moves and is
+  drawn must be added to `interp.snapshot` / `begin` / `finish`, or it
+  steps at 35 Hz. `mobj.interp` must stay the last field of `mobj`:
+  savegames store `p.saved_mobj_size` bytes, which leaves it off, so old
+  saves still load. `-interptest` blends every headless frame, and `make
+  check` requires demo traces to match with it.
 - In-memory `short` fields are `i32`. On-disk map lumps are decoded
   explicitly in `p.load_*`. `ticcmd` keeps exact widths (`i8`/`i16`/`u8`),
   because demos depend on them.

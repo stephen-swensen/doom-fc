@@ -203,6 +203,14 @@ module iv =
     let mut drawable_w = 0
     let mut drawable_h = 0
     let mut refresh_hz = 0
+    // Frame interpolation (set by d): a frame per display refresh rather
+    // than per tic. Present() normally waits for vsync, but a renderer can
+    // claim vsync and not wait (SDL's dummy driver does), so finish_update
+    // also holds each frame to 3/4 of a refresh period: with real vsync
+    // the present still lands on the next refresh, and without it the
+    // game draws at 4/3 the refresh rate instead of spinning.
+    let mut frame_interp = false
+    let mut last_present_us = 0i64
     // Texture pixels per screen pixel. When the render factor is below
     // what the drawable could take (a pinned low factor, or the max_scale
     // cap), the frame is replicated in software up to that size, so SDL's
@@ -310,7 +318,7 @@ module iv =
             query_display()
             repick()
             let how = if want_native then " native 4:3" else ""
-            i.print(alloca("I_InitGraphics: drawable %d{drawable_w}x%d{drawable_h}, render scale %d{want_hires}x%s{how}\n"))
+            i.print(alloca("I_InitGraphics: drawable %d{drawable_w}x%d{drawable_h} at %d{refresh_hz} Hz, render scale %d{want_hires}x%s{how}\n"))
 
     // Match the streaming texture to the screens and the drawable.
     let sync_texture = () ->
@@ -391,6 +399,14 @@ module iv =
             ignore sdl2.clear(renderer)
             ignore sdl2.render_copy(renderer, texture, default(any*), default(any*))
             dbg_mark_work_end()
+            if frame_interp then
+                let hz = if refresh_hz > 0 then refresh_hz else 60
+                let due = last_present_us + 750000i64 / (i64) hz
+                loop
+                    let left = due - i.get_time_us()
+                    if left <= 0i64 then break
+                    if left > 1500i64 then i.sleep_ms(1) else void()
+                last_present_us = i.get_time_us()
             sdl2.present(renderer)
             dbg_frame_presented()
 
@@ -436,13 +452,19 @@ module iv =
     let dbg_mark_work_end = () ->
         dbg_work_us = i.get_time_us() - dbg_work_start
 
+    // The frame period presentation aims for: a tic, or a display refresh
+    // with frame interpolation.
+    let frame_ms = () ->
+        if frame_interp && refresh_hz > 0 then 1000.0 / (f64) refresh_hz else tic_ms
+
     let dbg_frame_presented = () ->
         let now = i.get_time_us()
         let work = (f64) dbg_work_us / 1000.0
         dbg_work_ms = if dbg_work_ms > 0.0 then dbg_work_ms * 0.9 + work * 0.1 else work
         if dbg_last_present > 0i64 then
             let ms = (f64) (now - dbg_last_present) / 1000.0
-            let dev = if ms > tic_ms then ms - tic_ms else tic_ms - ms
+            let target = frame_ms()
+            let dev = if ms > target then ms - target else target - ms
             dbg_jitter_ms = if dbg_ms > 0.0 then dbg_jitter_ms * 0.9 + dev * 0.1 else dev
             dbg_ms = if dbg_ms > 0.0 then dbg_ms * 0.9 + ms * 0.1 else ms
         dbg_last_present = now
@@ -513,7 +535,7 @@ module iv =
         let s = let t = (v.hires * present + 1) / 2 in if t < 1 then 1 else t
         let fps = if dbg_ms > 0.0 then (i32) (1000.0 / dbg_ms + 0.5) else 0
         let work = (i32) (dbg_work_ms + 0.5)
-        let budget = (i32) (tic_ms + 0.5)
+        let budget = (i32) (frame_ms() + 0.5)
         let mode = if effective_pref() == 0 then "auto" else "fixed"
         let aspect = if v.native then " 4:3" else ""
         let hz = if refresh_hz > 0 then (const str) alloca(" %d{refresh_hz}hz") else ""
@@ -531,7 +553,7 @@ module iv =
             if lw > maxw then maxw = lw
         let right = tex_w - margin
         dbg_dim(right - maxw - 2 * s, 0, tex_w, margin + line_h * 4 + s)
-        let over = dbg_work_ms > tic_ms
+        let over = dbg_work_ms > frame_ms()
         for k in 0..4 do
             let red = k == 0 && (dbg_hitch > 0 || over)
             let mut x = right - dbg_text_width(lines[k], s)
