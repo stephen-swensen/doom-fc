@@ -278,7 +278,7 @@ module g =
         // -tictrace: one line per tic, the format tools/refdemo prints
         if tictrace then
             let mo = ds.players[ds.consoleplayer].mo
-            if c.not_null(mo) then
+            if mem.not_null(mo) then
                 i.print(alloca("T %d{ds.gametic} %d{rnd.prndindex} %d{mo.x} %d{mo.y} %d{ds.players[ds.consoleplayer].health}\n"))
 
     // Can when a player completes a level.
@@ -319,7 +319,7 @@ module g =
     // Returns false if the player cannot be respawned at the given
     // mapthing_t spot because something is occupying it
     let check_spot = (playernum: i32, mthing: const mapthing*) ->
-        if c.is_null(ds.players[playernum].mo) then
+        if mem.is_null(ds.players[playernum].mo) then
             // first spawn of level, before corpses
             for k in 0..playernum do
                 if ds.players[k].mo.x == mthing.x << 16 && ds.players[k].mo.y == mthing.y << 16 then return false
@@ -476,7 +476,7 @@ module g =
             p.save_p = buf.ptr + savestringsize
             // skip the description field
             let vcheck = "version %d{dd.version}"
-            let have = c.name_view(p.save_p, versionsize)
+            let have = mem.name_view(p.save_p, versionsize)
             if have != vcheck then return    // bad version
             p.save_p = p.save_p + versionsize
             // *save_p++
@@ -508,9 +508,9 @@ module g =
     let do_save_game = () ->
         let name = misc.save_name(ds.savegameslot)
         defer free(name)
-        if c.is_null(savebuffer) then savebuffer = alloc(u8, (i64) savegamesize + 0x10000)!
+        if mem.is_null(savebuffer) then savebuffer = alloc(u8, (i64) savegamesize + 0x10000)!
         p.save_p = savebuffer
-        c.memcpy((any*) p.save_p, (const any*) ds.savedescription.ptr, (i64) savestringsize)
+        mem.memcpy((any*) p.save_p, (const any*) ds.savedescription.ptr, (i64) savestringsize)
         p.save_p = p.save_p + savestringsize
         let vs = "version %d{dd.version}"
         for k in 0..versionsize do *(p.save_p + k) = if k < vs.len then vs[k] else 0u8
@@ -750,7 +750,7 @@ module g =
         if argv.check_parm("-demostats") != 0 then
             let pl = &ds.players[ds.consoleplayer]
             let mo = pl.mo
-            if c.not_null(mo) then
+            if mem.not_null(mo) then
                 i.print(alloca("DEMOEND gametic=%d{ds.gametic} map=E%d{ds.gameepisode}M%d{ds.gamemap} health=%d{pl.health} kills=%d{pl.killcount} items=%d{pl.itemcount} secrets=%d{pl.secretcount} x=%d{mo.x} y=%d{mo.y} rnd=%d{rnd.prndindex}\n"))
             else
                 i.print(alloca("DEMOEND gametic=%d{ds.gametic} gamestate=%d{ds.gamestate} rnd=%d{rnd.prndindex}\n"))

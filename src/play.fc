@@ -216,8 +216,8 @@ module p =
     // p_maputl
     // ==================================================================
     let aprox_distance = (dx0: i32, dy0: i32) ->
-        let dx = c.iabs(dx0)
-        let dy = c.iabs(dy0)
+        let dx = fx.iabs(dx0)
+        let dy = fx.iabs(dy0)
         if dx < dy then dx + dy - (dx >> 1) else dx + dy - (dy >> 1)
 
     let point_on_line_side = (x: i32, y: i32, ln: const line*) ->
@@ -306,12 +306,12 @@ module p =
 
     let unset_thing_position = (thing: mobj*) ->
         if (thing.flags & mf.nosector) == 0 then
-            if c.not_null(thing.snext) then thing.snext.sprev = thing.sprev
-            if c.not_null(thing.sprev) then thing.sprev.snext = thing.snext
+            if mem.not_null(thing.snext) then thing.snext.sprev = thing.sprev
+            if mem.not_null(thing.sprev) then thing.sprev.snext = thing.snext
             else thing.subsector.sector.thinglist = thing.snext
         if (thing.flags & mf.noblockmap) == 0 then
-            if c.not_null(thing.bnext) then thing.bnext.bprev = thing.bprev
-            if c.not_null(thing.bprev) then thing.bprev.bnext = thing.bnext
+            if mem.not_null(thing.bnext) then thing.bnext.bprev = thing.bprev
+            if mem.not_null(thing.bprev) then thing.bprev.bnext = thing.bnext
             else
                 let blockx = (thing.x - bmaporgx) >> mapblockshift
                 let blocky = (thing.y - bmaporgy) >> mapblockshift
@@ -325,7 +325,7 @@ module p =
             let sec = ss.sector
             thing.sprev = default(mobj*)
             thing.snext = sec.thinglist
-            if c.not_null(sec.thinglist) then sec.thinglist.sprev = thing
+            if mem.not_null(sec.thinglist) then sec.thinglist.sprev = thing
             sec.thinglist = thing
         if (thing.flags & mf.noblockmap) == 0 then
             let blockx = (thing.x - bmaporgx) >> mapblockshift
@@ -334,7 +334,7 @@ module p =
                 let link = blocklinks + (blocky * bmapwidth + blockx)
                 thing.bprev = default(mobj*)
                 thing.bnext = *link
-                if c.not_null(*link) then (*link).bprev = thing
+                if mem.not_null(*link) then (*link).bprev = thing
                 *link = thing
             else
                 thing.bnext = default(mobj*)
@@ -359,7 +359,7 @@ module p =
         else
             let mut mo = *(blocklinks + (y * bmapwidth + x))
             loop
-                if c.is_null(mo) then break true
+                if mem.is_null(mo) then break true
                 // the callback may unlink mo (P_RemoveMobj), but its bnext
                 // stays valid, as in the original
                 if !func(mo) then break false
@@ -397,7 +397,7 @@ module p =
         make_divline(ld, &dl)
         let frac = intercept_vector(&trace, &dl)
         if frac < 0 then return true
-        if earlyout && frac < fx.fracunit && c.is_null(ld.backsector) then return false
+        if earlyout && frac < fx.fracunit && mem.is_null(ld.backsector) then return false
         add_intercept(frac, true, default(mobj*), ld)
         true
 
@@ -467,11 +467,11 @@ module p =
         if xt2 > xt1 then
             mapxstep = 1
             partial = fx.fracunit - ((x1 >> mapbtofrac) & (fx.fracunit - 1))
-            ystep = fx.div(y2 - y1, c.iabs(x2 - x1))
+            ystep = fx.div(y2 - y1, fx.iabs(x2 - x1))
         else if xt2 < xt1 then
             mapxstep = -1
             partial = (x1 >> mapbtofrac) & (fx.fracunit - 1)
-            ystep = fx.div(y2 - y1, c.iabs(x2 - x1))
+            ystep = fx.div(y2 - y1, fx.iabs(x2 - x1))
         else
             mapxstep = 0
             partial = fx.fracunit
@@ -480,11 +480,11 @@ module p =
         if yt2 > yt1 then
             mapystep = 1
             partial = fx.fracunit - ((y1 >> mapbtofrac) & (fx.fracunit - 1))
-            xstep = fx.div(x2 - x1, c.iabs(y2 - y1))
+            xstep = fx.div(x2 - x1, fx.iabs(y2 - y1))
         else if yt2 < yt1 then
             mapystep = -1
             partial = (y1 >> mapbtofrac) & (fx.fracunit - 1)
-            xstep = fx.div(x2 - x1, c.iabs(y2 - y1))
+            xstep = fx.div(x2 - x1, fx.iabs(y2 - y1))
         else
             mapystep = 0
             partial = fx.fracunit
@@ -580,11 +580,11 @@ module p =
                 ymove = 0
             if !try_move(mo, ptryx, ptryy) then
                 // blocked move
-                if c.not_null(mo.player) then
+                if mem.not_null(mo.player) then
                     slide_move(mo)
                 else if (mo.flags & mf.missile) != 0 then
                     // explode a missile
-                    if c.not_null(ceilingline) && c.not_null(ceilingline.backsector)
+                    if mem.not_null(ceilingline) && mem.not_null(ceilingline.backsector)
                         && ceilingline.backsector.ceilingpic == ds.skyflatnum then
                         // Hack to prevent missiles exploding against the sky.
                         remove_mobj(mo)
@@ -595,7 +595,7 @@ module p =
                     mo.momy = 0
             if xmove == 0 && ymove == 0 then break
         // slow down
-        if c.not_null(pl) && (pl.cheats & cf.nomomentum) != 0 then
+        if mem.not_null(pl) && (pl.cheats & cf.nomomentum) != 0 then
             mo.momx = 0
             mo.momy = 0
             return
@@ -607,9 +607,9 @@ module p =
                 || mo.momy > fx.fracunit / 4 || mo.momy < 0 - fx.fracunit / 4 then
                 if mo.floorz != mo.subsector.sector.floorheight then return
         if mo.momx > 0 - stopspeed && mo.momx < stopspeed && mo.momy > 0 - stopspeed && mo.momy < stopspeed
-            && (c.is_null(pl) || (pl.cmd.forwardmove == 0i8 && pl.cmd.sidemove == 0i8)) then
+            && (mem.is_null(pl) || (pl.cmd.forwardmove == 0i8 && pl.cmd.sidemove == 0i8)) then
             // if in a walking frame, stop moving
-            if c.not_null(pl) && (u32) (mobj_index(pl.mo.state) - sn.play_run1) < 4u32 then
+            if mem.not_null(pl) && (u32) (mobj_index(pl.mo.state) - sn.play_run1) < 4u32 then
                 ignore set_mobj_state(pl.mo, sn.play)
             mo.momx = 0
             mo.momy = 0
@@ -619,12 +619,12 @@ module p =
 
     let z_movement = (mo: mobj*) ->
         // check for smooth step up
-        if c.not_null(mo.player) && mo.z < mo.floorz then
+        if mem.not_null(mo.player) && mo.z < mo.floorz then
             mo.player.viewheight = mo.player.viewheight - (mo.floorz - mo.z)
             mo.player.deltaviewheight = (viewheight - mo.player.viewheight) >> 3
         // adjust height
         mo.z = mo.z + mo.momz
-        if (mo.flags & mf.float) != 0 && c.not_null(mo.target) then
+        if (mo.flags & mf.float) != 0 && mem.not_null(mo.target) then
             // float down towards target if too close
             if (mo.flags & mf.skullfly) == 0 && (mo.flags & mf.infloat) == 0 then
                 let dist = aprox_distance(mo.x - mo.target.x, mo.y - mo.target.y)
@@ -636,7 +636,7 @@ module p =
             // hit the floor
             if (mo.flags & mf.skullfly) != 0 then mo.momz = 0 - mo.momz
             if mo.momz < 0 then
-                if c.not_null(mo.player) && mo.momz < 0 - gravity * 8 then
+                if mem.not_null(mo.player) && mo.momz < 0 - gravity * 8 then
                     // Squat down. Decrease viewheight for a moment after hitting the ground.
                     mo.player.deltaviewheight = mo.momz >> 3
                     snd.start_sound(mo, sfx.oof)
@@ -914,13 +914,13 @@ module p =
         // see which target is to be aimed at
         let mut an = source.angle
         let mut slope = aim_line_attack(source, an, 16 * 64 * fx.fracunit)
-        if c.is_null(linetarget) then
+        if mem.is_null(linetarget) then
             an = an + (1u32 << 26)
             slope = aim_line_attack(source, an, 16 * 64 * fx.fracunit)
-            if c.is_null(linetarget) then
+            if mem.is_null(linetarget) then
                 an = an - (2u32 << 26)
                 slope = aim_line_attack(source, an, 16 * 64 * fx.fracunit)
-            if c.is_null(linetarget) then
+            if mem.is_null(linetarget) then
                 an = source.angle
                 slope = 0
         let x = source.x
@@ -960,11 +960,11 @@ module p =
     let pit_stomp_thing = (thing: mobj*) ->
         if (thing.flags & mf.shootable) == 0 then return true
         let blockdist = thing.radius + tmthing.radius
-        if c.iabs(thing.x - tmx) >= blockdist || c.iabs(thing.y - tmy) >= blockdist then return true
+        if fx.iabs(thing.x - tmx) >= blockdist || fx.iabs(thing.y - tmy) >= blockdist then return true
         // don't clip against self
         if thing == tmthing then return true
         // monsters don't stomp things except on boss level
-        if c.is_null(tmthing.player) && ds.gamemap != 30 then return false
+        if mem.is_null(tmthing.player) && ds.gamemap != 30 then return false
         damage_mobj(thing, tmthing, tmthing, 10000)
         true
 
@@ -1012,10 +1012,10 @@ module p =
             return true
         if box_on_line_side(tmbbox, ld) != -1 then return true
         // A line has been hit
-        if c.is_null(ld.backsector) then return false    // one sided line
+        if mem.is_null(ld.backsector) then return false    // one sided line
         if (tmthing.flags & mf.missile) == 0 then
             if (ld.flags & ml.blocking) != 0 then return false    // explicitly blocking everything
-            if c.is_null(tmthing.player) && (ld.flags & ml.blockmonsters) != 0 then return false
+            if mem.is_null(tmthing.player) && (ld.flags & ml.blockmonsters) != 0 then return false
         // set openrange, opentop, openbottom
         line_opening(ld)
         // adjust floor / ceiling heights
@@ -1033,7 +1033,7 @@ module p =
     let pit_check_thing = (thing: mobj*) ->
         if (thing.flags & (mf.solid | mf.special | mf.shootable)) == 0 then return true
         let blockdist = thing.radius + tmthing.radius
-        if c.iabs(thing.x - tmx) >= blockdist || c.iabs(thing.y - tmy) >= blockdist then
+        if fx.iabs(thing.x - tmx) >= blockdist || fx.iabs(thing.y - tmy) >= blockdist then
             return true    // didn't hit it
         // don't clip against self
         if thing == tmthing then return true
@@ -1053,7 +1053,7 @@ module p =
             if tmthing.z > thing.z + thing.height then return true    // overhead
             if tmthing.z + tmthing.height < thing.z then return true    // underneath
             let tt = tmthing.target
-            if c.not_null(tt) && (tt.type == thing.type
+            if mem.not_null(tt) && (tt.type == thing.type
                 || (tt.type == mt.knight && thing.type == mt.bruiser)
                 || (tt.type == mt.bruiser && thing.type == mt.knight)) then
                 // Don't hit same species as originator.
@@ -1347,7 +1347,7 @@ module p =
                 // don't shoot the sky!
                 if z > li.frontsector.ceilingheight then return false
                 // it's a sky hack wall
-                if c.not_null(li.backsector) && li.backsector.ceilingpic == ds.skyflatnum then return false
+                if mem.not_null(li.backsector) && li.backsector.ceilingpic == ds.skyflatnum then return false
             // Spawn bullet puffs.
             spawn_puff(x, y, z)
             // don't go any farther
@@ -1386,7 +1386,7 @@ module p =
         attackrange = distance
         linetarget = default(mobj*)
         ignore path_traverse(t1.x, t1.y, x2, y2, pt_addlines | pt_addthings, ptr_aim_traverse)
-        if c.not_null(linetarget) then aimslope else 0
+        if mem.not_null(linetarget) then aimslope else 0
 
     // If damage == 0, it is just a test trace that will leave linetarget set.
     let line_attack = (t1: mobj*, angle: u32, distance: i32, sl: i32, damage: i32) ->
@@ -1437,8 +1437,8 @@ module p =
         if (thing.flags & mf.shootable) == 0 then return true
         // Boss spider and cyborg take no damage from concussion.
         if thing.type == mt.cyborg || thing.type == mt.spider then return true
-        let dx = c.iabs(thing.x - bombspot.x)
-        let dy = c.iabs(thing.y - bombspot.y)
+        let dx = fx.iabs(thing.x - bombspot.x)
+        let dy = fx.iabs(thing.y - bombspot.y)
         let mut dist = if dx > dy then dx else dy
         dist = (dist - thing.radius) >> 16
         if dist < 0 then dist = 0
@@ -1908,18 +1908,18 @@ module p =
         if target.type != mt.skull then target.flags = target.flags & ~mf.nogravity
         target.flags = target.flags | mf.corpse | mf.dropoff
         target.height = target.height >> 2
-        if c.not_null(source) && c.not_null(source.player) then
+        if mem.not_null(source) && mem.not_null(source.player) then
             // count for intermission
             if (target.flags & mf.countkill) != 0 then source.player.killcount = source.player.killcount + 1
-            if c.not_null(target.player) then
+            if mem.not_null(target.player) then
                 let n = player_index(target.player)
                 source.player.frags[n] = source.player.frags[n] + 1
         else if !ds.netgame && (target.flags & mf.countkill) != 0 then
             // count all monster deaths, even those caused by other monsters
             ds.players[0].killcount = ds.players[0].killcount + 1
-        if c.not_null(target.player) then
+        if mem.not_null(target.player) then
             // count environment kills against you
-            if c.is_null(source) then
+            if mem.is_null(source) then
                 let n = player_index(target.player)
                 target.player.frags[n] = target.player.frags[n] + 1
             target.flags = target.flags & ~mf.solid
@@ -1957,11 +1957,11 @@ module p =
             target.momy = 0
             target.momz = 0
         let pl = target.player
-        if c.not_null(pl) && ds.gameskill == sk.baby then damage = damage >> 1    // take half damage in trainer mode
+        if mem.not_null(pl) && ds.gameskill == sk.baby then damage = damage >> 1    // take half damage in trainer mode
         // Some close combat weapons should not inflict thrust and push the
         // victim out of reach, thus kick away unless using the chainsaw.
-        if c.not_null(inflictor) && (target.flags & mf.noclip) == 0
-            && (c.is_null(source) || c.is_null(source.player) || source.player.readyweapon != wp.chainsaw) then
+        if mem.not_null(inflictor) && (target.flags & mf.noclip) == 0
+            && (mem.is_null(source) || mem.is_null(source.player) || source.player.readyweapon != wp.chainsaw) then
             let mut ang = r.point_to_angle2(inflictor.x, inflictor.y, target.x, target.y)
             let mut thrust = damage * (fx.fracunit >> 3) * 100 / target.info.mass
             // make fall forwards sometimes
@@ -1973,7 +1973,7 @@ module p =
             target.momx = target.momx + fx.mul(thrust, finecosine(an))
             target.momy = target.momy + fx.mul(thrust, finesine(an))
         // player specific
-        if c.not_null(pl) then
+        if mem.not_null(pl) then
             // end of game hell hack
             if target.subsector.sector.special == 11 && damage >= target.health then
                 damage = target.health - 1
@@ -2003,7 +2003,7 @@ module p =
             target.flags = target.flags | mf.justhit    // fight back!
             ignore set_mobj_state(target, target.info.painstate)
         target.reactiontime = 0    // we're awake now...
-        if (target.threshold == 0 || target.type == mt.vile) && c.not_null(source) && source != target
+        if (target.threshold == 0 || target.type == mt.vile) && mem.not_null(source) && source != target
             && source.type != mt.vile then
             // if not intent on another player, chase after this one
             target.target = source
@@ -2052,7 +2052,7 @@ module p =
         recursive_sound(emmiter.subsector.sector, 0)
 
     let check_melee_range = (actor: mobj*) ->
-        if c.is_null(actor.target) then return false
+        if mem.is_null(actor.target) then return false
         let pl = actor.target
         let dist = aprox_distance(pl.x - actor.x, pl.y - actor.y)
         if dist >= meleerange - 20 * fx.fracunit + pl.info.radius then return false
@@ -2127,7 +2127,7 @@ module p =
             true
 
     let new_chase_dir = (actor: mobj*) ->
-        if c.is_null(actor.target) then i.fatal("P_NewChaseDir: called with no target")
+        if mem.is_null(actor.target) then i.fatal("P_NewChaseDir: called with no target")
         let olddir = actor.movedir
         let turnaround = opposite[olddir]
         let deltax = actor.target.x - actor.x
@@ -2143,7 +2143,7 @@ module p =
             actor.movedir = diags[((if deltay < 0 then 1 else 0) << 1) + (if deltax > 0 then 1 else 0)]
             if actor.movedir != turnaround && try_walk(actor) then return
         // try other directions
-        if rnd.p_random() > 200 || c.iabs(deltay) > c.iabs(deltax) then
+        if rnd.p_random() > 200 || fx.iabs(deltay) > fx.iabs(deltax) then
             let tdir = d1
             d1 = d2
             d2 = tdir
@@ -2233,7 +2233,7 @@ module p =
         actor.threshold = 0    // any shot will wake up
         let targ = actor.subsector.sector.soundtarget
         let mut seen = false
-        if c.not_null(targ) && (targ.flags & mf.shootable) != 0 then
+        if mem.not_null(targ) && (targ.flags & mf.shootable) != 0 then
             actor.target = targ
             if (actor.flags & mf.ambush) != 0 then
                 if check_sight(actor, actor.target) then seen = true
@@ -2259,7 +2259,7 @@ module p =
         if actor.reactiontime != 0 then actor.reactiontime = actor.reactiontime - 1
         // modify target threshold
         if actor.threshold != 0 then
-            if c.is_null(actor.target) || actor.target.health <= 0 then actor.threshold = 0
+            if mem.is_null(actor.target) || actor.target.health <= 0 then actor.threshold = 0
             else actor.threshold = actor.threshold - 1
         // turn towards movement direction if not there yet
         if actor.movedir < 8 then
@@ -2267,7 +2267,7 @@ module p =
             let delta = (i32) (actor.angle - ((u32) actor.movedir << 29))
             if delta > 0 then actor.angle = actor.angle - fx.ang90 / 2u32
             else if delta < 0 then actor.angle = actor.angle + fx.ang90 / 2u32
-        if c.is_null(actor.target) || (actor.target.flags & mf.shootable) == 0 then
+        if mem.is_null(actor.target) || (actor.target.flags & mf.shootable) == 0 then
             // look for a new target
             if look_for_players(actor, true) then return    // got a new target
             ignore set_mobj_state(actor, actor.info.spawnstate)
@@ -2302,14 +2302,14 @@ module p =
             snd.start_sound(actor, actor.info.activesound)
 
     let a_facetarget = (actor: mobj*) ->
-        if c.is_null(actor.target) then return
+        if mem.is_null(actor.target) then return
         actor.flags = actor.flags & ~mf.ambush
         actor.angle = r.point_to_angle2(actor.x, actor.y, actor.target.x, actor.target.y)
         if (actor.target.flags & mf.shadow) != 0 then
             actor.angle = actor.angle + (u32) ((rnd.p_random() - rnd.p_random()) << 21)
 
     let a_posattack = (actor: mobj*) ->
-        if c.is_null(actor.target) then return
+        if mem.is_null(actor.target) then return
         a_facetarget(actor)
         let mut angle = (i32) actor.angle
         let sl = aim_line_attack(actor, (u32) angle, missilerange)
@@ -2319,7 +2319,7 @@ module p =
         line_attack(actor, (u32) angle, missilerange, sl, damage)
 
     let a_sposattack = (actor: mobj*) ->
-        if c.is_null(actor.target) then return
+        if mem.is_null(actor.target) then return
         snd.start_sound(actor, sfx.shotgn)
         a_facetarget(actor)
         let bangle = (i32) actor.angle
@@ -2330,7 +2330,7 @@ module p =
             line_attack(actor, (u32) angle, missilerange, sl, damage)
 
     let a_cposattack = (actor: mobj*) ->
-        if c.is_null(actor.target) then return
+        if mem.is_null(actor.target) then return
         snd.start_sound(actor, sfx.shotgn)
         a_facetarget(actor)
         let bangle = (i32) actor.angle
@@ -2343,24 +2343,24 @@ module p =
         // keep firing unless target got out of sight
         a_facetarget(actor)
         if rnd.p_random() < 40 then return
-        if c.is_null(actor.target) || actor.target.health <= 0 || !check_sight(actor, actor.target) then
+        if mem.is_null(actor.target) || actor.target.health <= 0 || !check_sight(actor, actor.target) then
             ignore set_mobj_state(actor, actor.info.seestate)
 
     let a_spidrefire = (actor: mobj*) ->
         // keep firing unless target got out of sight
         a_facetarget(actor)
         if rnd.p_random() < 10 then return
-        if c.is_null(actor.target) || actor.target.health <= 0 || !check_sight(actor, actor.target) then
+        if mem.is_null(actor.target) || actor.target.health <= 0 || !check_sight(actor, actor.target) then
             ignore set_mobj_state(actor, actor.info.seestate)
 
     let a_bspiattack = (actor: mobj*) ->
-        if c.is_null(actor.target) then return
+        if mem.is_null(actor.target) then return
         a_facetarget(actor)
         // launch a missile
         ignore spawn_missile(actor, actor.target, mt.arachplaz)
 
     let a_troopattack = (actor: mobj*) ->
-        if c.is_null(actor.target) then return
+        if mem.is_null(actor.target) then return
         a_facetarget(actor)
         if check_melee_range(actor) then
             snd.start_sound(actor, sfx.claw)
@@ -2371,14 +2371,14 @@ module p =
         ignore spawn_missile(actor, actor.target, mt.troopshot)
 
     let a_sargattack = (actor: mobj*) ->
-        if c.is_null(actor.target) then return
+        if mem.is_null(actor.target) then return
         a_facetarget(actor)
         if check_melee_range(actor) then
             let damage = ((rnd.p_random() % 10) + 1) * 4
             damage_mobj(actor.target, actor, actor, damage)
 
     let a_headattack = (actor: mobj*) ->
-        if c.is_null(actor.target) then return
+        if mem.is_null(actor.target) then return
         a_facetarget(actor)
         if check_melee_range(actor) then
             let damage = (rnd.p_random() % 6 + 1) * 10
@@ -2388,12 +2388,12 @@ module p =
         ignore spawn_missile(actor, actor.target, mt.headshot)
 
     let a_cyberattack = (actor: mobj*) ->
-        if c.is_null(actor.target) then return
+        if mem.is_null(actor.target) then return
         a_facetarget(actor)
         ignore spawn_missile(actor, actor.target, mt.rocket)
 
     let a_bruisattack = (actor: mobj*) ->
-        if c.is_null(actor.target) then return
+        if mem.is_null(actor.target) then return
         if check_melee_range(actor) then
             snd.start_sound(actor, sfx.claw)
             let damage = (rnd.p_random() % 8 + 1) * 10
@@ -2403,7 +2403,7 @@ module p =
         ignore spawn_missile(actor, actor.target, mt.bruisershot)
 
     let a_skelmissile = (actor: mobj*) ->
-        if c.is_null(actor.target) then return
+        if mem.is_null(actor.target) then return
         a_facetarget(actor)
         actor.z = actor.z + 16 * fx.fracunit    // so missile spawns higher
         let mo = spawn_missile(actor, actor.target, mt.tracer)
@@ -2424,7 +2424,7 @@ module p =
         if th.tics < 1 then th.tics = 1
         // adjust direction
         let dest = actor.tracer
-        if c.is_null(dest) || dest.health <= 0 then return
+        if mem.is_null(dest) || dest.health <= 0 then return
         // change angle
         let exact = r.point_to_angle2(actor.x, actor.y, dest.x, dest.y)
         if exact != actor.angle then
@@ -2446,12 +2446,12 @@ module p =
         else actor.momz = actor.momz + fx.fracunit / 8
 
     let a_skelwhoosh = (actor: mobj*) ->
-        if c.is_null(actor.target) then return
+        if mem.is_null(actor.target) then return
         a_facetarget(actor)
         snd.start_sound(actor, sfx.skeswg)
 
     let a_skelfist = (actor: mobj*) ->
-        if c.is_null(actor.target) then return
+        if mem.is_null(actor.target) then return
         a_facetarget(actor)
         if check_melee_range(actor) then
             let damage = ((rnd.p_random() % 10) + 1) * 6
@@ -2469,7 +2469,7 @@ module p =
         if thing.tics != -1 then return true    // not lying still yet
         if thing.info.raisestate == sn.null then return true    // monster doesn't have a raise state
         let maxdist = thing.info.radius + info.mobjinfo[mt.vile].radius
-        if c.iabs(thing.x - viletryx) > maxdist || c.iabs(thing.y - viletryy) > maxdist then
+        if fx.iabs(thing.x - viletryx) > maxdist || fx.iabs(thing.y - viletryy) > maxdist then
             return true    // not actually touching
         corpsehit = thing
         corpsehit.momx = 0
@@ -2518,7 +2518,7 @@ module p =
     // Keep fire in front of player unless out of sight
     let a_fire = (actor: mobj*) ->
         let dest = actor.tracer
-        if c.is_null(dest) then return
+        if mem.is_null(dest) then return
         // don't move it if the vile lost sight
         if !check_sight(actor.target, dest) then return
         let an = fx.fine(dest.angle)
@@ -2538,7 +2538,7 @@ module p =
 
     // Spawn the hellfire
     let a_viletarget = (actor: mobj*) ->
-        if c.is_null(actor.target) then return
+        if mem.is_null(actor.target) then return
         a_facetarget(actor)
         // (the original passes target->x for both x and y)
         let fy = if ds.demo_compat() then actor.target.x else actor.target.y
@@ -2549,7 +2549,7 @@ module p =
         a_fire(fog)
 
     let a_vileattack = (actor: mobj*) ->
-        if c.is_null(actor.target) then return
+        if mem.is_null(actor.target) then return
         a_facetarget(actor)
         if !check_sight(actor, actor.target) then return
         snd.start_sound(actor, sfx.barexp)
@@ -2557,7 +2557,7 @@ module p =
         actor.target.momz = 1000 * fx.fracunit / actor.target.info.mass
         let an = fx.fine(actor.angle)
         let fire = actor.tracer
-        if c.is_null(fire) then return
+        if mem.is_null(fire) then return
         // move the fire between the vile and the player
         fire.x = actor.target.x - fx.mul(24 * fx.fracunit, finecosine(an))
         fire.y = actor.target.y - fx.mul(24 * fx.fracunit, finesine(an))
@@ -2607,7 +2607,7 @@ module p =
     let skullspeed = 20 * 65536
 
     let a_skullattack = (actor: mobj*) ->
-        if c.is_null(actor.target) then return
+        if mem.is_null(actor.target) then return
         let dest = actor.target
         actor.flags = actor.flags | mf.skullfly
         snd.start_sound(actor, actor.info.attacksound)
@@ -2649,7 +2649,7 @@ module p =
 
     // Spawn a lost soul and launch it at the target
     let a_painattack = (actor: mobj*) ->
-        if c.is_null(actor.target) then return
+        if mem.is_null(actor.target) then return
         a_facetarget(actor)
         a_painshootskull(actor, actor.angle)
 
@@ -2899,7 +2899,7 @@ module p =
             // Modified handling.
             if st.action != actionf.nil then
                 call_psp_action(st.action, pl, psp)
-                if c.is_null(psp.state) then break
+                if mem.is_null(psp.state) then break
             stnum = psp.state.nextstate
             if psp.tics != 0 then break
             // an initial state of 0 could cycle through
@@ -3053,7 +3053,7 @@ module p =
         let sl = aim_line_attack(pl.mo, angle, meleerange)
         line_attack(pl.mo, angle, meleerange, sl, damage)
         // turn to face target
-        if c.not_null(linetarget) then
+        if mem.not_null(linetarget) then
             snd.start_sound(pl.mo, sfx.punch)
             pl.mo.angle = r.point_to_angle2(pl.mo.x, pl.mo.y, linetarget.x, linetarget.y)
 
@@ -3064,7 +3064,7 @@ module p =
         // use meleerange + 1 se the puff doesn't skip the flash
         let sl = aim_line_attack(pl.mo, angle, meleerange + 1)
         line_attack(pl.mo, angle, meleerange + 1, sl, damage)
-        if c.is_null(linetarget) then
+        if mem.is_null(linetarget) then
             snd.start_sound(pl.mo, sfx.sawful)
             return
         snd.start_sound(pl.mo, sfx.sawhit)
@@ -3108,10 +3108,10 @@ module p =
         // see which target is to be aimed at
         let mut an = mo.angle
         bulletslope = aim_line_attack(mo, an, 16 * 64 * fx.fracunit)
-        if c.is_null(linetarget) then
+        if mem.is_null(linetarget) then
             an = an + (1u32 << 26)
             bulletslope = aim_line_attack(mo, an, 16 * 64 * fx.fracunit)
-            if c.is_null(linetarget) then
+            if mem.is_null(linetarget) then
                 an = an - (2u32 << 26)
                 bulletslope = aim_line_attack(mo, an, 16 * 64 * fx.fracunit)
 
@@ -3169,7 +3169,7 @@ module p =
             let an = mo.angle - fx.ang90 / 2u32 + fx.ang90 / 40u32 * (u32) k
             // mo->target is the originator (player) of the missile
             ignore aim_line_attack(mo.target, an, 16 * 64 * fx.fracunit)
-            if c.is_null(linetarget) then continue
+            if mem.is_null(linetarget) then continue
             ignore spawn_mobj(linetarget.x, linetarget.y, linetarget.z + (linetarget.height >> 2), mt.extrabfg)
             let mut damage = 0
             for _ in 0..15 do damage = damage + (rnd.p_random() & 7) + 1
@@ -3190,7 +3190,7 @@ module p =
         for k in 0..ps.numpsprites do
             let psp = &pl.psprites[k]
             // a null state means not active
-            if c.not_null(psp.state) then
+            if mem.not_null(psp.state) then
                 // drop tic count and possibly change state
                 // a -1 tic count never changes
                 if psp.tics != -1 then
@@ -3267,7 +3267,7 @@ module p =
         pl.deltaviewheight = 0
         onground = pl.mo.z <= pl.mo.floorz
         calc_height(pl)
-        if c.not_null(pl.attacker) && pl.attacker != pl.mo then
+        if mem.not_null(pl.attacker) && pl.attacker != pl.mo then
             let angle = r.point_to_angle2(pl.mo.x, pl.mo.y, pl.attacker.x, pl.attacker.y)
             let delta = angle - pl.mo.angle
             if delta < ang5 || delta > 0u32 - ang5 then
@@ -3380,7 +3380,7 @@ module p =
                             let oldz = thing.z
                             if !teleport_move(thing, m.x, m.y) then return 0
                             thing.z = thing.floorz    // fixme: not needed?
-                            if c.not_null(thing.player) then thing.player.viewz = thing.z + thing.player.viewheight
+                            if mem.not_null(thing.player) then thing.player.viewz = thing.z + thing.player.viewheight
                             // spawn teleport fog at source and destination
                             let mut fog = spawn_mobj(oldx, oldy, oldz, mt.tfog)
                             snd.start_sound(fog, sfx.telept)
@@ -3389,7 +3389,7 @@ module p =
                             // emit sound, where?
                             snd.start_sound(fog, sfx.telept)
                             // don't move for a bit
-                            if c.not_null(thing.player) then thing.reactiontime = 18
+                            if mem.not_null(thing.player) then thing.reactiontime = 18
                             thing.angle = m.angle
                             thing.momx = 0
                             thing.momy = 0
@@ -3404,7 +3404,7 @@ module p =
     // ==================================================================
     let alloc_thinker = (size: i64, kind: thinkf) ->
         let th = (thinker*) z.malloc(size, pu.levspec, default(any**))
-        c.memset((any*) th, 0, size)
+        mem.memset((any*) th, 0, size)
         add_thinker(th)
         th.function = kind
         th
@@ -3481,7 +3481,7 @@ module p =
             secnum = find_sector_from_line_tag(ln, secnum)
             if secnum < 0 then break
             let sec = &r.sectors[secnum]
-            if c.not_null(sec.specialdata) then continue
+            if mem.not_null(sec.specialdata) then continue
             spawn_strobe_flash(sec, slowdark, 0)
 
     // TURN LINE'S TAG LIGHTS OFF
@@ -3493,7 +3493,7 @@ module p =
                 for k in 0..sector.linecount do
                     let templine = *(sector.lines + k)
                     let tsec = get_next_sector(templine, sector)
-                    if c.is_null(tsec) then continue
+                    if mem.is_null(tsec) then continue
                     if tsec.lightlevel < min then min = tsec.lightlevel
                 sector.lightlevel = min
 
@@ -3509,7 +3509,7 @@ module p =
                     for j in 0..sector.linecount do
                         let templine = *(sector.lines + j)
                         let temp = get_next_sector(templine, sector)
-                        if c.is_null(temp) then continue
+                        if mem.is_null(temp) then continue
                         if temp.lightlevel > bright then bright = temp.lightlevel
                 sector.lightlevel = bright
 
@@ -3582,7 +3582,7 @@ module p =
             secnum = find_sector_from_line_tag(ln, secnum)
             if secnum < 0 then break
             let sec = &r.sectors[secnum]
-            if c.not_null(sec.specialdata) then continue
+            if mem.not_null(sec.specialdata) then continue
             // Find lowest & highest floors around sector
             rtn = 1
             let pl = (plat*) alloc_thinker(sizeof(plat), thinkf.plat_raise)
@@ -3631,14 +3631,14 @@ module p =
     let activate_in_stasis = (tag: i32) ->
         for k in 0..maxplats do
             let ap = activeplats[k]
-            if c.not_null(ap) && ap.tag == tag && ap.status == plat_in_stasis then
+            if mem.not_null(ap) && ap.tag == tag && ap.status == plat_in_stasis then
                 ap.status = ap.oldstatus
                 ap.thinker.function = thinkf.plat_raise
 
     let ev_stop_plat = (ln: line*) ->
         for j in 0..maxplats do
             let ap = activeplats[j]
-            if c.not_null(ap) && ap.status != plat_in_stasis && ap.tag == ln.tag then
+            if mem.not_null(ap) && ap.status != plat_in_stasis && ap.tag == ln.tag then
                 ap.oldstatus = ap.status
                 ap.status = plat_in_stasis
                 ap.thinker.function = thinkf.nil
@@ -3646,7 +3646,7 @@ module p =
     let add_active_plat = (pl: plat*) ->
         let mut placed = false
         for k in 0..maxplats do
-            if !placed && c.is_null(activeplats[k]) then
+            if !placed && mem.is_null(activeplats[k]) then
                 activeplats[k] = pl
                 placed = true
         if !placed then i.fatal("P_AddActivePlat: no more plats!")
@@ -3713,7 +3713,7 @@ module p =
             secnum = find_sector_from_line_tag(ln, secnum)
             if secnum < 0 then break
             let sec = &r.sectors[secnum]
-            if c.not_null(sec.specialdata) then continue
+            if mem.not_null(sec.specialdata) then continue
             // new door thinker
             rtn = 1
             let cl = (ceiling*) alloc_thinker(sizeof(ceiling), thinkf.move_ceiling)
@@ -3747,7 +3747,7 @@ module p =
     let add_active_ceiling = (cl: ceiling*) ->
         let mut placed = false
         for k in 0..maxceilings do
-            if !placed && c.is_null(activeceilings[k]) then
+            if !placed && mem.is_null(activeceilings[k]) then
                 activeceilings[k] = cl
                 placed = true
 
@@ -3764,7 +3764,7 @@ module p =
     let activate_in_stasis_ceiling = (ln: line*) ->
         for k in 0..maxceilings do
             let ac = activeceilings[k]
-            if c.not_null(ac) && ac.tag == ln.tag && ac.direction == 0 then
+            if mem.not_null(ac) && ac.tag == ln.tag && ac.direction == 0 then
                 ac.direction = ac.olddirection
                 ac.thinker.function = thinkf.move_ceiling
 
@@ -3773,7 +3773,7 @@ module p =
         let mut rtn = 0
         for k in 0..maxceilings do
             let ac = activeceilings[k]
-            if c.not_null(ac) && ac.tag == ln.tag && ac.direction != 0 then
+            if mem.not_null(ac) && ac.tag == ln.tag && ac.direction != 0 then
                 ac.olddirection = ac.direction
                 ac.thinker.function = thinkf.nil
                 ac.direction = 0    // in-stasis
@@ -3838,7 +3838,7 @@ module p =
     // Move a locked door up/down
     let ev_do_locked_door = (ln: line*, type: i32, thing: mobj*) ->
         let pl = thing.player
-        if c.is_null(pl) then return 0
+        if mem.is_null(pl) then return 0
         let sp = ln.special
         if sp == 99 || sp == 133 then
             // Blue Lock
@@ -3867,7 +3867,7 @@ module p =
             secnum = find_sector_from_line_tag(ln, secnum)
             if secnum < 0 then break
             let sec = &r.sectors[secnum]
-            if c.not_null(sec.specialdata) then continue
+            if mem.not_null(sec.specialdata) then continue
             // new door thinker
             rtn = 1
             let door = (vldoor*) alloc_thinker(sizeof(vldoor), thinkf.vertical_door)
@@ -3912,35 +3912,35 @@ module p =
         let sp = ln.special
         if sp == 26 || sp == 32 then
             // Blue Lock
-            if c.is_null(pl) then return
+            if mem.is_null(pl) then return
             if !pl.cards[it.bluecard] && !pl.cards[it.blueskull] then
                 pl.message = dstr.pd_bluek
                 snd.start_sound(default(mobj*), sfx.oof)
                 return
         else if sp == 27 || sp == 34 then
             // Yellow Lock
-            if c.is_null(pl) then return
+            if mem.is_null(pl) then return
             if !pl.cards[it.yellowcard] && !pl.cards[it.yellowskull] then
                 pl.message = dstr.pd_yellowk
                 snd.start_sound(default(mobj*), sfx.oof)
                 return
         else if sp == 28 || sp == 33 then
             // Red Lock
-            if c.is_null(pl) then return
+            if mem.is_null(pl) then return
             if !pl.cards[it.redcard] && !pl.cards[it.redskull] then
                 pl.message = dstr.pd_redk
                 snd.start_sound(default(mobj*), sfx.oof)
                 return
         // if the sector has an active thinker, use it
         let sec = r.sides[ln.sidenum[1]].sector
-        if c.not_null(sec.specialdata) then
+        if mem.not_null(sec.specialdata) then
             let door = (vldoor*) sec.specialdata
             if sp == 1 || sp == 26 || sp == 27 || sp == 28 || sp == 117 then
                 // ONLY FOR "RAISE" DOORS, NOT "OPEN"s
                 if door.direction == -1 then
                     door.direction = 1    // go back up
                 else
-                    if c.is_null(thing.player) then return    // JDC: bad guys never close doors
+                    if mem.is_null(thing.player) then return    // JDC: bad guys never close doors
                     door.direction = -1    // start going down immediately
                 return
         // for proper sound
@@ -4099,7 +4099,7 @@ module p =
             if secnum < 0 then break
             let mut sec = &r.sectors[secnum]
             // ALREADY MOVING?  IF SO, KEEP GOING...
-            if c.not_null(sec.specialdata) then continue
+            if mem.not_null(sec.specialdata) then continue
             // new floor thinker
             rtn = 1
             let floor = (floormove*) alloc_thinker(sizeof(floormove), thinkf.move_floor)
@@ -4207,7 +4207,7 @@ module p =
             if secnum < 0 then break
             let mut sec = &r.sectors[secnum]
             // ALREADY MOVING?  IF SO, KEEP GOING...
-            if c.not_null(sec.specialdata) then continue
+            if mem.not_null(sec.specialdata) then continue
             // new floor thinker
             rtn = 1
             let mut floor = (floormove*) alloc_thinker(sizeof(floormove), thinkf.move_floor)
@@ -4236,7 +4236,7 @@ module p =
                                 newsecnum = (i32) (tsec - r.sectors.ptr)
                                 if tsec.floorpic == texture then
                                     height = height + stairsize
-                                    if c.is_null(tsec.specialdata) then
+                                    if mem.is_null(tsec.specialdata) then
                                         sec = tsec
                                         secnum = newsecnum
                                         floor = (floormove*) alloc_thinker(sizeof(floormove), thinkf.move_floor)
@@ -4320,14 +4320,14 @@ module p =
         let mut floor = sec.floorheight
         for k in 0..sec.linecount do
             let other = get_next_sector(*(sec.lines + k), sec)
-            if c.not_null(other) && other.floorheight < floor then floor = other.floorheight
+            if mem.not_null(other) && other.floorheight < floor then floor = other.floorheight
         floor
 
     let find_highest_floor_surrounding = (sec: sector*) ->
         let mut floor = -500 * fx.fracunit
         for k in 0..sec.linecount do
             let other = get_next_sector(*(sec.lines + k), sec)
-            if c.not_null(other) && other.floorheight > floor then floor = other.floorheight
+            if mem.not_null(other) && other.floorheight > floor then floor = other.floorheight
         floor
 
     // Passed a sector and a floor height, returns the fixed point value of
@@ -4345,7 +4345,7 @@ module p =
             if k >= sec.linecount then break
             let other = get_next_sector(*(sec.lines + k), sec)
             k = k + 1
-            if c.is_null(other) then continue
+            if mem.is_null(other) then continue
             if other.floorheight > height then
                 heightlist[h] = other.floorheight
                 h = h + 1
@@ -4366,14 +4366,14 @@ module p =
         let mut height = i32.max
         for k in 0..sec.linecount do
             let other = get_next_sector(*(sec.lines + k), sec)
-            if c.not_null(other) && other.ceilingheight < height then height = other.ceilingheight
+            if mem.not_null(other) && other.ceilingheight < height then height = other.ceilingheight
         height
 
     let find_highest_ceiling_surrounding = (sec: sector*) ->
         let mut height = 0
         for k in 0..sec.linecount do
             let other = get_next_sector(*(sec.lines + k), sec)
-            if c.not_null(other) && other.ceilingheight > height then height = other.ceilingheight
+            if mem.not_null(other) && other.ceilingheight > height then height = other.ceilingheight
         height
 
     // RETURN NEXT SECTOR # THAT LINE TAG REFERS TO
@@ -4389,7 +4389,7 @@ module p =
         let mut min = max
         for k in 0..sector.linecount do
             let check = get_next_sector(*(sector.lines + k), sector)
-            if c.not_null(check) && check.lightlevel < min then min = check.lightlevel
+            if mem.not_null(check) && check.lightlevel < min then min = check.lightlevel
         min
 
     // EVENTS: Events are operations triggered by using, crossing, or
@@ -4400,7 +4400,7 @@ module p =
     let cross_special_line = (linenum: i32, side: i32, thing: mobj*) ->
         let ln = &r.lines[linenum]
         // Triggers that other things can activate
-        if c.is_null(thing.player) then
+        if mem.is_null(thing.player) then
             // Things that should NOT trigger specials...
             let ty = thing.type
             if ty == mt.rocket || ty == mt.plasma || ty == mt.bfg || ty == mt.troopshot
@@ -4561,7 +4561,7 @@ module p =
             ds.g_secret_exit_level()
         | 125 ->
             // TELEPORT MonsterONLY
-            if c.is_null(thing.player) then
+            if mem.is_null(thing.player) then
                 ignore ev_teleport(ln, side, thing)
                 ln.special = 0
         | 130 ->
@@ -4604,7 +4604,7 @@ module p =
         | 120 -> ignore ev_do_plat(ln, blaze_dwus, 0)
         | 126 ->
             // TELEPORT MonsterONLY.
-            if c.is_null(thing.player) then ignore ev_teleport(ln, side, thing)
+            if mem.is_null(thing.player) then ignore ev_teleport(ln, side, thing)
         | 128 -> ignore ev_do_floor(ln, raise_floor_to_nearest)
         | 129 -> ignore ev_do_floor(ln, raise_floor_turbo)
         | _ -> void()
@@ -4612,7 +4612,7 @@ module p =
     // Called when a thing shoots a special line.
     let shoot_special_line = (thing: mobj*, ln: line*) ->
         // Impacts that other things can activate.
-        if c.is_null(thing.player) then
+        if mem.is_null(thing.player) then
             if ln.special != 46 then return
         match ln.special with
         | 24 ->
@@ -4706,7 +4706,7 @@ module p =
             if secnum < 0 then break
             let s1 = &r.sectors[secnum]
             // ALREADY MOVING?  IF SO, KEEP GOING...
-            if c.not_null(s1.specialdata) then continue
+            if mem.not_null(s1.specialdata) then continue
             rtn = 1
             let s2 = get_next_sector(*s1.lines, s1)
             let mut k = 0
@@ -4897,7 +4897,7 @@ module p =
         if side != 0 then
             if ln.special != 124 then return false
         // Switches that other things can activate.
-        if c.is_null(thing.player) then
+        if mem.is_null(thing.player) then
             // never open secret doors
             if (ln.flags & ml.secret) != 0 then return false
             let sp = ln.special
@@ -4984,8 +4984,8 @@ module p =
         let data = w.cache_lump_num(lump, pu.static_x)
         for k in 0..r.numvertexes do
             let ml0 = data + k * 4
-            r.vertexes[k].x = (i32) c.rd_i16(ml0) << 16
-            r.vertexes[k].y = (i32) c.rd_i16(ml0 + 2) << 16
+            r.vertexes[k].x = (i32) mem.rd_i16(ml0) << 16
+            r.vertexes[k].y = (i32) mem.rd_i16(ml0 + 2) << 16
         z.zfree((any*) data)
 
     let load_segs = (lump: i32) ->
@@ -4995,14 +4995,14 @@ module p =
         for k in 0..r.numsegs do
             let ml0 = data + k * 12
             let li = &r.segs[k]
-            li.v1 = &r.vertexes[(i32) c.rd_i16(ml0)]
-            li.v2 = &r.vertexes[(i32) c.rd_i16(ml0 + 2)]
-            li.angle = (u32) ((i32) c.rd_i16(ml0 + 4) << 16)
-            li.offset = (i32) c.rd_i16(ml0 + 10) << 16
-            let linedef = (i32) c.rd_i16(ml0 + 6)
+            li.v1 = &r.vertexes[(i32) mem.rd_i16(ml0)]
+            li.v2 = &r.vertexes[(i32) mem.rd_i16(ml0 + 2)]
+            li.angle = (u32) ((i32) mem.rd_i16(ml0 + 4) << 16)
+            li.offset = (i32) mem.rd_i16(ml0 + 10) << 16
+            let linedef = (i32) mem.rd_i16(ml0 + 6)
             let ldef = &r.lines[linedef]
             li.linedef = ldef
-            let side = (i32) c.rd_i16(ml0 + 8)
+            let side = (i32) mem.rd_i16(ml0 + 8)
             li.sidedef = &r.sides[ldef.sidenum[side]]
             li.frontsector = r.sides[ldef.sidenum[side]].sector
             if (ldef.flags & ml.twosided) != 0 then li.backsector = r.sides[ldef.sidenum[side ^ 1]].sector
@@ -5015,8 +5015,8 @@ module p =
         let data = w.cache_lump_num(lump, pu.static_x)
         for k in 0..r.numsubsectors do
             let ms = data + k * 4
-            r.subsectors[k].numlines = (i32) c.rd_i16(ms)
-            r.subsectors[k].firstline = (i32) c.rd_i16(ms + 2)
+            r.subsectors[k].numlines = (i32) mem.rd_i16(ms)
+            r.subsectors[k].firstline = (i32) mem.rd_i16(ms + 2)
         z.zfree((any*) data)
 
     let load_sectors = (lump: i32) ->
@@ -5026,13 +5026,13 @@ module p =
         for k in 0..r.numsectors do
             let ms = data + k * 26
             let ss = &r.sectors[k]
-            ss.floorheight = (i32) c.rd_i16(ms) << 16
-            ss.ceilingheight = (i32) c.rd_i16(ms + 2) << 16
-            ss.floorpic = r.flat_num_for_name(c.name_view(ms + 4, 8))
-            ss.ceilingpic = r.flat_num_for_name(c.name_view(ms + 12, 8))
-            ss.lightlevel = (i32) c.rd_i16(ms + 20)
-            ss.special = (i32) c.rd_i16(ms + 22)
-            ss.tag = (i32) c.rd_i16(ms + 24)
+            ss.floorheight = (i32) mem.rd_i16(ms) << 16
+            ss.ceilingheight = (i32) mem.rd_i16(ms + 2) << 16
+            ss.floorpic = r.flat_num_for_name(mem.name_view(ms + 4, 8))
+            ss.ceilingpic = r.flat_num_for_name(mem.name_view(ms + 12, 8))
+            ss.lightlevel = (i32) mem.rd_i16(ms + 20)
+            ss.special = (i32) mem.rd_i16(ms + 22)
+            ss.tag = (i32) mem.rd_i16(ms + 24)
             ss.thinglist = default(mobj*)
         z.zfree((any*) data)
 
@@ -5043,14 +5043,14 @@ module p =
         for k in 0..r.numnodes do
             let mn = data + k * 28
             let no = &r.nodes[k]
-            no.x = (i32) c.rd_i16(mn) << 16
-            no.y = (i32) c.rd_i16(mn + 2) << 16
-            no.dx = (i32) c.rd_i16(mn + 4) << 16
-            no.dy = (i32) c.rd_i16(mn + 6) << 16
+            no.x = (i32) mem.rd_i16(mn) << 16
+            no.y = (i32) mem.rd_i16(mn + 2) << 16
+            no.dx = (i32) mem.rd_i16(mn + 4) << 16
+            no.dy = (i32) mem.rd_i16(mn + 6) << 16
             for j in 0..2 do
-                no.children[j] = (i32) c.rd_u16(mn + 24 + j * 2)
+                no.children[j] = (i32) mem.rd_u16(mn + 24 + j * 2)
                 for kk in 0..4 do
-                    no.bbox[j * 4 + kk] = (i32) c.rd_i16(mn + 8 + j * 8 + kk * 2) << 16
+                    no.bbox[j * 4 + kk] = (i32) mem.rd_i16(mn + 8 + j * 8 + kk * 2) << 16
         z.zfree((any*) data)
 
     let load_things = (lump: i32) ->
@@ -5061,8 +5061,8 @@ module p =
             if k >= numthings then break
             let mt0 = data + k * 10
             let mth = mapthing {
-                x = (i32) c.rd_i16(mt0), y = (i32) c.rd_i16(mt0 + 2), angle = (i32) c.rd_i16(mt0 + 4),
-                type = (i32) c.rd_i16(mt0 + 6), options = (i32) c.rd_i16(mt0 + 8) }
+                x = (i32) mem.rd_i16(mt0), y = (i32) mem.rd_i16(mt0 + 2), angle = (i32) mem.rd_i16(mt0 + 4),
+                type = (i32) mem.rd_i16(mt0 + 6), options = (i32) mem.rd_i16(mt0 + 8) }
             let mut spawn = true
             // Do not spawn cool, new monsters if !commercial
             if ds.gamemode != gmode.commercial then
@@ -5085,11 +5085,11 @@ module p =
         for k in 0..r.numlines do
             let mld = data + k * 14
             let ld = &r.lines[k]
-            ld.flags = (i32) c.rd_i16(mld + 4)
-            ld.special = (i32) c.rd_i16(mld + 6)
-            ld.tag = (i32) c.rd_i16(mld + 8)
-            let v1 = &r.vertexes[(i32) c.rd_i16(mld)]
-            let v2 = &r.vertexes[(i32) c.rd_i16(mld + 2)]
+            ld.flags = (i32) mem.rd_i16(mld + 4)
+            ld.special = (i32) mem.rd_i16(mld + 6)
+            ld.tag = (i32) mem.rd_i16(mld + 8)
+            let v1 = &r.vertexes[(i32) mem.rd_i16(mld)]
+            let v2 = &r.vertexes[(i32) mem.rd_i16(mld + 2)]
             ld.v1 = v1
             ld.v2 = v2
             ld.dx = v2.x - v1.x
@@ -5110,8 +5110,8 @@ module p =
             else
                 ld.bbox[box.bottom] = v2.y
                 ld.bbox[box.top] = v1.y
-            ld.sidenum[0] = (i32) c.rd_i16(mld + 10)
-            ld.sidenum[1] = (i32) c.rd_i16(mld + 12)
+            ld.sidenum[0] = (i32) mem.rd_i16(mld + 10)
+            ld.sidenum[1] = (i32) mem.rd_i16(mld + 12)
             ld.frontsector = if ld.sidenum[0] != -1 then r.sides[ld.sidenum[0]].sector else default(sector*)
             ld.backsector = if ld.sidenum[1] != -1 then r.sides[ld.sidenum[1]].sector else default(sector*)
         z.zfree((any*) data)
@@ -5123,12 +5123,12 @@ module p =
         for k in 0..r.numsides do
             let msd = data + k * 30
             let sd = &r.sides[k]
-            sd.textureoffset = (i32) c.rd_i16(msd) << 16
-            sd.rowoffset = (i32) c.rd_i16(msd + 2) << 16
-            sd.toptexture = r.texture_num_for_name(c.name_view(msd + 4, 8))
-            sd.bottomtexture = r.texture_num_for_name(c.name_view(msd + 12, 8))
-            sd.midtexture = r.texture_num_for_name(c.name_view(msd + 20, 8))
-            sd.sector = &r.sectors[(i32) c.rd_i16(msd + 28)]
+            sd.textureoffset = (i32) mem.rd_i16(msd) << 16
+            sd.rowoffset = (i32) mem.rd_i16(msd + 2) << 16
+            sd.toptexture = r.texture_num_for_name(mem.name_view(msd + 4, 8))
+            sd.bottomtexture = r.texture_num_for_name(mem.name_view(msd + 12, 8))
+            sd.midtexture = r.texture_num_for_name(mem.name_view(msd + 20, 8))
+            sd.sector = &r.sectors[(i32) mem.rd_i16(msd + 28)]
         z.zfree((any*) data)
 
     let load_block_map = (lump: i32) ->
@@ -5141,7 +5141,7 @@ module p =
         // clear out mobj chains
         let count = (i64) sizeof(mobj*) * bmapwidth * bmapheight
         blocklinks = (mobj**) z.malloc(count, pu.level, default(any**))
-        c.memset((any*) blocklinks, 0, count)
+        mem.memset((any*) blocklinks, 0, count)
 
     // Builds sector line lists and subsector sector numbers. Finds block
     // bounding boxes for sectors.
@@ -5156,7 +5156,7 @@ module p =
             let li = &r.lines[k]
             total = total + 1
             li.frontsector.linecount = li.frontsector.linecount + 1
-            if c.not_null(li.backsector) && li.backsector != li.frontsector then
+            if mem.not_null(li.backsector) && li.backsector != li.frontsector then
                 li.backsector.linecount = li.backsector.linecount + 1
                 total = total + 1
         // build line tables for each sector
@@ -5267,17 +5267,17 @@ module p =
             if !ds.playeringame[k] then continue
             padsavep()
             let dest = (player*) save_p
-            c.memcpy((any*) dest, (const any*) &ds.players[k], sizeof(player))
+            mem.memcpy((any*) dest, (const any*) &ds.players[k], sizeof(player))
             save_p = save_p + sizeof(player)
             for j in 0..ps.numpsprites do
-                if c.not_null(dest.psprites[j].state) then
+                if mem.not_null(dest.psprites[j].state) then
                     dest.psprites[j].state = (const state*) idx_ptr((i64) mobj_index(dest.psprites[j].state))
 
     let unarchive_players = () ->
         for k in 0..dd.maxplayers do
             if !ds.playeringame[k] then continue
             padsavep()
-            c.memcpy((any*) &ds.players[k], (const any*) save_p, sizeof(player))
+            mem.memcpy((any*) &ds.players[k], (const any*) save_p, sizeof(player))
             save_p = save_p + sizeof(player)
             // will be set when unarc thinker
             let pl = &ds.players[k]
@@ -5285,7 +5285,7 @@ module p =
             pl.message = ""
             pl.attacker = default(mobj*)
             for j in 0..ps.numpsprites do
-                if c.not_null(pl.psprites[j].state) then
+                if mem.not_null(pl.psprites[j].state) then
                     pl.psprites[j].state = &info.states[ptr_idx(pl.psprites[j].state)]
 
     let put16 = (v: i32) ->
@@ -5370,10 +5370,10 @@ module p =
                 save_p = save_p + 1
                 padsavep()
                 let mo = (mobj*) save_p
-                c.memcpy((any*) mo, (const any*) th, saved_mobj_size)
+                mem.memcpy((any*) mo, (const any*) th, saved_mobj_size)
                 save_p = save_p + saved_mobj_size
                 mo.state = (const state*) idx_ptr((i64) mobj_index(mo.state))
-                if c.not_null(mo.player) then
+                if mem.not_null(mo.player) then
                     mo.player = (player*) idx_ptr((i64) (player_index(mo.player) + 1))
             th = th.next
         // add a terminating marker
@@ -5399,11 +5399,11 @@ module p =
             if tclass == tc_mobj then
                 padsavep()
                 let mo = (mobj*) z.malloc(sizeof(mobj), pu.level, default(any**))
-                c.memcpy((any*) mo, (const any*) save_p, saved_mobj_size)
+                mem.memcpy((any*) mo, (const any*) save_p, saved_mobj_size)
                 save_p = save_p + saved_mobj_size
                 mo.state = &info.states[ptr_idx(mo.state)]
                 mo.target = default(mobj*)
-                if c.not_null(mo.player) then
+                if mem.not_null(mo.player) then
                     mo.player = &ds.players[ptr_idx(mo.player) - 1]
                     mo.player.mo = mo
                 set_thing_position(mo)
@@ -5433,7 +5433,7 @@ module p =
         save_p = save_p + 1
         padsavep()
         let dest = save_p
-        c.memcpy((any*) dest, (const any*) th, size)
+        mem.memcpy((any*) dest, (const any*) th, size)
         save_p = save_p + size
         *((any**) (dest + secfield)) = idx_ptr(sector_index(sec))
 
@@ -5485,7 +5485,7 @@ module p =
     let unarchive_special = (size: i64) ->
         padsavep()
         let th = (thinker*) z.malloc(size, pu.level, default(any**))
-        c.memcpy((any*) th, (const any*) save_p, size)
+        mem.memcpy((any*) th, (const any*) save_p, size)
         save_p = save_p + size
         th
 

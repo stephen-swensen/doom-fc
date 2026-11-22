@@ -59,7 +59,7 @@ module v =
     // (see d.apply_hires).
     let set_hires = (n: i32, nat: bool) ->
         for k in 0..5 do
-            if c.not_null(screens[k]) then free(screens[k])
+            if mem.not_null(screens[k]) then free(screens[k])
         hires = n
         native = nat && native_ok(n)
         hy = if native then n * 6 / 5 else n
@@ -83,7 +83,7 @@ module v =
         let mut src = screens[srcscrn] + sw * srcy * hy + srcx * n
         let mut dest = screens[destscrn] + sw * desty * hy + destx * n
         for _ in 0..height * hy do
-            c.memcpy((any*) dest, (const any*) src, (i64) width * n)
+            mem.memcpy((any*) dest, (const any*) src, (i64) width * n)
             src = src + sw
             dest = dest + sw
 
@@ -155,7 +155,7 @@ module v =
 
     // Copy a whole screen.
     let copy_screen = (srcscrn: i32, destscrn: i32) ->
-        c.memcpy((any*) screens[destscrn], (const any*) screens[srcscrn], (i64) sw * sh)
+        mem.memcpy((any*) screens[destscrn], (const any*) screens[srcscrn], (i64) sw * sh)
 
     // Patch lookup by lump name, cached.
     let patch_named = (name: const str) ->
@@ -315,10 +315,10 @@ module iv =
                 | (if argv.check_parm("-fullscreen") > 0 then sdl2.window_fullscreen_desktop else 0u32)
             fullscreen = argv.check_parm("-fullscreen") > 0
             window = sdl2.create_window(c"doom-fc", sdl2.pos_centered, sdl2.pos_centered, 960, 720, flags)
-            if c.is_null(window) then i.fatal("SDL_CreateWindow failed")
+            if mem.is_null(window) then i.fatal("SDL_CreateWindow failed")
             renderer = sdl2.create_renderer(window, -1, sdl2.renderer_accel | sdl2.renderer_vsync)
-            if c.is_null(renderer) then renderer = sdl2.create_renderer(window, -1, sdl2.renderer_sw)
-            if c.is_null(renderer) then i.fatal("SDL_CreateRenderer failed")
+            if mem.is_null(renderer) then renderer = sdl2.create_renderer(window, -1, sdl2.renderer_sw)
+            if mem.is_null(renderer) then i.fatal("SDL_CreateRenderer failed")
             ignore sdl2.show_cursor(0)
             if argv.check_parm("-nomouse") > 0 then grabmouse = false
             if argv.check_parm("-mousemove") > 0 then novert = false
@@ -338,7 +338,7 @@ module iv =
         // share a texture, and finish_update replicates by `present`
         present = k
         if w != tex_w || h != tex_h || v.native != tex_native then
-            if c.not_null(texture) then sdl2.destroy_texture(texture)
+            if mem.not_null(texture) then sdl2.destroy_texture(texture)
             if pixels.len > 0 then free(pixels)
             tex_w = w
             tex_h = h
@@ -354,7 +354,7 @@ module iv =
     // has wedged it (see isnd). The OS reaps the rest at exit.
     let shutdown_graphics = () ->
         if !headless then
-            if c.not_null(texture) then sdl2.destroy_texture(texture)
+            if mem.not_null(texture) then sdl2.destroy_texture(texture)
             sdl2.destroy_renderer(renderer)
             sdl2.destroy_window(window)
 
@@ -399,7 +399,7 @@ module iv =
                             let o = base + x * k
                             for j in 0..k do pixels[o + j] = px
                         for rr in 1..k do
-                            c.memcpy((any*) (pixels.ptr + base + rr * pw), (const any*) (pixels.ptr + base), (i64) pw * 4)
+                            mem.memcpy((any*) (pixels.ptr + base + rr * pw), (const any*) (pixels.ptr + base), (i64) pw * 4)
             if dbg_on then dbg_draw()
             ignore sdl2.update_texture(texture, default(any*), (const any*) pixels.ptr, pw * 4)
             ignore sdl2.set_color(renderer, 0u8, 0u8, 0u8, 255u8)
@@ -418,7 +418,7 @@ module iv =
             dbg_frame_presented()
 
     let read_screen = (dest: u8*) ->
-        c.memcpy((any*) dest, (const any*) v.screens[0], (i64) v.sw * v.sh)
+        mem.memcpy((any*) dest, (const any*) v.screens[0], (i64) v.sw * v.sh)
 
     // ------------------------------------------------------------------
     // Debug overlay (-debug, or the ` key): frame rate, per-frame work
@@ -496,7 +496,7 @@ module iv =
     // brightness. Returns the advance.
     let dbg_char = (x: i32, y0: i32, ch: i32, red: bool, s: i32) ->
         let p = dbg_glyph(ch)
-        if c.is_null(p) then return 4 * s
+        if mem.is_null(p) then return 4 * s
         let pw = tex_w
         let y = y0 - (i32) p.topoffset * s
         for col in 0..(i32) p.width do
@@ -526,7 +526,7 @@ module iv =
         let mut wd = 0
         for ch in text do
             let p = dbg_glyph((i32) ch)
-            wd = wd + (if c.is_null(p) then 4 * s else ((i32) p.width + 1) * s)
+            wd = wd + (if mem.is_null(p) then 4 * s else ((i32) p.width + 1) * s)
         wd
 
     // Darken a texture rectangle behind the text.
@@ -669,7 +669,7 @@ module iv =
                 let mut n = 0
                 for ch in arg do n = n * 10 + (i32) ch - '0'
                 let mo = ds.players[ds.consoleplayer].mo
-                if c.not_null(mo) then mo.angle = (u32) (((i64) n << 32) / 360)
+                if mem.not_null(mo) then mo.angle = (u32) (((i64) n << 32) / 360)
             else if op == 'x' then
                 // test hook: exit the level (G_ExitLevel)
                 ds.g_exit_level()

@@ -12,7 +12,7 @@ module wipe =
     let mut ycols = default(i32[])
 
     let init_color_xform = (width: i32, height: i32, ticks: i32) ->
-        c.memcpy((any*) wipe_scr, (const any*) wipe_scr_start, (i64) v.sw * v.sh)
+        mem.memcpy((any*) wipe_scr, (const any*) wipe_scr_start, (i64) v.sw * v.sh)
 
     let do_color_xform = (width: i32, height: i32, ticks: i32) ->
         let mut changed = false
@@ -37,7 +37,7 @@ module wipe =
     // gives the same frames.)
     let init_melt = (width: i32, height: i32, ticks: i32) ->
         // copy start screen to main screen
-        c.memcpy((any*) wipe_scr, (const any*) wipe_scr_start, (i64) v.sw * v.sh)
+        mem.memcpy((any*) wipe_scr, (const any*) wipe_scr_start, (i64) v.sw * v.sh)
         // setup initial column positions
         // (y<0 => not ready to scroll yet). Like the original this draws
         // `width` positions though the melt uses only the first half,
@@ -62,7 +62,7 @@ module wipe =
             let dest = wipe_scr + y * pitch + x0
             let src = if y < split then wipe_scr_end + y * pitch + x0
                       else wipe_scr_start + (y - split) * pitch + x0
-            c.memcpy((any*) dest, (const any*) src, (i64) cw)
+            mem.memcpy((any*) dest, (const any*) src, (i64) cw)
 
     let do_melt = (width: i32, height: i32, ticks0: i32) ->
         let mut done = true

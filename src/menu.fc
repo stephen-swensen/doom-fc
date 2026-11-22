@@ -404,7 +404,7 @@ module m =
 
     // savegamestrings[10][SAVESTRINGSIZE]
     let save_string = (slot: i32) -> savegamestrings[slot * savestringsize .. slot * savestringsize + savestringsize]
-    let save_string_view = (slot: i32) -> c.name_view(savegamestrings.ptr + slot * savestringsize, savestringsize)
+    let save_string_view = (slot: i32) -> mem.name_view(savegamestrings.ptr + slot * savestringsize, savestringsize)
 
     let set_save_string = (slot: i32, text: const str) ->
         let s = save_string(slot)
@@ -1014,7 +1014,7 @@ module m =
             return true
         else if ch == dd.key_backspace then
             current_menu.laston = item_on
-            if c.not_null(current_menu.prev) then
+            if mem.not_null(current_menu.prev) then
                 current_menu = current_menu.prev
                 item_on = current_menu.laston
                 snd.start_sound(default(any*), sfx.swtchn)

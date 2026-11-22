@@ -77,7 +77,7 @@ module interp =
                 mo.interp.y = mo.y
                 mo.interp.z = mo.z
                 mo.interp.angle = mo.angle
-                mo.interp.viewz = if c.not_null(mo.player) then mo.player.viewz else 0
+                mo.interp.viewz = if mem.not_null(mo.player) then mo.player.viewz else 0
                 mo.interp.snap = snap_id
             th = th.next
         for k in 0..r.numsectors do
@@ -138,7 +138,7 @@ module interp =
                     mo.angle = angle
             th = th.next
         cur_viewz = pl.viewz
-        if c.not_null(pl.mo) && pl.mo.interp.snap == snap_id && !far(pl.mo.interp.viewz, pl.viewz) then
+        if mem.not_null(pl.mo) && pl.mo.interp.snap == snap_id && !far(pl.mo.interp.viewz, pl.viewz) then
             pl.viewz = lerp(pl.mo.interp.viewz, pl.viewz, f)
         if sec_floor.len < r.numsectors then
             if sec_floor.len > 0 then

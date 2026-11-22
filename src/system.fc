@@ -139,10 +139,10 @@ module z =
         b.id = zoneid
         b.prev = default(memblock*)
         b.next = blocklist
-        if c.not_null(blocklist) then blocklist.prev = b
+        if mem.not_null(blocklist) then blocklist.prev = b
         blocklist = b
         let data = (any*) (raw + header)
-        if c.not_null(user) then *user = data
+        if mem.not_null(user) then *user = data
         data
 
     private let block_of = (p: any*) ->
@@ -152,16 +152,16 @@ module z =
 
     let zfree = (p: any*) ->
         let b = block_of(p)
-        if c.not_null(b.user) then *b.user = default(any*)
-        if c.not_null(b.prev) then b.prev.next = b.next else blocklist = b.next
-        if c.not_null(b.next) then b.next.prev = b.prev
+        if mem.not_null(b.user) then *b.user = default(any*)
+        if mem.not_null(b.prev) then b.prev.next = b.next else blocklist = b.next
+        if mem.not_null(b.next) then b.next.prev = b.prev
         b.id = 0
         free(b)
 
     let free_tags = (lowtag: i32, hightag: i32) ->
         let mut b = blocklist
         loop
-            if c.is_null(b) then break
+            if mem.is_null(b) then break
             let next = b.next
             if b.tag >= lowtag && b.tag <= hightag then
                 zfree((any*) ((u8*) b + header))
@@ -211,17 +211,28 @@ module w =
             else k2 = k2 | ((u32) ch << ((idx - 4) * 8))
         { k1, k2 }
 
+    // Case-insensitive compare of two lump-style names (up to 8 chars).
+    let name8_eq = (a: const str, b: const str) ->
+        let mut k = 0
+        loop
+            if k >= 8 then break true
+            let ca = if k < a.len then text.to_upper_char(a[k]) else 0u8
+            let cb = if k < b.len then text.to_upper_char(b[k]) else 0u8
+            if ca != cb then break false
+            if ca == 0u8 then break true
+            k = k + 1
+
     // W_AddFile (WAD files only; single-lump files are not supported).
     let add_file = (path: const str) ->
         match io.read_all(path) with
         | err(_) -> i.print(alloca(" couldn't open %s{path}\n"))
         | ok(data) ->
             i.print(alloca(" adding %s{path}\n"))
-            let id = c.name_view(data.ptr, 4)
+            let id = mem.name_view(data.ptr, 4)
             if id != "IWAD" && id != "PWAD" then
                 i.fatal(alloca("Wad file %s{path} doesn't have IWAD or PWAD id"))
-            let n = c.rd_i32(data.ptr + 4)
-            let tab = c.rd_i32(data.ptr + 8)
+            let n = mem.rd_i32(data.ptr + 4)
+            let tab = mem.rd_i32(data.ptr + 8)
             let newfiles = alloc(u8[][] { len = nfiles + 1 })!
             for k in 0..nfiles do newfiles[k] = files[k]
             newfiles[nfiles] = data
@@ -232,11 +243,11 @@ module w =
             for k in 0..n do
                 let e = data.ptr + tab + k * 16
                 let li = &newinfo[numlumps + k]
-                li.position = c.rd_i32(e)
-                li.size = c.rd_i32(e + 4)
+                li.position = mem.rd_i32(e)
+                li.size = mem.rd_i32(e + 4)
                 li.file = nfiles
                 for b in 0..8 do li.name[b] = *(e + 8 + b)
-                let { k1, k2 } = key(c.name_view(e + 8, 8))
+                let { k1, k2 } = key(mem.name_view(e + 8, 8))
                 li.k1 = k1
                 li.k2 = k2
             if numlumps > 0 then free(lumpinfo)
@@ -269,18 +280,18 @@ module w =
         if lump >= numlumps then i.fatal(alloca("W_LumpLength: %d{lump} >= numlumps"))
         lumpinfo[lump].size
 
-    let lump_name = (lump: i32) -> c.name_view(lumpinfo[lump].name.ptr, 8)
+    let lump_name = (lump: i32) -> mem.name_view(lumpinfo[lump].name.ptr, 8)
 
     // W_ReadLump: copy a lump into a caller buffer.
     let read_lump = (lump: i32, dest: any*) ->
         if lump >= numlumps then i.fatal(alloca("W_ReadLump: %d{lump} >= numlumps"))
         let li = &lumpinfo[lump]
-        c.memcpy(dest, (const any*) (files[li.file].ptr + li.position), (i64) li.size)
+        mem.memcpy(dest, (const any*) (files[li.file].ptr + li.position), (i64) li.size)
 
     // W_CacheLumpNum: the lump's bytes, loaded once and kept.
     let cache_lump_num = (lump: i32, tag: i32) ->
         if lump >= numlumps || lump < 0 then i.fatal(alloca("W_CacheLumpNum: %d{lump} >= numlumps"))
-        if c.is_null(lumpcache[lump]) then
+        if mem.is_null(lumpcache[lump]) then
             let p = z.malloc((i64) lumpinfo[lump].size, tag, &lumpcache[lump])
             read_lump(lump, p)
         else if tag < pu.purgelevel then

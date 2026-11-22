@@ -63,9 +63,9 @@ module cheat =
             + ((a & 16) >> 1) + (a & 32) + ((a & 64) >> 5) + ((a & 128) >> 7)
 
     let make = (seq: const u8[]) ->
-        let mem = alloc(u8, seq.len)!
-        for k in 0..seq.len do *(mem + k) = seq[k]
-        cheatseq { sequence = mem, p = -1 }
+        let buf = alloc(u8, seq.len)!
+        for k in 0..seq.len do *(buf + k) = seq[k]
+        cheatseq { sequence = buf, p = -1 }
 
     // Called in st_stuff module, which handles the input. Returns true
     // if the cheat was successful, false if failed.
@@ -366,7 +366,7 @@ module stlib =
         mi.p = il
 
     let multicon_value = (mi: st_multicon*) ->
-        if c.not_null(mi.binum) then (if *mi.binum then 1 else 0) else *mi.inum
+        if mem.not_null(mi.binum) then (if *mi.binum then 1 else 0) else *mi.inum
 
     let update_mult_icon = (mi: st_multicon*, refresh: bool) ->
         let cur = multicon_value(mi)
@@ -534,7 +534,7 @@ module st =
                 if cheat.check(&cheat_god, ev.data1) then
                     plyr.cheats = plyr.cheats ^ cf.godmode
                     if (plyr.cheats & cf.godmode) != 0 then
-                        if c.not_null(plyr.mo) then plyr.mo.health = 100
+                        if mem.not_null(plyr.mo) then plyr.mo.health = 100
                         plyr.health = 100
                         plyr.message = dstr.ststr_dqdon
                     else
@@ -654,7 +654,7 @@ module st =
                     st_facecount = evilgrincount
                     st_faceindex = calc_pain_offset() + evilgrinoffset
         if priority < 8 then
-            if plyr.damagecount != 0 && c.not_null(plyr.attacker) && plyr.attacker != plyr.mo then
+            if plyr.damagecount != 0 && mem.not_null(plyr.attacker) && plyr.attacker != plyr.mo then
                 // being attacked
                 priority = 7
                 if plyr.health - st_oldhealth > muchpain then

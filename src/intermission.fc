@@ -132,7 +132,7 @@ module wi =
     // Repaint the background into screen 1 after the screens were
     // reallocated at a new render scale.
     let redraw_background = () ->
-        if c.not_null(bg) then v.draw_patch(0, 0, 1, bg)
+        if mem.not_null(bg) then v.draw_patch(0, 0, 1, bg)
 
     let responder = (ev: event*) -> false
 

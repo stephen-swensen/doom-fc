@@ -73,7 +73,7 @@ Doom's C files call each other in every direction, so:
 
 - Each strongly connected group of C files is **one module in one file**.
   `play.fc` (module `p`) holds every `p_*.c`. `render.fc` (module `r`) holds
-  every `r_*.c`. The layering, low to high, is: libc/sdl2, tables/info,
+  every `r_*.c`. The layering, low to high, is: `mem`/sdl2, tables/info,
   `fx`/`dd`/... constants in defs.fc, `i`/`z`/`w` (system.fc), `ds`
   (doomstat), `v`/`iv`, `r`, `isnd`/`snd`/`musplay`, `p`, `hu`/`st`,
   `amap`, `wipe`/`f`/`wi`, `misc`/`m`, `g`, `interp`, `d`.
@@ -87,12 +87,14 @@ Doom's C files call each other in every direction, so:
 - Globals are module-level `let mut`, named as in C but snake_case
   (`ds.gametic`, `r.viewx`, `p.tmfloorz`). Unlike wolf-fc, mutable module
   globals are fine here, because that is Doom's design.
-- libc is bound only for what FC lacks: `memcpy`/`memset` in libc.fc,
-  next to the `c` helpers (null tests, `iabs`, lump names, little-endian
-  readers). File I/O, the environment, exit and ASCII case use std
-  `io`/`sys`/`text`. Heap memory uses `alloc(T, n)!`/`free`, and a zeroed
-  struct is `*p = default(T)`. Numeric command-line values go through
-  `argv.int_after`, which is a fatal error on a bad value.
+- libc is bound only for what FC lacks: `memcpy`/`memset`, wrapped in
+  `mem` (mem.fc) next to the other raw-memory helpers (`mem.is_null`,
+  `mem.name_view` for NUL-padded names, the little-endian `mem.rd_*`).
+  `iabs` is `fx.iabs`, and `name8_eq` is `w.name8_eq`. File I/O, the
+  environment, exit and ASCII case use std `io`/`sys`/`text`. Heap memory
+  uses `alloc(T, n)!`/`free`, and a zeroed struct is `*p = default(T)`.
+  Numeric command-line values go through `argv.int_after`, which is a
+  fatal error on a bad value.
 - C function pointers become small dispatches. A thinker's function is
   `enum thinkf`, dispatched in `p.run_thinker`. A state's codepointer is
   `enum actionf`, dispatched in `p.call_mobj_action` / `p.call_psp_action`.
@@ -164,5 +166,5 @@ Doom's C files call each other in every direction, so:
 - Reserved words that bite in Doom code: `error`, `free`, `ok`, `none`,
   `in`, `from`. So it's `i.fatal` (I_Error), `z.zfree` (Z_Free),
   `res_ok`/`okay`, `none_x`, and `in_game`.
-- A parameter or local named after a module (`z`, `r`, `p`, `c`, `i`, `w`,
-  `v`) shadows it. That's why `spawn_mobj` takes `z0`.
+- A parameter or local named after a module (`z`, `r`, `p`, `i`, `w`, `v`,
+  `mem`, `text`, `io`) shadows it. That's why `spawn_mobj` takes `z0`.

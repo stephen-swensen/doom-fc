@@ -117,8 +117,8 @@ module isnd =
                    else w.get_num_for_name(name)
         let size = w.lump_length(lump)
         let raw = w.cache_lump_num(lump, pu.static_x)
-        let rate = (i32) c.rd_u16(raw + 2)
-        let mut len = c.rd_i32(raw + 4)
+        let rate = (i32) mem.rd_u16(raw + 2)
+        let mut len = mem.rd_i32(raw + 4)
         if len > size - 8 || len <= 0 then len = size - 8
         sfx.data = u8[] { ptr = raw + 8, len = len }
         lengths[id] = len
@@ -185,7 +185,7 @@ module isnd =
             nomusic = true
         else
             let drv = sdl2.get_current_audio_driver()
-            let drvname = if c.is_null(drv) then (const str) "?" else (const str) drv
+            let drvname = if mem.is_null(drv) then (const str) "?" else (const str) drv
             let how = if detected then (const str) "" else (const str) " (fallback)"
             let buf_ms = (f64) obtained.samples * 1000.0 / (f64) obtained.freq
             i.print(alloca("I_InitSound: driver %s{drvname}, device rate %d{output_rate} Hz%s{how}, stereo, %d{(i32) obtained.samples}-frame buffer (~%4.1f{buf_ms} ms)\n"))
@@ -356,12 +356,12 @@ module isnd =
         musplay.render(buf, frames)
         for chn in 0..num_channels do
             let ch = &chans[chn]
-            if c.not_null(ch.data) then
+            if mem.not_null(ch.data) then
                 let lv = ch.leftvol
                 let rv = ch.rightvol
                 let mut f = 0
                 loop
-                    if f >= frames || c.is_null(ch.data) then break
+                    if f >= frames || mem.is_null(ch.data) then break
                     let sample = (i32) *ch.data - 128
                     // vol_lookup[v*256+j] = v*(j-128)*256/127
                     buf[f * 2] = buf[f * 2] + lv * sample * 256 / 127
@@ -456,7 +456,7 @@ module snd =
             if volume > ds.snd_sfxvolume then volume = ds.snd_sfxvolume
         // Check to see if it is audible, and if not, modify the params
         let listener = ds.players[ds.consoleplayer].mo
-        if c.not_null(origin) && origin != (const any*) listener then
+        if mem.not_null(origin) && origin != (const any*) listener then
             let mo = (const mobj*) origin
             let { rc, v2, s2, p2 } = adjust_sound_params(listener, mo, volume, sep, pitch)
             volume = v2
@@ -527,7 +527,7 @@ module snd =
                         volume = ds.snd_sfxvolume
                 // check non-local sounds for distance clipping
                 // or modify their params
-                if c.not_null(ch.origin) && (const any*) listener != ch.origin then
+                if mem.not_null(ch.origin) && (const any*) listener != ch.origin then
                     let { rc, v2, s2, p2 } = adjust_sound_params(listener, (const mobj*) ch.origin, volume, sep, pitch)
                     if !rc then stop_channel((i32) cnum)
                     else isnd.update_sound_params(ch.handle, v2, s2, p2)
@@ -584,8 +584,8 @@ module snd =
     // a 0. Otherwise, modifies parameters and returns 1.
     let adjust_sound_params = (listener: const mobj*, source: const mobj*, vol0: i32, sep0: i32, pitch: i32) ->
         // calculate the distance to sound origin and clip it if necessary
-        let adx = c.iabs(listener.x - source.x)
-        let ady = c.iabs(listener.y - source.y)
+        let adx = fx.iabs(listener.x - source.x)
+        let ady = fx.iabs(listener.y - source.y)
         // From _GG1_ p.428. Appox. eucledian distance fast.
         let mut approx_dist = adx + ady - ((if adx < ady then adx else ady) >> 1)
         if ds.gamemap != 8 && approx_dist > s_clipping_dist then
@@ -617,7 +617,7 @@ module snd =
         loop
             if cnum >= num_channels then break
             if channels[cnum].sfxinfo == 0 then break
-            else if c.not_null(origin) && channels[cnum].origin == origin then
+            else if mem.not_null(origin) && channels[cnum].origin == origin then
                 stop_channel(cnum)
                 break
             cnum = cnum + 1

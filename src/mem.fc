@@ -1,0 +1,43 @@
+// The raw-memory helpers every module uses.
+//
+// Doom is a C program through and through: raw pointers that may be NULL,
+// bulk copies over screens and byte buffers, fixed-size NUL-padded names,
+// little-endian fields read straight out of lumps. FC has no bulk copy or
+// fill intrinsic, so memcpy/memset are bound from libc (the spec's own
+// recommendation). Everything else libc would offer (file I/O, the
+// environment, exit, allocation, ASCII case) goes through FC's built-ins
+// and stdlib instead.
+
+module mem =
+    private module c from "string.h" =
+        extern memcpy: (any*, const any*, usize) -> any*
+        extern memset: (any*, i32, usize) -> any*
+
+    // NULL tests for raw pointers (FC has no `null` keyword).
+    let is_null = (p: const any*) -> (usize) p == 0usize
+    let not_null = (p: const any*) -> (usize) p != 0usize
+
+    let memcpy = (dst: any*, src: const any*, n: i64) ->
+        ignore c.memcpy(dst, src, (usize) n)
+    let memset = (dst: any*, v: i32, n: i64) ->
+        ignore c.memset(dst, v, (usize) n)
+
+    // Length of a NUL-padded name in a fixed buffer of max bytes, which
+    // need not be terminated when it fills the buffer.
+    private let strnlen = (p: const cstr, max: i32) ->
+        let mut n = 0
+        loop
+            if n >= max || *(p + n) == 0u8 then break
+            n = n + 1
+        n
+
+    // View a fixed-size, NUL-padded name (WAD directory entry, texture
+    // name, savegame string) as an FC str of its real length.
+    let name_view = (p: const cstr, max: i32) ->
+        const str { ptr = p, len = strnlen(p, max) }
+
+    // Little-endian readers over a raw byte pointer (Doom's SHORT/LONG on x86).
+    let rd_i16 = (p: const u8*) -> (i16) ((u16) *p | ((u16) *(p + 1) << 8))
+    let rd_u16 = (p: const u8*) -> (u16) *p | ((u16) *(p + 1) << 8)
+    let rd_i32 = (p: const u8*) ->
+        (i32) ((u32) *p | ((u32) *(p + 1) << 8) | ((u32) *(p + 2) << 16) | ((u32) *(p + 3) << 24))

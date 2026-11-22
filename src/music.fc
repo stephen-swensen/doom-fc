@@ -46,7 +46,7 @@ module musplay =
 
     // SDL audio callback side: mix `frames` stereo frames of music into buf.
     let render = (buf: i32[], frames: i32) ->
-        if !active || paused || c.is_null(player) then return
+        if !active || paused || mem.is_null(player) then return
         let gain = atomic_load_acquire(&volume)
         for fr in 0..frames do
             opl_midi.advance(player)
@@ -90,8 +90,8 @@ module musplay =
     let mus_to_song = (data: const u8[]) ->
         if data.len < 16 || data[0] != 'M' || data[1] != 'U' || data[2] != 'S' || data[3] != 0x1au8 then
             return none(opl_midi.song)
-        let score_len = (i32) c.rd_u16(data.ptr + 4)
-        let score_start = (i32) c.rd_u16(data.ptr + 6)
+        let score_len = (i32) mem.rd_u16(data.ptr + 4)
+        let score_start = (i32) mem.rd_u16(data.ptr + 6)
         let mut ps = parser { data = data, pos = (i64) score_start, evs = alloc(opl_midi.event[] { len = 256 })!, n = 0 }
         let pp = &ps
         let endpos = if (i64) score_start + score_len < data.len then (i64) score_start + score_len else data.len
@@ -176,7 +176,7 @@ module musplay =
             for k in 0..chunk * 2 do
                 let s0 = buf[k]
                 let s = if s0 > 32767 then 32767 else if s0 < -32768 then -32768 else s0
-                if c.iabs(s) > peak then peak = c.iabs(s)
+                if fx.iabs(s) > peak then peak = fx.iabs(s)
                 sumsq = sumsq + (f64) s * (f64) s
                 let o = 44 + ((i64) done * 2 + k) * 2
                 out[o] = (u8) (s & 255)
@@ -237,7 +237,7 @@ module musplay =
 
     // Audio thread: I_PlaySong, I_StopSong, I_PauseSong, I_ResumeSong.
     let apply_play = (tune: opl_midi.song, looping: bool) ->
-        if c.is_null(player) then return
+        if mem.is_null(player) then return
         opl_midi.stop(player)
         opl_midi.set_song(player, tune)
         opl_midi.set_loop(player, looping)
@@ -246,13 +246,13 @@ module musplay =
         paused = false
 
     let apply_stop = () ->
-        if c.not_null(player) then opl_midi.stop(player)
+        if mem.not_null(player) then opl_midi.stop(player)
         active = false
 
     let apply_pause = () ->
-        if c.not_null(player) then opl_midi.pause(player)
+        if mem.not_null(player) then opl_midi.pause(player)
         paused = true
 
     let apply_resume = () ->
-        if c.not_null(player) && paused then opl_midi.resume(player)
+        if mem.not_null(player) && paused then opl_midi.resume(player)
         paused = false

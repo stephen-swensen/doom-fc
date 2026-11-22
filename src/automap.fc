@@ -437,7 +437,7 @@ module amap =
         // AM_updateLightLev();
 
     // Clear automap frame buffer.
-    let clear_fb = (color: i32) -> c.memset((any*) fb, color, (i64) f_w * f_h)
+    let clear_fb = (color: i32) -> mem.memset((any*) fb, color, (i64) f_w * f_h)
 
     let c_left = 1
     let c_right = 2
@@ -621,7 +621,7 @@ module amap =
             let l = mline { ax = ln.v1.x, ay = ln.v1.y, bx = ln.v2.x, by = ln.v2.y }
             if cheating != 0 || (ln.flags & ml.mapped) != 0 then
                 if (ln.flags & ml.dontdraw) != 0 && cheating == 0 then continue
-                if c.is_null(ln.backsector) then
+                if mem.is_null(ln.backsector) then
                     draw_mline(&l, wallcolors + lightlev)
                 else
                     if ln.special == 39 then
@@ -691,7 +691,7 @@ module amap =
         for k in 0..r.numsectors do
             let mut t = r.sectors[k].thinglist
             loop
-                if c.is_null(t) then break
+                if mem.is_null(t) then break
                 draw_line_character(thintriangle_guy, 16 << 16, t.angle, colors + lightlev, t.x, t.y)
                 t = t.snext
 
