@@ -36,6 +36,7 @@ module r =
     // ---------------------------------------------------------------
     // r_state: level data (filled by p_setup)
     // ---------------------------------------------------------------
+
     let mut numvertexes = 0
     let mut vertexes = default(vertex[])
     let mut numsegs = 0
@@ -54,6 +55,7 @@ module r =
     // ---------------------------------------------------------------
     // constants
     // ---------------------------------------------------------------
+
     let fieldofview = 2048
     let lightlevels = 16
     let lightsegshift = 4
@@ -77,6 +79,7 @@ module r =
     // ---------------------------------------------------------------
     // r_main state
     // ---------------------------------------------------------------
+
     let mut fixedcolormap = default(u8*)
     let mut centerx = 0
     let mut centery = 0
@@ -108,6 +111,7 @@ module r =
     // ---------------------------------------------------------------
     // r_data state
     // ---------------------------------------------------------------
+
     let mut firstflat = 0
     let mut lastflat = 0
     let mut numflats = 0
@@ -135,6 +139,7 @@ module r =
     // ---------------------------------------------------------------
     // r_draw state
     // ---------------------------------------------------------------
+
     let mut ylookup = default(u8*[])
     let mut columnofs = default(i32[])
     let mut dc_colormap = default(u8*)
@@ -180,6 +185,7 @@ module r =
     // ---------------------------------------------------------------
     // r_bsp / r_segs state
     // ---------------------------------------------------------------
+
     let mut curline = default(seg*)
     let mut sidedef = default(side*)
     let mut linedef = default(line*)
@@ -230,6 +236,7 @@ module r =
     // ---------------------------------------------------------------
     // r_plane state
     // ---------------------------------------------------------------
+
     let mut visplanes = visplane[] { len = 128 }
     let mut lastvisplane = 0
     let mut floorplane = default(visplane*)
@@ -253,6 +260,7 @@ module r =
     // ---------------------------------------------------------------
     // r_things state
     // ---------------------------------------------------------------
+
     let mut pspritescale = 0
     let mut pspriteiscale = 0
     let mut pspritescaley = 0
@@ -282,6 +290,7 @@ module r =
     // ---------------------------------------------------------------
     // trig helpers
     // ---------------------------------------------------------------
+
     let finesine = (a: i32) -> tables.sin(a)
     let finecosine = (a: i32) -> tables.sin(a + 2048)
     let finetangent = (a: i32) -> tables.tan(a)
@@ -362,6 +371,7 @@ module r =
     // ===============================================================
     // r_main
     // ===============================================================
+
     let point_on_side = (x: i32, y: i32, nd: const node*) ->
         if nd.dx == 0 then
             if x <= nd.x then nd.dy > 0 else nd.dy < 0
@@ -592,6 +602,7 @@ module r =
     // ===============================================================
     // r_data
     // ===============================================================
+
     let draw_column_in_cache = (patchcol0: const u8*, cache: u8*, originy: i32, cacheheight: i32) ->
         let mut patchcol = patchcol0
         loop
@@ -801,6 +812,7 @@ module r =
     // ===============================================================
     // r_draw
     // ===============================================================
+
     let draw_column = () ->
         let count = dc_yh - dc_yl
         if count >= 0 then
@@ -992,6 +1004,7 @@ module r =
     // ===============================================================
     // r_bsp
     // ===============================================================
+
     let clear_clip_segs = () ->
         solidsegs[0].first = -0x7fffffff
         solidsegs[0].last = -1
@@ -1187,6 +1200,7 @@ module r =
     // ===============================================================
     // r_segs
     // ===============================================================
+
     let set_walllights = (lightnum: i32) ->
         walllights = if lightnum < 0 then scalelight.ptr
                      else if lightnum >= lightlevels then scalelight.ptr + (lightlevels - 1) * maxlightscale
@@ -1466,6 +1480,7 @@ module r =
     // ===============================================================
     // r_plane
     // ===============================================================
+
     let map_plane = (y: i32, x1: i32, x2: i32) ->
         if x2 < x1 || x1 < 0 || x2 >= ds.viewwidth || y < 0 || y > ds.viewheight then
             i.fatal(alloca("R_MapPlane: %d{x1}, %d{x2} at %d{y}"))
@@ -1632,6 +1647,7 @@ module r =
     // ===============================================================
     // r_things
     // ===============================================================
+
     let install_sprite_lump = (lump: i32, frame: i32, rotation0: i32, flipped: bool) ->
         let mut rotation = rotation0
         if frame >= 29 || frame < 0 || rotation > 8 || rotation < 0 then

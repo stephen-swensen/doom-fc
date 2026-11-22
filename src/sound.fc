@@ -217,6 +217,7 @@ module isnd =
     // ------------------------------------------------------------------
     // main thread
     // ------------------------------------------------------------------
+
     let post = (cmd: sndcmd) ->
         if nosound then return
         let tail = atomic_load_acquire(&ring_tail)
@@ -311,6 +312,7 @@ module isnd =
     // ------------------------------------------------------------------
     // audio thread
     // ------------------------------------------------------------------
+
     let apply = (cmd: sndcmd) ->
         let s = cmd.slot
         if cmd.op == op_start then

@@ -168,3 +168,11 @@ Doom's C files call each other in every direction, so:
   `res_ok`/`okay`, `none_x`, and `in_game`.
 - A parameter or local named after a module (`z`, `r`, `p`, `i`, `w`, `v`,
   `mem`, `text`, `io`) shadows it. That's why `spawn_mobj` takes `z0`.
+- **Comments and LSP hover.** The FC LSP's hover text is the contiguous
+  run of `//` lines directly above a declaration, stopping at the first
+  blank line. So a doc comment for one module / struct / enum / `let` goes
+  *immediately* above it, with no rule lines and no blank line between.
+  Banners (a `// ---` or `// ===` rule, the title, a closing rule) are
+  only for section headers that group several declarations, and always
+  have a blank line after, so they stay out of hover. File-header
+  comments also end in a blank line.

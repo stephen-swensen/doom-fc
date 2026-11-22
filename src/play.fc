@@ -23,6 +23,7 @@ module p =
     // ------------------------------------------------------------------
     // p_local.h
     // ------------------------------------------------------------------
+
     let floatspeed = 65536 * 4
     let maxhealth = 100
     let viewheight = 41 * 65536
@@ -140,6 +141,7 @@ module p =
     // ------------------------------------------------------------------
     // p_setup globals: blockmap and reject
     // ------------------------------------------------------------------
+
     let mut bmapwidth = 0
     let mut bmapheight = 0
     let mut blockmap = default(i16*)
@@ -152,6 +154,7 @@ module p =
     // ==================================================================
     // p_tick
     // ==================================================================
+
     let thinkercap = () -> &ds.thinkercap
 
     let init_thinkers = () ->
@@ -215,6 +218,7 @@ module p =
     // ==================================================================
     // p_maputl
     // ==================================================================
+
     let aprox_distance = (dx0: i32, dy0: i32) ->
         let dx = fx.iabs(dx0)
         let dy = fx.iabs(dy0)
@@ -517,6 +521,7 @@ module p =
     // ==================================================================
     // p_mobj
     // ==================================================================
+
     let stopspeed = 0x1000
     let friction = 0xe800
 
@@ -938,6 +943,7 @@ module p =
     // ==================================================================
     // p_map
     // ==================================================================
+
     let mut tmbbox = i32[] { len = 4 }
     let mut tmthing = default(mobj*)
     let mut tmflags = 0
@@ -1501,6 +1507,7 @@ module p =
     // ==================================================================
     // p_sight
     // ==================================================================
+
     let mut sightzstart = 0    // eye z of looker
     let mut topslope = 0
     let mut bottomslope = 0    // slopes to top and bottom of target
@@ -1641,6 +1648,7 @@ module p =
     // ==================================================================
     // p_inter
     // ==================================================================
+
     let bonusadd = 6
     // a weapon is found with two clip loads, a big item has five clip loads
     let maxammo = i32[] { 200, 50, 300, 50 }
@@ -2014,6 +2022,7 @@ module p =
     // ==================================================================
     // p_enemy
     // ==================================================================
+
     let opposite = i32[] { 4, 5, 6, 7, 0, 1, 2, 3, 8 }
     let diags = i32[] { 3, 1, 5, 7 }
 
@@ -2874,6 +2883,7 @@ module p =
     // ==================================================================
     // p_pspr
     // ==================================================================
+
     let lowerspeed = 65536 * 6
     let raisespeed = 65536 * 6
     let weaponbottom = 128 * 65536
@@ -3202,6 +3212,7 @@ module p =
     // ==================================================================
     // p_user
     // ==================================================================
+
     // Index of the special effects (INVUL inverse) map.
     let inversecolormap = 32
     // 16 pixels of bob
@@ -3357,6 +3368,7 @@ module p =
     // ==================================================================
     // p_telept
     // ==================================================================
+
     let ev_teleport = (ln: line*, side: i32, thing: mobj*) ->
         // don't teleport missiles
         if (thing.flags & mf.missile) != 0 then return 0
@@ -3402,6 +3414,7 @@ module p =
     // ==================================================================
     // p_lights
     // ==================================================================
+
     let alloc_thinker = (size: i64, kind: thinkf) ->
         let th = (thinker*) z.malloc(size, pu.levspec, default(any**))
         mem.memset((any*) th, 0, size)
@@ -3539,6 +3552,7 @@ module p =
     // ==================================================================
     // p_plats
     // ==================================================================
+
     let mut activeplats = plat*[] { len = 30 }
 
     // Move a plat up and down
@@ -3664,6 +3678,7 @@ module p =
     // ==================================================================
     // p_ceilng
     // ==================================================================
+
     let mut activeceilings = ceiling*[] { len = 30 }
 
     let t_move_ceiling = (cl: ceiling*) ->
@@ -3783,6 +3798,7 @@ module p =
     // ==================================================================
     // p_doors
     // ==================================================================
+
     let t_vertical_door = (door: vldoor*) ->
         let org = (mobj*) &door.sector.soundorg
         if door.direction == 0 then
@@ -4000,6 +4016,7 @@ module p =
     // ==================================================================
     // p_floor
     // ==================================================================
+
     // Move a plane (floor or ceiling) and check for crushing
     let t_move_plane = (sector: sector*, speed: i32, dest: i32, crush: bool, floor_or_ceiling: i32, direction: i32) ->
         if floor_or_ceiling == 0 then
@@ -4252,6 +4269,7 @@ module p =
     // ==================================================================
     // p_spec
     // ==================================================================
+
     // Animating textures and planes. There is another anim_t used in wi_stuff.
     let animdef_istexture = i32[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 }
     let animdef_endname = (const str)[] {
@@ -4795,6 +4813,7 @@ module p =
     // ==================================================================
     // p_switch
     // ==================================================================
+
     let switch_name1 = (const str)[] {
         // Doom shareware episode 1 switches
         "SW1BRCOM", "SW1BRN1", "SW1BRN2", "SW1BRNGN", "SW1BROWN", "SW1COMM", "SW1COMP", "SW1DIRT",
@@ -4976,6 +4995,7 @@ module p =
     // ==================================================================
     // p_setup
     // ==================================================================
+
     let level_slice = (n: i32, size: i64) -> z.malloc((i64) n * size, pu.level, default(any**))
 
     let load_vertexes = (lump: i32) ->
@@ -5253,6 +5273,7 @@ module p =
     // ==================================================================
     // p_saveg
     // ==================================================================
+
     let mut save_p = default(u8*)
 
     // Pads save_p to a 4-byte boundary so that the load/save works on SGI&Gecko.
@@ -5542,6 +5563,7 @@ module p =
     // ==================================================================
     // codepointer dispatch (the state table's actionf_t)
     // ==================================================================
+
     let call_mobj_action = (a: actionf, mo: mobj*) ->
         match a with
         | a_bfgspray -> a_bfgspray(mo)

@@ -167,9 +167,7 @@ module v =
     let patch_num = (lump: i32) ->
         (const patch*) w.cache_lump_num(lump, pu.cache)
 
-// ------------------------------------------------------------------
 // i_video: SDL2 window + input
-// ------------------------------------------------------------------
 module iv =
     import text from std::
 
@@ -195,6 +193,7 @@ module iv =
     // native whenever that factor allows it. 1..12 pins a stretched
     // factor (ignoring the cap), and native_code + N pins native N.
     // ------------------------------------------------------------------
+
     let max_factor = 12
     let native_code = 100
     let mut scale_factor = 0       // the "scale_factor" config entry
@@ -427,6 +426,7 @@ module iv =
     // frame is converted, so it never lands in screenshots, and never in
     // -headless runs.
     // ------------------------------------------------------------------
+
     let tic_ms = 1000.0 / 35.0
     let mut dbg_on = false
     let mut dbg_work_start = 0i64
@@ -612,6 +612,7 @@ module iv =
     // KEY is a single character or esc enter tab space up down left
     // right ctrl shift alt minus equals f1..f12.
     // ------------------------------------------------------------------
+
     let mut script = default(str)
     let mut script_pos = 0i64
     let mut script_wait = 0

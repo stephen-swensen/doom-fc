@@ -1,9 +1,7 @@
 // m_argv, i_system, z_zone and w_wad: the layers everything else sits on.
 // Ported from linuxdoom-1.10 (GPLv2).
 
-// ------------------------------------------------------------------
 // m_argv
-// ------------------------------------------------------------------
 module argv =
     import text from std::
 
@@ -46,9 +44,7 @@ module argv =
                 if text.to_upper_char(a[k]) != text.to_upper_char(b[k]) then same = false
             same
 
-// ------------------------------------------------------------------
 // i_system
-// ------------------------------------------------------------------
 module i =
     import io from std::
     import sys from std::
@@ -95,6 +91,7 @@ module i =
 // the parts the engine depends on: purge tags (Z_FreeTags at level change),
 // owner back-pointers that get cleared on free, and Z_ChangeTag.
 // ------------------------------------------------------------------
+
 struct memblock =
     size: i64
     user: any**
@@ -180,6 +177,7 @@ module z =
 // a separately allocated (and therefore aligned) copy, like the original's
 // zone-cached lumps.
 // ------------------------------------------------------------------
+
 struct lumpinfo =
     name: u8[8]
     k1: u32

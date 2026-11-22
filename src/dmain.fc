@@ -252,6 +252,7 @@ module d =
     // ------------------------------------------------------------------
     // d_net, single player: build ticcmds as time passes, run game tics
     // ------------------------------------------------------------------
+
     let net_update = () ->
         // check time
         let nowtime = i.get_time() / ds.ticdup
@@ -366,6 +367,7 @@ module d =
     // ------------------------------------------------------------------
     // IWAD discovery
     // ------------------------------------------------------------------
+
     let mut wadfiles = default(str[])
     let mut numwadfiles = 0
 

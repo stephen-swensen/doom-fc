@@ -124,6 +124,7 @@ module ds =
     // ------------------------------------------------------------------
     // Event queue (D_PostEvent)
     // ------------------------------------------------------------------
+
     let maxevents = 64
     let mut events = event[] { len = 64 }
     let mut eventhead = 0
@@ -136,6 +137,7 @@ module ds =
     // ------------------------------------------------------------------
     // Requests that only flip state (the bodies of G_ExitLevel & co.)
     // ------------------------------------------------------------------
+
     let g_exit_level = () ->
         secretexit = false
         gameaction = ga.completed

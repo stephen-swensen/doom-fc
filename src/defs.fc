@@ -8,9 +8,7 @@
 // wp_pistol, gs.level for GS_LEVEL, ...). In-memory `short` fields widen to
 // i32; the on-disk map formats are decoded explicitly in p_setup.
 
-// ------------------------------------------------------------------
 // m_fixed: 16.16 fixed point
-// ------------------------------------------------------------------
 module fx =
     let fracbits = 16
     let fracunit = 65536
@@ -43,6 +41,7 @@ module fx =
 // ------------------------------------------------------------------
 // doomdef.h
 // ------------------------------------------------------------------
+
 module dd =
     // Demo / savegame version byte. linuxdoom says 110, but its playsim is
     // the v1.9 one, so we write 109 to play the IWADs' own demos.
@@ -312,11 +311,14 @@ module box =
         else if y > b[top] then b[top] = y
 
 // ------------------------------------------------------------------
-// Thinkers (d_think.h). The C version stores a function pointer; we
+// Thinkers, ticcmds, events, mobjs and players (d_think.h, d_ticcmd.h,
+// d_event.h, doomdata.h, p_mobj.h, p_pspr.h, d_player.h)
+// ------------------------------------------------------------------
+
+// A thinker's routine. The C version stores a function pointer; we
 // store which thinker routine runs, and p.run_thinkers dispatches.
 // `nil` is the C NULL (a ceiling/plat in stasis), `removed` the -1
 // marker P_RemoveThinker leaves for deferred freeing.
-// ------------------------------------------------------------------
 enum thinkf =
     | nil
     | removed
@@ -475,6 +477,7 @@ struct wbstartstruct =
 // ------------------------------------------------------------------
 // r_defs.h: map geometry and renderer records
 // ------------------------------------------------------------------
+
 struct vertex =
     x: i32
     y: i32
@@ -611,6 +614,7 @@ struct visplane =
 // ------------------------------------------------------------------
 // p_spec.h thinkers and records
 // ------------------------------------------------------------------
+
 struct fireflicker =
     thinker: thinker
     sector: sector*
@@ -712,9 +716,7 @@ struct weaponinfo =
     atkstate: i32
     flashstate: i32
 
-// ------------------------------------------------------------------
 // d_items.c
-// ------------------------------------------------------------------
 module items =
     let weaponinfo = weaponinfo[] {
         // fist
