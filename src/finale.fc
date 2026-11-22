@@ -184,7 +184,7 @@ module f =
             castnum = castnum + 1
             castdeath = false
             if castnum >= castorder.len then castnum = 0
-            if cast_info().seesound != 0 then snd.start_sound(default(any*), cast_info().seesound)
+            if cast_info().seesound != 0 then snd.start_local_sound(cast_info().seesound)
             caststate = state_at(cast_info().seestate)
             castframes = 0
         else
@@ -215,7 +215,7 @@ module f =
                            else if st == sn.cyber_atk2 || st == sn.cyber_atk4 || st == sn.cyber_atk6 then sfx.rlaunc
                            else if st == sn.pain_atk3 then sfx.sklatk
                            else 0
-                if sfxn != 0 then snd.start_sound(default(any*), sfxn)
+                if sfxn != 0 then snd.start_local_sound(sfxn)
         if !stopped then
             if castframes == 12 then
                 // go into attack frame
@@ -241,7 +241,7 @@ module f =
         casttics = caststate.tics
         castframes = 0
         castattacking = false
-        if cast_info().deathsound != 0 then snd.start_sound(default(any*), cast_info().deathsound)
+        if cast_info().deathsound != 0 then snd.start_local_sound(cast_info().deathsound)
         true
 
     let cast_print = (label: const str) ->
@@ -295,7 +295,7 @@ module f =
         let mut stage = (finalecount - 1180) / 5
         if stage > 6 then stage = 6
         if stage > laststage then
-            snd.start_sound(default(any*), sfx.pistol)
+            snd.start_local_sound(sfx.pistol)
             laststage = stage
         v.draw_patch((320 - 13 * 8) / 2, (200 - 8 * 8) / 2, 0, v.patch_named("END%d{stage}"))
 

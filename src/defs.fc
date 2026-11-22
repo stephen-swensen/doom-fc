@@ -376,13 +376,13 @@ struct mobj =
     x: i32
     y: i32
     z: i32
-    snext: mobj*
-    sprev: mobj*
+    snext: mobj*?
+    sprev: mobj*?
     angle: u32
     sprite: i32
     frame: i32
-    bnext: mobj*
-    bprev: mobj*
+    bnext: mobj*?
+    bprev: mobj*?
     subsector: subsector*
     floorz: i32
     ceilingz: i32
@@ -400,23 +400,24 @@ struct mobj =
     health: i32
     movedir: i32
     movecount: i32
-    target: mobj*
+    target: mobj*?
     reactiontime: i32
     threshold: i32
-    player: player*
+    player: player*?
     lastlook: i32
     spawnpoint: mapthing
-    tracer: mobj*
+    tracer: mobj*?
     interp: mobj_interp
 
+// A player sprite (the weapon, or its flash). No state: not shown.
 struct pspdef =
-    state: const state*
+    state: const state*?
     tics: i32
     sx: i32
     sy: i32
 
 struct player =
-    mo: mobj*
+    mo: mobj*?
     playerstate: i32
     cmd: ticcmd
     viewz: i32
@@ -445,7 +446,7 @@ struct player =
     message: const str
     damagecount: i32
     bonuscount: i32
-    attacker: mobj*
+    attacker: mobj*?
     extralight: i32
     fixedcolormap: i32
     colormap: i32
@@ -499,12 +500,13 @@ struct sector =
     special: i32
     tag: i32
     soundtraversed: i32
-    soundtarget: mobj*
+    soundtarget: mobj*?
     blockbox: i32[4]
     soundorg: degenmobj
     validcount: i32
-    thinglist: mobj*
-    specialdata: any*
+    thinglist: mobj*?
+    // the thinker moving this sector's floor or ceiling, if any
+    specialdata: thinker*?
     linecount: i32
     lines: line**
     // heights at the start of the last tic (frame interpolation)
@@ -531,9 +533,9 @@ struct line =
     bbox: i32[4]
     slopetype: i32
     frontsector: sector*
-    backsector: sector*
+    backsector: sector*?    // none: one-sided
     validcount: i32
-    specialdata: any*
+    specialdata: thinker*?    // unused, as in the original
 
 struct subsector =
     sector: sector*
@@ -548,7 +550,7 @@ struct seg =
     sidedef: side*
     linedef: line*
     frontsector: sector*
-    backsector: sector*
+    backsector: sector*?    // none: one-sided
 
 // bbox[2][4] flattened: bbox[side * 4 + box.*]
 struct node =
@@ -569,9 +571,10 @@ struct drawseg =
     silhouette: i32
     bsilheight: i32
     tsilheight: i32
-    sprtopclip: i16*
-    sprbottomclip: i16*
-    maskedtexturecol: i16*
+    // none: not clipped at the top / bottom, or no masked texture
+    sprtopclip: i16*?
+    sprbottomclip: i16*?
+    maskedtexturecol: i16*?
 
 struct vissprite =
     prev: vissprite*
@@ -587,7 +590,7 @@ struct vissprite =
     xiscale: i32
     texturemid: i32
     patch: i32
-    colormap: const u8*
+    colormap: const u8*?    // none: a shadow (fuzz) draw
     mobjflags: i32
 
 struct spriteframe =
@@ -647,12 +650,13 @@ struct glow =
     maxlight: i32
     direction: i32
 
+// A pressed switch, waiting to pop back out. The original also keeps a
+// sound origin, always the line's front sector's.
 struct button =
-    line: line*
+    line: line*?    // none: a free slot
     where: i32
     btexture: i32
     btimer: i32
-    soundorg: mobj*
 
 struct plat =
     thinker: thinker

@@ -47,9 +47,10 @@ module g =
     let mut demo_p = default(u8*)
     let mut demoend = default(u8*)
     let mut defdemoname = ""
-    let mut savebuffer = default(u8*)
+    let mut savebuffer = none(u8*)    // allocated by the first save
     let mut turbomessage = default(str)
     let mut tictrace = false
+    let mut worldtrace = false
 
     let player_names = (const str)[] { dstr.hustr_plrgreen, dstr.hustr_plrindigo, dstr.hustr_plrbrown, dstr.hustr_plrred }
 
@@ -217,6 +218,108 @@ module g =
         false
 
     // Make ticcmd_ts for the players.
+    // FNV-1a over the playsim state -worldtrace reports: every mobj (with
+    // who its target and tracer are), every player, sector and line.
+    private let mut wh = 0u32
+    private let mix = (v: i32) ->
+        let mut k = 0
+        loop
+            if k >= 4 then break
+            wh = (wh ^ (((u32) v >> (k * 8)) & 0xffu32)) * 16777619u32
+            k = k + 1
+    private let mix_flag = (b: bool) -> mix(if b then 1 else 0)
+    private let mix_mobj_ref = (ref: const mobj*?) ->
+        match ref with
+        | some(mo) ->
+            mix(mo.type)
+            mix(mo.x)
+            mix(mo.y)
+        | none -> mix(-1)
+    private let state_num = (st: const state*?) ->
+        match st with
+        | some(s) -> p.mobj_index(s)
+        | none -> -1
+
+    let world_hash = () ->
+        wh = 2166136261u32
+        let cap = &ds.thinkercap
+        let mut th = cap.next
+        loop
+            if th == cap then break
+            mix((i32) th.function)
+            if p.is_mobj(th) then
+                let mo = (mobj*) th
+                mix(mo.type)
+                mix(mo.x)
+                mix(mo.y)
+                mix(mo.z)
+                mix(mo.momx)
+                mix(mo.momy)
+                mix(mo.momz)
+                mix((i32) mo.angle)
+                mix(mo.floorz)
+                mix(mo.ceilingz)
+                mix(mo.health)
+                mix(mo.flags)
+                mix(mo.tics)
+                mix(p.mobj_index(mo.state))
+                mix(mo.movedir)
+                mix(mo.movecount)
+                mix(mo.reactiontime)
+                mix(mo.threshold)
+                mix(mo.lastlook)
+                mix_mobj_ref(mo.target)
+                mix_mobj_ref(mo.tracer)
+                match mo.player with
+                | some(pl) -> mix(p.player_index(pl))
+                | none -> mix(-1)
+                mix_mobj_ref(mo.snext)
+                mix_mobj_ref(mo.bnext)
+            th = th.next
+        for k in 0..dd.maxplayers do
+            if ds.playeringame[k] then
+                let pl = &ds.players[k]
+                mix_mobj_ref(pl.mo)
+                mix(pl.playerstate)
+                mix(pl.viewz)
+                mix(pl.health)
+                mix(pl.armorpoints)
+                mix(pl.readyweapon)
+                mix(pl.pendingweapon)
+                for a in 0..am.numammo do mix(pl.ammo[a])
+                mix_mobj_ref(pl.attacker)
+                mix(pl.damagecount)
+                mix(pl.bonuscount)
+                for n in 0..ps.numpsprites do
+                    mix(state_num(pl.psprites[n].state))
+                    mix(pl.psprites[n].tics)
+                    mix(pl.psprites[n].sx)
+                    mix(pl.psprites[n].sy)
+        for k in 0..r.numsectors do
+            let sec = &r.sectors[k]
+            mix(sec.floorheight)
+            mix(sec.ceilingheight)
+            mix(sec.lightlevel)
+            mix(sec.special)
+            mix(sec.floorpic)
+            mix(sec.ceilingpic)
+            mix(sec.soundtraversed)
+            mix_mobj_ref(sec.soundtarget)
+            mix_mobj_ref(sec.thinglist)
+            mix_flag(sec.specialdata.is_some)
+        for k in 0..r.numlines do
+            let ln = &r.lines[k]
+            mix(ln.special)
+            mix(ln.flags & ~ml.mapped)    // (the renderer sets mapped: not playsim)
+            mix_flag(ln.specialdata.is_some)
+        for k in 0..r.numsides do
+            let si = &r.sides[k]
+            mix(si.toptexture)
+            mix(si.midtexture)
+            mix(si.bottomtexture)
+            mix(si.textureoffset)
+        wh
+
     let ticker = () ->
         // do player reborns if needed
         for k in 0..dd.maxplayers do
@@ -277,16 +380,21 @@ module g =
         else if state == gs.demoscreen then d_page_ticker()
         // -tictrace: one line per tic, the format tools/refdemo prints
         if tictrace then
-            let mo = ds.players[ds.consoleplayer].mo
-            if mem.not_null(mo) then
-                i.print(alloca("T %d{ds.gametic} %d{rnd.prndindex} %d{mo.x} %d{mo.y} %d{ds.players[ds.consoleplayer].health}\n"))
+            match ds.players[ds.consoleplayer].mo with
+            | some(mo) -> i.print(alloca("T %d{ds.gametic} %d{rnd.prndindex} %d{mo.x} %d{mo.y} %d{ds.players[ds.consoleplayer].health}\n"))
+            | none -> void()
+        // -worldtrace: a hash of the whole playsim every tic (a regression
+        // check finer than -tictrace, for refactors that must not change it)
+        if worldtrace && state == gs.level then
+            i.print(alloca("W %d{ds.gametic} %u{world_hash()}\n"))
 
     // Can when a player completes a level.
     let player_finish_level = (n: i32) ->
         let pl = &ds.players[n]
         for k in 0..pw.numpowers do pl.powers[k] = 0
         for k in 0..it.numcards do pl.cards[k] = false
-        pl.mo.flags = pl.mo.flags & ~mf.shadow    // cancel invisibility
+        let mo = pl.mo!
+        mo.flags = mo.flags & ~mf.shadow    // cancel invisibility
         pl.extralight = 0    // cancel gun flashes
         pl.fixedcolormap = 0    // cancel ir gogles
         pl.damagecount = 0    // no palette changes
@@ -319,17 +427,20 @@ module g =
     // Returns false if the player cannot be respawned at the given
     // mapthing_t spot because something is occupying it
     let check_spot = (playernum: i32, mthing: const mapthing*) ->
-        if mem.is_null(ds.players[playernum].mo) then
+        let mo = match ds.players[playernum].mo with
+        | some(m) -> m
+        | none ->
             // first spawn of level, before corpses
             for k in 0..playernum do
-                if ds.players[k].mo.x == mthing.x << 16 && ds.players[k].mo.y == mthing.y << 16 then return false
+                let other = ds.players[k].mo!
+                if other.x == mthing.x << 16 && other.y == mthing.y << 16 then return false
             return true
         let x = mthing.x << 16
         let y = mthing.y << 16
-        if !p.check_position(ds.players[playernum].mo, x, y) then return false
+        if !p.check_position(mo, x, y) then return false
         // flush an old corpse if needed
         if ds.bodyqueslot >= bodyquesize then p.remove_mobj(bodyque[ds.bodyqueslot % bodyquesize])
-        bodyque[ds.bodyqueslot % bodyquesize] = ds.players[playernum].mo
+        bodyque[ds.bodyqueslot % bodyquesize] = mo
         ds.bodyqueslot = ds.bodyqueslot + 1
         // spawn a teleport fog
         let ss = r.point_in_subsector(x, y)
@@ -359,7 +470,7 @@ module g =
         else
             // respawn at the start
             // first dissasociate the corpse
-            ds.players[playernum].mo.player = default(player*)
+            ds.players[playernum].mo!.player = none(player*)
             // spawn at random spot if in death match
             if ds.deathmatch != 0 then
                 death_match_spawn_player(playernum)
@@ -508,8 +619,13 @@ module g =
     let do_save_game = () ->
         let name = misc.save_name(ds.savegameslot)
         defer free(name)
-        if mem.is_null(savebuffer) then savebuffer = alloc(u8, (i64) savegamesize + 0x10000)!
-        p.save_p = savebuffer
+        let buf = match savebuffer with
+        | some(b) -> b
+        | none ->
+            let b = alloc(u8, (i64) savegamesize + 0x10000)!
+            savebuffer = some(b)
+            b
+        p.save_p = buf
         mem.memcpy((any*) p.save_p, (const any*) ds.savedescription.ptr, (i64) savestringsize)
         p.save_p = p.save_p + savestringsize
         let vs = "version %d{dd.version}"
@@ -531,9 +647,9 @@ module g =
         p.archive_thinkers()
         p.archive_specials()
         wr(0x1d)    // consistancy marker
-        let length = (i64) (p.save_p - savebuffer)
+        let length = (i64) (p.save_p - buf)
         if length > (i64) savegamesize then i.fatal("Savegame buffer overrun")
-        ignore misc.write_file(name, savebuffer, length)
+        ignore misc.write_file(name, buf, length)
         ds.gameaction = ga.nothing
         ds.savedescription[0] = 0u8
         ds.players[ds.consoleplayer].message = dstr.ggsaved
@@ -749,8 +865,8 @@ module g =
     let demo_finished_hook = () ->
         if argv.check_parm("-demostats") != 0 then
             let pl = &ds.players[ds.consoleplayer]
-            let mo = pl.mo
-            if mem.not_null(mo) then
+            match pl.mo with
+            | some(mo) ->
                 i.print(alloca("DEMOEND gametic=%d{ds.gametic} map=E%d{ds.gameepisode}M%d{ds.gamemap} health=%d{pl.health} kills=%d{pl.killcount} items=%d{pl.itemcount} secrets=%d{pl.secretcount} x=%d{mo.x} y=%d{mo.y} rnd=%d{rnd.prndindex}\n"))
-            else
+            | none ->
                 i.print(alloca("DEMOEND gametic=%d{ds.gametic} gamestate=%d{ds.gamestate} rnd=%d{rnd.prndindex}\n"))

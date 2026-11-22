@@ -56,6 +56,12 @@ bugs. The project is GPL v2.
 - Sound is testable headless: `-sndtrace` logs each effect by name, and
   `-sndcapture FILE` writes the mixed output as a WAV, at 1260 frames per
   gametic, so tic N starts at frame N*1260.
+- `tests/soak.sh` hashes `-worldtrace` (the whole playsim, every tic) over
+  scripted runs of every map, the IWAD demos and two save/loads, plus
+  screenshot series (fuzz, light amp, invulnerability, 3x) and captured
+  audio. Its golden file, `tests/soak.golden`, was recorded from this
+  port: any refactor must leave it unchanged. Re-record only for an
+  intentional playsim, rendering or sound change, and say why.
 - The golden values in `tests/run-tests.sh` were recorded from linuxdoom.
   Frame hashes pin the headless renderer, at 1x and at `-scale 3`. Update
   them only for intentional rendering changes. Headless runs render at 1x
@@ -88,13 +94,29 @@ Doom's C files call each other in every direction, so:
   (`ds.gametic`, `r.viewx`, `p.tmfloorz`). Unlike wolf-fc, mutable module
   globals are fine here, because that is Doom's design.
 - libc is bound only for what FC lacks: `memcpy`/`memset`, wrapped in
-  `mem` (mem.fc) next to the other raw-memory helpers (`mem.is_null`,
-  `mem.name_view` for NUL-padded names, the little-endian `mem.rd_*`).
+  `mem` (mem.fc) next to the other raw-memory helpers (`mem.name_view`
+  for NUL-padded names, the little-endian `mem.rd_*`).
   `iabs` is `fx.iabs`, and `name8_eq` is `w.name8_eq`. File I/O, the
   environment, exit and ASCII case use std `io`/`sys`/`text`. Heap memory
   uses `alloc(T, n)!`/`free`, and a zeroed struct is `*p = default(T)`.
   Numeric command-line values go through `argv.int_after`, which is a
   fatal error on a bad value.
+- **A pointer that can be absent is `T*?`; a raw `T*` is always valid**
+  once set (late-initialized globals included), so never store a null in
+  one. The optional ones: mobj `target`/`tracer`/`player` and the
+  `snext`/`sprev`/`bnext`/`bprev` links, `blocklinks` slots, player
+  `mo`/`attacker`, `pspdef.state`, sector `specialdata` (a `thinker*?`),
+  `soundtarget` and `thinglist`, line/seg `backsector`, `p.linetarget`,
+  the active plat/ceiling slots, the renderer's drawseg clips, vissprite
+  `colormap` (none = fuzz) and `fixedcolormap`, and the zone's owner
+  slots (`w.lumpcache`, `r.texturecomposite`). Where linuxdoom tests a
+  pointer, `match` it; where it dereferences unchecked, use `!`, which
+  aborts with the line where C would crash. `mobj.state` is never null (a
+  mobj removed through S_NULL keeps `&states[S_NULL]`). Savegames store
+  pointers as indices in the pointer's own bytes (`p.put_idx`/`get_idx`).
+  A sound has an origin (`snd.start_sound(mo, id)`) or none
+  (`snd.start_local_sound(id)`). An intercept is a union, `line` or
+  `thing`.
 - C function pointers become small dispatches. A thinker's function is
   `enum thinkf`, dispatched in `p.run_thinker`. A state's codepointer is
   `enum actionf`, dispatched in `p.call_mobj_action` / `p.call_psp_action`.

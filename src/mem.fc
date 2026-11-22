@@ -1,8 +1,8 @@
 // The raw-memory helpers every module uses.
 //
-// Doom is a C program through and through: raw pointers that may be NULL,
-// bulk copies over screens and byte buffers, fixed-size NUL-padded names,
-// little-endian fields read straight out of lumps. FC has no bulk copy or
+// Doom is a C program through and through: bulk copies over screens and
+// byte buffers, fixed-size NUL-padded names, little-endian fields read
+// straight out of lumps. FC has no bulk copy or
 // fill intrinsic, so memcpy/memset are bound from libc (the spec's own
 // recommendation). Everything else libc would offer (file I/O, the
 // environment, exit, allocation, ASCII case) goes through FC's built-ins
@@ -12,10 +12,6 @@ module mem =
     private module c from "string.h" =
         extern memcpy: (any*, const any*, usize) -> any*
         extern memset: (any*, i32, usize) -> any*
-
-    // NULL tests for raw pointers (FC has no `null` keyword).
-    let is_null = (p: const any*) -> (usize) p == 0usize
-    let not_null = (p: const any*) -> (usize) p != 0usize
 
     let memcpy = (dst: any*, src: const any*, n: i64) ->
         ignore c.memcpy(dst, src, (usize) n)

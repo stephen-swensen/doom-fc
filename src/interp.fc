@@ -36,7 +36,7 @@ module interp =
     // the console player's weapon sprites at the snapshot
     let mut psp_sx = i32[] { len = 2 }
     let mut psp_sy = i32[] { len = 2 }
-    let mut psp_state = usize[] { len = 2 }
+    let mut psp_state = (const state*?)[] { len = 2 }
     // scrolling walls (special 48), by linespeciallist index
     let mut scroll_prev = i32[] { len = 64 }
 
@@ -77,7 +77,9 @@ module interp =
                 mo.interp.y = mo.y
                 mo.interp.z = mo.z
                 mo.interp.angle = mo.angle
-                mo.interp.viewz = if mem.not_null(mo.player) then mo.player.viewz else 0
+                mo.interp.viewz = match mo.player with
+                | some(pl) -> pl.viewz
+                | none -> 0
                 mo.interp.snap = snap_id
             th = th.next
         for k in 0..r.numsectors do
@@ -91,7 +93,7 @@ module interp =
         for k in 0..2 do
             psp_sx[k] = pl.psprites[k].sx
             psp_sy[k] = pl.psprites[k].sy
-            psp_state[k] = (usize) pl.psprites[k].state
+            psp_state[k] = pl.psprites[k].state
 
     private let save_mobj = (mo: mobj*) ->
         if (i64) nsaved == saved.len then
@@ -130,7 +132,7 @@ module interp =
                 let ip = &mo.interp
                 if ip.snap == snap_id && !far(ip.x, mo.x) && !far(ip.y, mo.y) && !far(ip.z, mo.z) then
                     save_mobj(mo)
-                    let angle = if mo == pl.mo then player_angle(pl, mo, f)
+                    let angle = if pl.mo == some(mo) then player_angle(pl, mo, f)
                                 else lerp_angle(ip.angle, mo.angle, f)
                     mo.x = lerp(ip.x, mo.x, f)
                     mo.y = lerp(ip.y, mo.y, f)
@@ -138,8 +140,11 @@ module interp =
                     mo.angle = angle
             th = th.next
         cur_viewz = pl.viewz
-        if mem.not_null(pl.mo) && pl.mo.interp.snap == snap_id && !far(pl.mo.interp.viewz, pl.viewz) then
-            pl.viewz = lerp(pl.mo.interp.viewz, pl.viewz, f)
+        match pl.mo with
+        | some(mo) ->
+            if mo.interp.snap == snap_id && !far(mo.interp.viewz, pl.viewz) then
+                pl.viewz = lerp(mo.interp.viewz, pl.viewz, f)
+        | none -> void()
         if sec_floor.len < r.numsectors then
             if sec_floor.len > 0 then
                 free(sec_floor)
@@ -162,7 +167,7 @@ module interp =
             let psp = &pl.psprites[k]
             cur_psp_sx[k] = psp.sx
             cur_psp_sy[k] = psp.sy
-            if (usize) psp.state == psp_state[k] then
+            if psp.state == psp_state[k] then
                 psp.sx = lerp(psp_sx[k], psp.sx, f)
                 psp.sy = lerp(psp_sy[k], psp.sy, f)
 

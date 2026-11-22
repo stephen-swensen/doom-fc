@@ -463,6 +463,7 @@ module d =
         let k2 = argv.check_parm("-shotevery")
         if k2 != 0 && k2 < argv.count() - 1 then shotevery = argv.int_after(k2)
         g.tictrace = argv.check_parm("-tictrace") != 0
+        g.worldtrace = argv.check_parm("-worldtrace") != 0
         let k4 = argv.check_parm("-script")
         if k4 != 0 && k4 < argv.count() - 1 then iv.script = alloc("%s{argv.get(k4 + 1)}")!
         let k3 = argv.check_parm("-quitat")

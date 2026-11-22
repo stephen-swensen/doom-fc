@@ -152,7 +152,7 @@ module sdl2 from "SDL2/SDL.h" =
     extern SDL_GetError as get_error: () -> cstr
 
     // --- Window ---
-    extern SDL_CreateWindow as create_window: (const cstr, i32, i32, i32, i32, u32) -> any*
+    extern SDL_CreateWindow as create_window: (const cstr, i32, i32, i32, i32, u32) -> any*?
     extern SDL_DestroyWindow as destroy_window: (any*) -> void
     extern SDL_SetWindowTitle as set_title: (any*, const cstr) -> void
     extern SDL_SetWindowFullscreen as set_fullscreen: (any*, u32) -> i32
@@ -178,7 +178,7 @@ module sdl2 from "SDL2/SDL.h" =
         max_texture_width: i32
         max_texture_height: i32
 
-    extern SDL_CreateRenderer as create_renderer: (any*, i32, u32) -> any*
+    extern SDL_CreateRenderer as create_renderer: (any*, i32, u32) -> any*?
     extern SDL_DestroyRenderer as destroy_renderer: (any*) -> void
     extern SDL_GetRendererInfo as get_renderer_info: (any*, renderer_info*) -> i32
     extern SDL_RenderSetLogicalSize as set_logical_size: (any*, i32, i32) -> i32
@@ -195,10 +195,10 @@ module sdl2 from "SDL2/SDL.h" =
     // --- Textures ---
     extern SDL_PIXELFORMAT_ARGB8888 as pixel_argb8888: u32
     extern SDL_TEXTUREACCESS_STREAMING as tex_streaming: i32
-    extern SDL_CreateTexture as create_texture: (any*, u32, i32, i32, i32) -> any*
+    extern SDL_CreateTexture as create_texture: (any*, u32, i32, i32, i32) -> any*?
     extern SDL_DestroyTexture as destroy_texture: (any*) -> void
-    extern SDL_UpdateTexture as update_texture: (any*, any*, const any*, i32) -> i32
-    extern SDL_RenderCopy as render_copy: (any*, any*, any*, any*) -> i32
+    extern SDL_UpdateTexture as update_texture: (any*, const rect*?, const any*, i32) -> i32
+    extern SDL_RenderCopy as render_copy: (any*, any*, const rect*?, const rect*?) -> i32
 
     // --- Timing ---
     extern SDL_Delay as delay: (u32) -> void
@@ -220,18 +220,18 @@ module sdl2 from "SDL2/SDL.h" =
         padding: u16
         size: u32
         callback: any*
-        userdata: any*
+        userdata: any*?
 
-    extern SDL_OpenAudioDevice as open_audio: (any*, i32, const audio_spec*, audio_spec*, i32) -> u32
+    extern SDL_OpenAudioDevice as open_audio: (const cstr?, i32, const audio_spec*, audio_spec*, i32) -> u32
     extern SDL_PauseAudioDevice as pause_audio: (u32, i32) -> void
     extern SDL_CloseAudioDevice as close_audio: (u32) -> void
     // Name of the driver the audio subsystem actually initialized with
     // (NULL before SDL_Init(SDL_INIT_AUDIO) or after a failed init).
-    extern SDL_GetCurrentAudioDriver as get_current_audio_driver: () -> const cstr
+    extern SDL_GetCurrentAudioDriver as get_current_audio_driver: () -> const cstr?
     // Preferred spec of the default output device (SDL >= 2.24). The first
     // arg receives a heap-allocated name (char**) — we always pass NULL and
     // skip it. Returns 0 on success; not every backend supports the query.
-    extern SDL_GetDefaultAudioInfo as get_default_audio_info: (any*, audio_spec*, i32) -> i32
+    extern SDL_GetDefaultAudioInfo as get_default_audio_info: (cstr*?, audio_spec*, i32) -> i32
 
     // --- Events ---
     extern struct SDL_Keysym as sdl_keysym =

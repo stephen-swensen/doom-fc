@@ -13,7 +13,7 @@ module musplay =
     import opl_midi from shared::
     import opl2 from shared::
 
-    let mut player = default(opl_midi.player*)
+    let mut player = none(opl_midi.player*)    // none: no GENMIDI, no music
     let mut bank = default(opl_midi.bank)
     let mut have_bank = false
     let mut volume = 8           // atomic: written by main, read by audio
@@ -38,7 +38,7 @@ module musplay =
                 bank = b
                 have_bank = true
                 // an idle player, so the callback never allocates
-                player = opl_midi.init(rate, default(opl_midi.song), bank)
+                player = some(opl_midi.init(rate, default(opl_midi.song), bank))
             | err(_) -> i.print("I_InitMusic: bad GENMIDI lump, music disabled\n")
 
     // Music volume 0..15 as a mix gain.
@@ -46,11 +46,14 @@ module musplay =
 
     // SDL audio callback side: mix `frames` stereo frames of music into buf.
     let render = (buf: i32[], frames: i32) ->
-        if !active || paused || mem.is_null(player) then return
+        if !active || paused then return
+        let pl = match player with
+        | some(p) -> p
+        | none -> return
         let gain = atomic_load_acquire(&volume)
         for fr in 0..frames do
-            opl_midi.advance(player)
-            let s = opl2.sample(player.chip) * gain / 15
+            opl_midi.advance(pl)
+            let s = opl2.sample(pl.chip) * gain / 15
             buf[fr * 2] = buf[fr * 2] + s
             buf[fr * 2 + 1] = buf[fr * 2 + 1] + s
 
@@ -202,7 +205,7 @@ module musplay =
         put32(40, frames * 4)
         ignore misc.write_file("musictest.wav", out.ptr, out.len)
         let rms = math_sqrt(sumsq / ((f64) frames * 2.0))
-        i.print(alloca("musictest %s{lumpname}: events=%d{(i32) player.tune.events.len} peak=%d{peak} rms=%5.0f{rms}\n"))
+        i.print(alloca("musictest %s{lumpname}: events=%d{(i32) player!.tune.events.len} peak=%d{peak} rms=%5.0f{rms}\n"))
 
     let math_sqrt = (x: f64) ->
         let mut g0 = if x > 1.0 then x / 2.0 else 1.0
@@ -238,22 +241,30 @@ module musplay =
 
     // Audio thread: I_PlaySong, I_StopSong, I_PauseSong, I_ResumeSong.
     let apply_play = (tune: opl_midi.song, looping: bool) ->
-        if mem.is_null(player) then return
-        opl_midi.stop(player)
-        opl_midi.set_song(player, tune)
-        opl_midi.set_loop(player, looping)
-        opl_midi.start(player)
+        let pl = match player with
+        | some(p) -> p
+        | none -> return
+        opl_midi.stop(pl)
+        opl_midi.set_song(pl, tune)
+        opl_midi.set_loop(pl, looping)
+        opl_midi.start(pl)
         active = true
         paused = false
 
     let apply_stop = () ->
-        if mem.not_null(player) then opl_midi.stop(player)
+        match player with
+        | some(pl) -> opl_midi.stop(pl)
+        | none -> void()
         active = false
 
     let apply_pause = () ->
-        if mem.not_null(player) then opl_midi.pause(player)
+        match player with
+        | some(pl) -> opl_midi.pause(pl)
+        | none -> void()
         paused = true
 
     let apply_resume = () ->
-        if mem.not_null(player) && paused then opl_midi.resume(player)
+        match player with
+        | some(pl) -> if paused then opl_midi.resume(pl)
+        | none -> void()
         paused = false

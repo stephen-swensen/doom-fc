@@ -47,9 +47,7 @@ module v =
 
     let gamma = (level: i32, v: u8) -> gammatbl.table[level * 256 + (i32) v]
 
-    let init = () ->
-        screens = alloc(u8*[] { len = 5 })!
-        set_hires(1, false)
+    let init = () -> set_hires(1, false)
 
     // Native 4:3 needs a whole number of rows per 2D row.
     let native_ok = (n: i32) -> n % 5 == 0
@@ -58,8 +56,8 @@ module v =
     // to black. Callers above this layer redraw whatever lived in them
     // (see d.apply_hires).
     let set_hires = (n: i32, nat: bool) ->
-        for k in 0..5 do
-            if mem.not_null(screens[k]) then free(screens[k])
+        if screens.len == 0 then screens = alloc(u8*[] { len = 5 })!
+        else for k in 0..5 do free(screens[k])
         hires = n
         native = nat && native_ok(n)
         hy = if native then n * 6 / 5 else n
@@ -171,9 +169,9 @@ module v =
 module iv =
     import text from std::
 
-    let mut window = default(any*)
+    let mut window = default(any*)    // (unused headless)
     let mut renderer = default(any*)
-    let mut texture = default(any*)
+    let mut texture = none(any*)    // made by the first sync_texture
     let mut pixels = default(u32[])
     let mut palette = u32[] { len = 256 }
     let mut headless = false
@@ -313,11 +311,13 @@ module iv =
             let flags = sdl2.window_resizable | sdl2.window_allow_highdpi
                 | (if argv.check_parm("-fullscreen") > 0 then sdl2.window_fullscreen_desktop else 0u32)
             fullscreen = argv.check_parm("-fullscreen") > 0
-            window = sdl2.create_window(c"doom-fc", sdl2.pos_centered, sdl2.pos_centered, 960, 720, flags)
-            if mem.is_null(window) then i.fatal("SDL_CreateWindow failed")
-            renderer = sdl2.create_renderer(window, -1, sdl2.renderer_accel | sdl2.renderer_vsync)
-            if mem.is_null(renderer) then renderer = sdl2.create_renderer(window, -1, sdl2.renderer_sw)
-            if mem.is_null(renderer) then i.fatal("SDL_CreateRenderer failed")
+            let win = sdl2.create_window(c"doom-fc", sdl2.pos_centered, sdl2.pos_centered, 960, 720, flags)
+            if win.is_none then i.fatal("SDL_CreateWindow failed")
+            window = win!
+            let mut ren = sdl2.create_renderer(window, -1, sdl2.renderer_accel | sdl2.renderer_vsync)
+            if ren.is_none then ren = sdl2.create_renderer(window, -1, sdl2.renderer_sw)
+            if ren.is_none then i.fatal("SDL_CreateRenderer failed")
+            renderer = ren!
             ignore sdl2.show_cursor(0)
             if argv.check_parm("-nomouse") > 0 then grabmouse = false
             if argv.check_parm("-mousemove") > 0 then novert = false
@@ -337,7 +337,9 @@ module iv =
         // share a texture, and finish_update replicates by `present`
         present = k
         if w != tex_w || h != tex_h || v.native != tex_native then
-            if mem.not_null(texture) then sdl2.destroy_texture(texture)
+            match texture with
+            | some(t) -> sdl2.destroy_texture(t)
+            | none -> void()
             if pixels.len > 0 then free(pixels)
             tex_w = w
             tex_h = h
@@ -353,7 +355,9 @@ module iv =
     // has wedged it (see isnd). The OS reaps the rest at exit.
     let shutdown_graphics = () ->
         if !headless then
-            if mem.not_null(texture) then sdl2.destroy_texture(texture)
+            match texture with
+            | some(t) -> sdl2.destroy_texture(t)
+            | none -> void()
             sdl2.destroy_renderer(renderer)
             sdl2.destroy_window(window)
 
@@ -400,10 +404,12 @@ module iv =
                         for rr in 1..k do
                             mem.memcpy((any*) (pixels.ptr + base + rr * pw), (const any*) (pixels.ptr + base), (i64) pw * 4)
             if dbg_on then dbg_draw()
-            ignore sdl2.update_texture(texture, default(any*), (const any*) pixels.ptr, pw * 4)
+            // (sync_texture just made the texture, or SDL had no memory)
+            let tex = texture!
+            ignore sdl2.update_texture(tex, none(const sdl2.rect*), (const any*) pixels.ptr, pw * 4)
             ignore sdl2.set_color(renderer, 0u8, 0u8, 0u8, 255u8)
             ignore sdl2.clear(renderer)
-            ignore sdl2.render_copy(renderer, texture, default(any*), default(any*))
+            ignore sdl2.render_copy(renderer, tex, none(const sdl2.rect*), none(const sdl2.rect*))
             dbg_mark_work_end()
             if frame_interp then
                 let hz = if refresh_hz > 0 then refresh_hz else 60
@@ -437,7 +443,7 @@ module iv =
     let mut dbg_jitter_ms = 0.0     // EMA of |period - tic|
     let mut dbg_drops = 0           // tics run without being displayed
     let mut dbg_hitch = 0           // frames left to show the hitch colour
-    let mut dbg_font = default((const patch*)[])
+    let mut dbg_font = default((const patch*?)[])
 
     let dbg_reset = () ->
         dbg_ms = 0.0
@@ -484,19 +490,20 @@ module iv =
     // The HUD font (STCFN033..STCFN095), straight from the WAD.
     let dbg_glyph = (ch0: i32) ->
         if dbg_font.len == 0 then
-            dbg_font = alloc((const patch*)[] { len = 64 })!
+            dbg_font = alloc((const patch*?)[] { len = 64 })!
             for k in 0..63 do
                 let lump = w.check_num_for_name(alloca("STCFN%03d{k + 33}"))
-                if lump >= 0 then dbg_font[k] = v.patch_num(lump)
+                if lump >= 0 then dbg_font[k] = some(v.patch_num(lump))
         let ch = if ch0 >= 'a' && ch0 <= 'z' then ch0 - 'a' + 'A' else ch0
-        if ch < 33 || ch > 95 then default(const patch*) else dbg_font[ch - 33]
+        if ch < 33 || ch > 95 then none(const patch*) else dbg_font[ch - 33]
 
     // One glyph at texture pixel (x, y), each font pixel an s x s block:
     // in the font's own red when `red`, else as grey of the same
     // brightness. Returns the advance.
     let dbg_char = (x: i32, y0: i32, ch: i32, red: bool, s: i32) ->
-        let p = dbg_glyph(ch)
-        if mem.is_null(p) then return 4 * s
+        let p = match dbg_glyph(ch) with
+        | some(g) -> g
+        | none -> return 4 * s
         let pw = tex_w
         let y = y0 - (i32) p.topoffset * s
         for col in 0..(i32) p.width do
@@ -525,8 +532,9 @@ module iv =
     let dbg_text_width = (text: const str, s: i32) ->
         let mut wd = 0
         for ch in text do
-            let p = dbg_glyph((i32) ch)
-            wd = wd + (if mem.is_null(p) then 4 * s else ((i32) p.width + 1) * s)
+            wd = wd + match dbg_glyph((i32) ch) with
+            | some(p) -> ((i32) p.width + 1) * s
+            | none -> 4 * s
         wd
 
     // Darken a texture rectangle behind the text.
@@ -669,8 +677,9 @@ module iv =
                 // test hook: face DEG degrees (0 = east, 90 = north)
                 let mut n = 0
                 for ch in arg do n = n * 10 + (i32) ch - '0'
-                let mo = ds.players[ds.consoleplayer].mo
-                if mem.not_null(mo) then mo.angle = (u32) (((i64) n << 32) / 360)
+                match ds.players[ds.consoleplayer].mo with
+                | some(mo) -> mo.angle = (u32) (((i64) n << 32) / 360)
+                | none -> void()
             else if op == 'x' then
                 // test hook: exit the level (G_ExitLevel)
                 ds.g_exit_level()

@@ -103,6 +103,7 @@ regression suite is built on it:
 | `-quitat TIC` | quit at that gametic |
 | `-demostats` | print the player's end state when a demo or run ends |
 | `-tictrace` | print `T gametic rndindex x y health` every tic |
+| `-worldtrace` | print `W gametic HASH` every tic in a level: a hash of every mobj (with its target, tracer and links), player, sector, line and side |
 | `-sndtrace` | print `S gametic start\|stop NAME ...` for every sound effect started or stopped |
 | `-sndcapture FILE` | run the real mixer (effects and music) one tic at a time and write the run to a WAV |
 | `-musictest LUMP` | render 20 s of a music lump to `musictest.wav` and report its level |
@@ -114,6 +115,15 @@ frame hashes stay fixed.
 `tools/refdemo/build.sh` builds linuxdoom-1.10 itself, from `../DOOM`, as a
 headless demo player with the same `-tictrace` output. `make check` diffs the
 two traces for every IWAD demo. They are identical on every tic.
+
+`tests/soak.sh` plays every map of each IWAD present for 2500 tics with a
+scripted player (idkfa, every weapon, doors, Nightmare on every third map,
+god mode on every other run) and hashes its `-worldtrace`, along with the
+IWAD demos' and a mid-fight save that is loaded and played on. `make check`
+compares the hashes with `tests/soak.golden`. Those were recorded from this
+port, not from linuxdoom, so they catch changes rather than bugs: a
+refactor must leave them alone. Re-record them (`tests/soak.sh >
+tests/soak.golden`) only for an intentional playsim change.
 
 ## Display
 
@@ -270,6 +280,13 @@ included. These are the deliberate exceptions:
     snaps onto a target to the player's right.
   - `P_LoadThings` uses `break` for a DOOM II-only thing in a DOOM 1 map, so
     every later thing on the map is dropped too.
+- **Loading a savegame clears every thing's `tracer`**, as linuxdoom
+  already clears `target`. linuxdoom restores the saved pointer, which
+  points into the level it has just freed, so loading a save with a
+  revenant missile in flight crashes. Here the missile flies straight.
+  Demos never load a game.
+- **A linedef with no front side is an error at load.** linuxdoom gives it
+  a null front sector and crashes in `P_GroupLines`.
 - **`EV_DoDonut`** tests `!flags & ML_TWOSIDED`, which is always false, so
   a one-sided line could hand it a null sector. doom-fc skips one-sided
   lines, in demos too, because the fix only changes the case that would

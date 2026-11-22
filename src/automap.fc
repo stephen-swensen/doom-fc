@@ -193,8 +193,9 @@ module amap =
             m_x = old_m_x
             m_y = old_m_y
         else
-            m_x = plr.mo.x - m_w / 2
-            m_y = plr.mo.y - m_h / 2
+            let mo = plr.mo!
+            m_x = mo.x - m_w / 2
+            m_y = mo.y - m_h / 2
         m_x2 = m_x + m_w
         m_y2 = m_y + m_h
         // Change the scaling multipliers
@@ -263,8 +264,9 @@ module amap =
                 if pnum >= dd.maxplayers || ds.playeringame[pnum] then break
                 pnum = pnum + 1
         plr = &ds.players[pnum]
-        m_x = plr.mo.x - m_w / 2
-        m_y = plr.mo.y - m_h / 2
+        let mo = plr.mo!
+        m_x = mo.x - m_w / 2
+        m_y = mo.y - m_h / 2
         change_window_loc()
         // for saving & restoring
         old_m_x = m_x
@@ -408,13 +410,14 @@ module amap =
         else activate_new_scale()
 
     let do_follow_player = () ->
-        if f_oldloc_x != plr.mo.x || f_oldloc_y != plr.mo.y then
-            m_x = ftom(mtof(plr.mo.x)) - m_w / 2
-            m_y = ftom(mtof(plr.mo.y)) - m_h / 2
+        let mo = plr.mo!
+        if f_oldloc_x != mo.x || f_oldloc_y != mo.y then
+            m_x = ftom(mtof(mo.x)) - m_w / 2
+            m_y = ftom(mtof(mo.y)) - m_h / 2
             m_x2 = m_x + m_w
             m_y2 = m_y + m_h
-            f_oldloc_x = plr.mo.x
-            f_oldloc_y = plr.mo.y
+            f_oldloc_x = mo.x
+            f_oldloc_y = mo.y
 
     let update_light_lev = () ->
         // Change light level
@@ -621,9 +624,9 @@ module amap =
             let l = mline { ax = ln.v1.x, ay = ln.v1.y, bx = ln.v2.x, by = ln.v2.y }
             if cheating != 0 || (ln.flags & ml.mapped) != 0 then
                 if (ln.flags & ml.dontdraw) != 0 && cheating == 0 then continue
-                if mem.is_null(ln.backsector) then
-                    draw_mline(&l, wallcolors + lightlev)
-                else
+                match ln.backsector with
+                | none -> draw_mline(&l, wallcolors + lightlev)
+                | some(back) ->
                     if ln.special == 39 then
                         // teleporters
                         draw_mline(&l, wallcolors + wallrange / 2)
@@ -631,9 +634,9 @@ module amap =
                         // secret door
                         if cheating != 0 then draw_mline(&l, secretwallcolors + lightlev)
                         else draw_mline(&l, wallcolors + lightlev)
-                    else if ln.backsector.floorheight != ln.frontsector.floorheight then
+                    else if back.floorheight != ln.frontsector.floorheight then
                         draw_mline(&l, fdwallcolors + lightlev)    // floor level change
-                    else if ln.backsector.ceilingheight != ln.frontsector.ceilingheight then
+                    else if back.ceilingheight != ln.frontsector.ceilingheight then
                         draw_mline(&l, cdwallcolors + lightlev)    // ceiling level change
                     else if cheating != 0 then
                         draw_mline(&l, tswallcolors + lightlev)
@@ -672,10 +675,9 @@ module amap =
 
     let draw_players = () ->
         if !ds.netgame then
-            if cheating != 0 then
-                draw_line_character(cheat_player_arrow, 0, plr.mo.angle, white, plr.mo.x, plr.mo.y)
-            else
-                draw_line_character(player_arrow, 0, plr.mo.angle, white, plr.mo.x, plr.mo.y)
+            let mo = plr.mo!
+            let arrow = if cheating != 0 then cheat_player_arrow else player_arrow
+            draw_line_character(arrow, 0, mo.angle, white, mo.x, mo.y)
             return
         let mut their_color = -1
         for k in 0..dd.maxplayers do
@@ -685,15 +687,18 @@ module amap =
             if !ds.playeringame[k] then continue
             let color = if pl.powers[pw.invisibility] != 0 then 246    // *close* to black
                         else their_colors[their_color]
-            draw_line_character(player_arrow, 0, pl.mo.angle, color, pl.mo.x, pl.mo.y)
+            let mo = pl.mo!
+            draw_line_character(player_arrow, 0, mo.angle, color, mo.x, mo.y)
 
     let draw_things = (colors: i32, colorrange: i32) ->
         for k in 0..r.numsectors do
-            let mut t = r.sectors[k].thinglist
+            let mut cur = r.sectors[k].thinglist
             loop
-                if mem.is_null(t) then break
-                draw_line_character(thintriangle_guy, 16 << 16, t.angle, colors + lightlev, t.x, t.y)
-                t = t.snext
+                match cur with
+                | none -> break
+                | some(t) ->
+                    draw_line_character(thintriangle_guy, 16 << 16, t.angle, colors + lightlev, t.x, t.y)
+                    cur = t.snext
 
     let draw_marks = () ->
         for k in 0..nummarkpoints do

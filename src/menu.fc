@@ -209,7 +209,7 @@ struct menuitem =
 
 struct menudef =
     numitems: i32
-    prev: menudef*
+    prev: menudef*?    // where backspace goes; none at the top
     items: menuitem*
     routine: i32
     x: i32
@@ -367,13 +367,13 @@ module m =
         episode_menu[1] = mi(1, "M_EPI2", r_episode, 't')
         episode_menu[2] = mi(1, "M_EPI3", r_episode, 'i')
         episode_menu[3] = mi(1, "M_EPI4", r_episode, 't')
-        epi_def = menudef { numitems = 4, prev = &main_def, items = episode_menu.ptr, routine = d_episode, x = 48, y = 63 }
+        epi_def = menudef { numitems = 4, prev = some(&main_def), items = episode_menu.ptr, routine = d_episode, x = 48, y = 63 }
         new_game_menu[0] = mi(1, "M_JKILL", r_choose_skill, 'i')
         new_game_menu[1] = mi(1, "M_ROUGH", r_choose_skill, 'h')
         new_game_menu[2] = mi(1, "M_HURT", r_choose_skill, 'h')
         new_game_menu[3] = mi(1, "M_ULTRA", r_choose_skill, 'u')
         new_game_menu[4] = mi(1, "M_NMARE", r_choose_skill, 'n')
-        new_def = menudef { numitems = 5, prev = &epi_def, items = new_game_menu.ptr, routine = d_new_game, x = 48, y = 63, laston = 2 }
+        new_def = menudef { numitems = 5, prev = some(&epi_def), items = new_game_menu.ptr, routine = d_new_game, x = 48, y = 63, laston = 2 }
         options_menu[0] = mi(1, "M_ENDGAM", r_end_game, 'e')
         options_menu[1] = mi(1, "M_MESSG", r_change_messages, 'm')
         // doom-fc: Graphic Detail sets the render scale (linuxdoom's
@@ -384,21 +384,21 @@ module m =
         options_menu[5] = mi(2, "M_MSENS", r_change_sensitivity, 'm')
         options_menu[6] = mi(-1, "", r_none, 0)
         options_menu[7] = mi(1, "M_SVOL", r_sound, 's')
-        options_def = menudef { numitems = 8, prev = &main_def, items = options_menu.ptr, routine = d_options, x = 60, y = 37 }
+        options_def = menudef { numitems = 8, prev = some(&main_def), items = options_menu.ptr, routine = d_options, x = 60, y = 37 }
         read_menu1[0] = mi(1, "", r_read_this2, 0)
-        read_def1 = menudef { numitems = 1, prev = &main_def, items = read_menu1.ptr, routine = d_read_this1, x = 280, y = 185 }
+        read_def1 = menudef { numitems = 1, prev = some(&main_def), items = read_menu1.ptr, routine = d_read_this1, x = 280, y = 185 }
         read_menu2[0] = mi(1, "", r_finish_read_this, 0)
-        read_def2 = menudef { numitems = 1, prev = &read_def1, items = read_menu2.ptr, routine = d_read_this2, x = 330, y = 175 }
+        read_def2 = menudef { numitems = 1, prev = some(&read_def1), items = read_menu2.ptr, routine = d_read_this2, x = 330, y = 175 }
         sound_menu[0] = mi(2, "M_SFXVOL", r_sfx_vol, 's')
         sound_menu[1] = mi(-1, "", r_none, 0)
         sound_menu[2] = mi(2, "M_MUSVOL", r_music_vol, 'm')
         sound_menu[3] = mi(-1, "", r_none, 0)
-        sound_def = menudef { numitems = 4, prev = &options_def, items = sound_menu.ptr, routine = d_sound, x = 80, y = 64 }
+        sound_def = menudef { numitems = 4, prev = some(&options_def), items = sound_menu.ptr, routine = d_sound, x = 80, y = 64 }
         for k in 0..6 do
             load_menu[k] = mi(1, "", r_load_select, '1' + (i32) k)
             save_menu[k] = mi(1, "", r_save_select, '1' + (i32) k)
-        load_def = menudef { numitems = 6, prev = &main_def, items = load_menu.ptr, routine = d_load, x = 80, y = 54 }
-        save_def = menudef { numitems = 6, prev = &main_def, items = save_menu.ptr, routine = d_save, x = 80, y = 54 }
+        load_def = menudef { numitems = 6, prev = some(&main_def), items = load_menu.ptr, routine = d_load, x = 80, y = 54 }
+        save_def = menudef { numitems = 6, prev = some(&main_def), items = save_menu.ptr, routine = d_save, x = 80, y = 54 }
 
     let item = (menu: menudef*, n: i32) -> menu.items + n
 
@@ -493,7 +493,7 @@ module m =
     let quick_save_response = (ch: i32) ->
         if ch == 'y' then
             do_save(quick_save_slot)
-            snd.start_sound(default(any*), sfx.swtchx)
+            snd.start_local_sound(sfx.swtchx)
 
     // the prompts carry a %s (dstr has them with the slot filled in by hand)
     let fill_prompt = (fmt: const str, arg: const str) ->
@@ -507,7 +507,7 @@ module m =
 
     let quick_save = () ->
         if !ds.usergame then
-            snd.start_sound(default(any*), sfx.oof)
+            snd.start_local_sound(sfx.oof)
             return
         if ds.gamestate != gs.level then return
         if quick_save_slot < 0 then
@@ -522,7 +522,7 @@ module m =
     let quick_load_response = (ch: i32) ->
         if ch == 'y' then
             load_select(quick_save_slot)
-            snd.start_sound(default(any*), sfx.swtchx)
+            snd.start_local_sound(sfx.swtchx)
 
     let quick_load = () ->
         if ds.netgame then
@@ -646,7 +646,7 @@ module m =
 
     let end_game = (choice: i32) ->
         if !ds.usergame then
-            snd.start_sound(default(any*), sfx.oof)
+            snd.start_local_sound(sfx.oof)
             return
         if ds.netgame then
             start_message(dstr.netend, mr_none, false)
@@ -662,8 +662,8 @@ module m =
     let quit_response = (ch: i32) ->
         if ch != 'y' then return
         if !ds.netgame then
-            if ds.gamemode == gmode.commercial then snd.start_sound(default(any*), quitsounds2[(ds.gametic >> 2) & 7])
-            else snd.start_sound(default(any*), quitsounds[(ds.gametic >> 2) & 7])
+            if ds.gamemode == gmode.commercial then snd.start_local_sound(quitsounds2[(ds.gametic >> 2) & 7])
+            else snd.start_local_sound(quitsounds[(ds.gametic >> 2) & 7])
             // wait a bit for the sound (I_WaitVBL(105))
             if !iv.headless then i.sleep_ms(1500)
         i_quit()
@@ -881,7 +881,7 @@ module m =
             message_to_print = 0
             call_message_routine(message_routine, ch)
             ds.menuactive = false
-            snd.start_sound(default(any*), sfx.swtchx)
+            snd.start_local_sound(sfx.swtchx)
             return true
         if ds.devparm && ch == dd.key_f1 then
             ds.gameaction = ga.screenshot
@@ -892,13 +892,13 @@ module m =
                 // Screen size down
                 if ds.automapactive || hu.chat_on then return false
                 size_display(0)
-                snd.start_sound(default(any*), sfx.stnmov)
+                snd.start_local_sound(sfx.stnmov)
                 return true
             else if ch == dd.key_equals then
                 // Screen size up
                 if ds.automapactive || hu.chat_on then return false
                 size_display(1)
-                snd.start_sound(default(any*), sfx.stnmov)
+                snd.start_local_sound(sfx.stnmov)
                 return true
             else if ch == dd.key_f1 then
                 // Help key
@@ -906,18 +906,18 @@ module m =
                 if ds.gamemode == gmode.retail then current_menu = &read_def2
                 else current_menu = &read_def1
                 item_on = 0
-                snd.start_sound(default(any*), sfx.swtchn)
+                snd.start_local_sound(sfx.swtchn)
                 return true
             else if ch == dd.key_f2 then
                 // Save
                 start_control_panel()
-                snd.start_sound(default(any*), sfx.swtchn)
+                snd.start_local_sound(sfx.swtchn)
                 save_game(0)
                 return true
             else if ch == dd.key_f3 then
                 // Load
                 start_control_panel()
-                snd.start_sound(default(any*), sfx.swtchn)
+                snd.start_local_sound(sfx.swtchn)
                 load_game(0)
                 return true
             else if ch == dd.key_f4 then
@@ -925,36 +925,36 @@ module m =
                 start_control_panel()
                 current_menu = &sound_def
                 item_on = sfx_vol
-                snd.start_sound(default(any*), sfx.swtchn)
+                snd.start_local_sound(sfx.swtchn)
                 return true
             else if ch == dd.key_f5 then
                 // Detail toggle
                 change_detail(0)
-                snd.start_sound(default(any*), sfx.swtchn)
+                snd.start_local_sound(sfx.swtchn)
                 return true
             else if ch == dd.key_f6 then
                 // Quicksave
-                snd.start_sound(default(any*), sfx.swtchn)
+                snd.start_local_sound(sfx.swtchn)
                 quick_save()
                 return true
             else if ch == dd.key_f7 then
                 // End game
-                snd.start_sound(default(any*), sfx.swtchn)
+                snd.start_local_sound(sfx.swtchn)
                 end_game(0)
                 return true
             else if ch == dd.key_f8 then
                 // Toggle messages
                 change_messages(0)
-                snd.start_sound(default(any*), sfx.swtchn)
+                snd.start_local_sound(sfx.swtchn)
                 return true
             else if ch == dd.key_f9 then
                 // Quickload
-                snd.start_sound(default(any*), sfx.swtchn)
+                snd.start_local_sound(sfx.swtchn)
                 quick_load()
                 return true
             else if ch == dd.key_f10 then
                 // Quit DOOM
-                snd.start_sound(default(any*), sfx.swtchn)
+                snd.start_local_sound(sfx.swtchn)
                 quit_doom(0)
                 return true
             else if ch == dd.key_f11 then
@@ -968,7 +968,7 @@ module m =
         if !ds.menuactive then
             if ch == dd.key_escape then
                 start_control_panel()
-                snd.start_sound(default(any*), sfx.swtchn)
+                snd.start_local_sound(sfx.swtchn)
                 return true
             return false
         // Keys usable within menu
@@ -977,24 +977,24 @@ module m =
             loop
                 if item_on + 1 > current_menu.numitems - 1 then item_on = 0
                 else item_on = item_on + 1
-                snd.start_sound(default(any*), sfx.pstop)
+                snd.start_local_sound(sfx.pstop)
                 if item(current_menu, item_on).status != -1 then break
             return true
         else if ch == dd.key_uparrow then
             loop
                 if item_on == 0 then item_on = current_menu.numitems - 1
                 else item_on = item_on - 1
-                snd.start_sound(default(any*), sfx.pstop)
+                snd.start_local_sound(sfx.pstop)
                 if item(current_menu, item_on).status != -1 then break
             return true
         else if ch == dd.key_leftarrow then
             if cur.routine != r_none && cur.status == 2 then
-                snd.start_sound(default(any*), sfx.stnmov)
+                snd.start_local_sound(sfx.stnmov)
                 call_routine(cur.routine, 0)
             return true
         else if ch == dd.key_rightarrow then
             if cur.routine != r_none && cur.status == 2 then
-                snd.start_sound(default(any*), sfx.stnmov)
+                snd.start_local_sound(sfx.stnmov)
                 call_routine(cur.routine, 1)
             return true
         else if ch == dd.key_enter then
@@ -1002,33 +1002,35 @@ module m =
                 current_menu.laston = item_on
                 if cur.status == 2 then
                     call_routine(cur.routine, 1)    // right arrow
-                    snd.start_sound(default(any*), sfx.stnmov)
+                    snd.start_local_sound(sfx.stnmov)
                 else
                     call_routine(cur.routine, item_on)
-                    snd.start_sound(default(any*), sfx.pistol)
+                    snd.start_local_sound(sfx.pistol)
             return true
         else if ch == dd.key_escape then
             current_menu.laston = item_on
             clear_menus()
-            snd.start_sound(default(any*), sfx.swtchx)
+            snd.start_local_sound(sfx.swtchx)
             return true
         else if ch == dd.key_backspace then
             current_menu.laston = item_on
-            if mem.not_null(current_menu.prev) then
-                current_menu = current_menu.prev
+            match current_menu.prev with
+            | some(prev) ->
+                current_menu = prev
                 item_on = current_menu.laston
-                snd.start_sound(default(any*), sfx.swtchn)
+                snd.start_local_sound(sfx.swtchn)
+            | none -> void()
             return true
         else
             for k in item_on + 1..current_menu.numitems do
                 if item(current_menu, (i32) k).alphakey == ch then
                     item_on = (i32) k
-                    snd.start_sound(default(any*), sfx.pstop)
+                    snd.start_local_sound(sfx.pstop)
                     return true
             for k in 0..item_on + 1 do
                 if item(current_menu, (i32) k).alphakey == ch then
                     item_on = (i32) k
-                    snd.start_sound(default(any*), sfx.pstop)
+                    snd.start_local_sound(sfx.pstop)
                     return true
         false
 
@@ -1108,7 +1110,7 @@ module m =
             main_menu[readthis] = main_menu[quitdoom]
             main_def.numitems = main_def.numitems - 1
             main_def.y = main_def.y + 8
-            new_def.prev = &main_def
+            new_def.prev = some(&main_def)
             read_def1.routine = d_read_this1
             read_def1.x = 330
             read_def1.y = 165

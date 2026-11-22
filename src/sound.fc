@@ -7,7 +7,7 @@
 // One mixer channel. Owned by the audio callback: only the audio thread
 // reads or writes these (see isnd).
 struct sfxchannel =
-    data: const u8*      // current sample pointer, null = idle
+    data: const u8*?     // the next sample; none: idle
     dataend: const u8*
     step: u32            // 16.16 source samples per output sample
     stepremainder: u32
@@ -170,22 +170,23 @@ module isnd =
             nomusic = true
             return
         let mut pref = default(sdl2.audio_spec)
-        let detected = sdl2.get_default_audio_info(default(any*), &pref, 0) == 0 && pref.freq > 0
+        let detected = sdl2.get_default_audio_info(none(cstr*), &pref, 0) == 0 && pref.freq > 0
         output_rate = if detected then pref.freq else fallback_rate
         let spec = sdl2.audio_spec {
             freq = output_rate, format = sdl2.audio_s16sys, channels = 2u8, silence = 0u8,
             samples = (u16) buffer_frames, padding = 0u16, size = 0u32,
-            callback = &callback, userdata = default(any*) }
+            callback = &callback, userdata = none(any*) }
         let mut obtained = default(sdl2.audio_spec)
         // allowed_changes 0: SDL converts to exactly this format and buffer
-        device = sdl2.open_audio(default(any*), 0, &spec, &obtained, 0)
+        device = sdl2.open_audio(none(const cstr), 0, &spec, &obtained, 0)
         if device == 0u32 then
             i.print(alloca("I_InitSound: could not open audio (%s{(const str) sdl2.get_error()})\n"))
             nosound = true
             nomusic = true
         else
-            let drv = sdl2.get_current_audio_driver()
-            let drvname = if mem.is_null(drv) then (const str) "?" else (const str) drv
+            let drvname = match sdl2.get_current_audio_driver() with
+            | some(drv) -> (const str) drv
+            | none -> (const str) "?"
             let how = if detected then (const str) "" else (const str) " (fallback)"
             let buf_ms = (f64) obtained.samples * 1000.0 / (f64) obtained.freq
             i.print(alloca("I_InitSound: driver %s{drvname}, device rate %d{output_rate} Hz%s{how}, stereo, %d{(i32) obtained.samples}-frame buffer (~%4.1f{buf_ms} ms)\n"))
@@ -206,7 +207,7 @@ module isnd =
                 for k in 0..cap.len do bigger[k] = cap[k]
                 free(cap)
                 cap = bigger
-            callback(default(any*), (u8*) (cap.ptr + cap_frames * 2), frames_per_tic * 4)
+            callback(none(any*), (u8*) (cap.ptr + cap_frames * 2), frames_per_tic * 4)
             cap_frames = cap_frames + frames_per_tic
 
     // I_ShutdownSound: deliberately nothing. Closing the device (or
@@ -318,7 +319,7 @@ module isnd =
         if cmd.op == op_start then
             let ch = &chans[s]
             let data = sounds.s_sfx[cmd.id].data
-            ch.data = data.ptr
+            ch.data = some((const u8*) data.ptr)
             ch.dataend = data.ptr + lengths[cmd.id]
             ch.step = cmd.step
             ch.stepremainder = 0u32
@@ -327,7 +328,7 @@ module isnd =
             ch.handle = cmd.handle
         else if cmd.op == op_stop then
             if chans[s].handle == cmd.handle then
-                chans[s].data = default(const u8*)
+                chans[s].data = none(const u8*)
                 atomic_store_release(&finished[s], cmd.handle)
         else if cmd.op == op_params then
             if chans[s].handle == cmd.handle then
@@ -349,7 +350,7 @@ module isnd =
 
     // SDL audio callback: apply the queued commands, mix the effects, add
     // music, write s16 stereo.
-    let callback = (userdata: any*, stream: u8*, len: i32) ->
+    let callback = (userdata: any*?, stream: u8*, len: i32) ->
         drain()
         let frames = len / 4
         let out = i16[] { ptr = (i16*) stream, len = frames * 2 }
@@ -358,23 +359,28 @@ module isnd =
         musplay.render(buf, frames)
         for chn in 0..num_channels do
             let ch = &chans[chn]
-            if mem.not_null(ch.data) then
+            match ch.data with
+            | some(start) ->
                 let lv = ch.leftvol
                 let rv = ch.rightvol
+                let mut pos = start
+                let mut playing = true
                 let mut f = 0
                 loop
-                    if f >= frames || mem.is_null(ch.data) then break
-                    let sample = (i32) *ch.data - 128
+                    if f >= frames || !playing then break
+                    let sample = (i32) *pos - 128
                     // vol_lookup[v*256+j] = v*(j-128)*256/127
                     buf[f * 2] = buf[f * 2] + lv * sample * 256 / 127
                     buf[f * 2 + 1] = buf[f * 2 + 1] + rv * sample * 256 / 127
                     ch.stepremainder = ch.stepremainder + ch.step
-                    ch.data = ch.data + (i32) (ch.stepremainder >> 16)
+                    pos = pos + (i32) (ch.stepremainder >> 16)
                     ch.stepremainder = ch.stepremainder & 0xffffu32
-                    if ch.data >= ch.dataend then
-                        ch.data = default(const u8*)
+                    if pos >= ch.dataend then
+                        playing = false
                         atomic_store_release(&finished[chn], ch.handle)
                     f = f + 1
+                ch.data = if playing then some(pos) else none(const u8*)
+            | none -> void()
         for k in 0..frames * 2 do
             let s = buf[k]
             out[k] = if s > 0x7fff then 0x7fffi16 else if s < -0x8000 then -0x8000i16 else (i16) s
@@ -390,7 +396,7 @@ module snd =
 
     struct channel =
         sfxinfo: i32      // index into sounds.s_sfx, 0 = free
-        origin: const any*
+        origin: const mobj*?    // none: a local sound, heard at full volume
         handle: i32
 
     let mut channels = default(channel[])
@@ -441,7 +447,7 @@ module snd =
         change_music(mnum, true)
         nextcleanup = 15
 
-    let start_sound_at_volume = (origin: const any*, sfx_id: i32, volume0: i32) ->
+    let start_sound_at_volume = (origin: const mobj*?, sfx_id: i32, volume0: i32) ->
         let mut volume = volume0
         // check for bogus sound #
         if sfx_id < 1 || sfx_id > sfx.numsfx then i.fatal(alloca("Bad sfx #: %d{sfx_id}"))
@@ -458,14 +464,17 @@ module snd =
             if volume > ds.snd_sfxvolume then volume = ds.snd_sfxvolume
         // Check to see if it is audible, and if not, modify the params
         let listener = ds.players[ds.consoleplayer].mo
-        if mem.not_null(origin) && origin != (const any*) listener then
-            let mo = (const mobj*) origin
-            let { rc, v2, s2, p2 } = adjust_sound_params(listener, mo, volume, sep, pitch)
-            volume = v2
-            sep = s2
-            pitch = p2
-            if mo.x == listener.x && mo.y == listener.y then sep = norm_sep
-            if !rc then return
+        match origin with
+        | some(mo) ->
+            if !is_listener(listener, mo) then
+                let ear = listener!
+                let { rc, v2, s2, p2 } = adjust_sound_params(ear, mo, volume, sep, pitch)
+                volume = v2
+                sep = s2
+                pitch = p2
+                if mo.x == ear.x && mo.y == ear.y then sep = norm_sep
+                if !rc then return
+        | none -> void()
         // hacks to vary the sfx pitches
         if sfx_id >= sfx.sawup && sfx_id <= sfx.sawhit then
             pitch = pitch + 8 - (rnd.m_random() & 15)
@@ -476,7 +485,7 @@ module snd =
             if pitch < 0 then pitch = 0
             else if pitch > 255 then pitch = 255
         // kill old sound
-        stop_sound(origin)
+        stop_sound_from(origin)
         // try to find a channel
         let cnum = get_channel(origin, sfx_id)
         if cnum < 0 then return
@@ -487,10 +496,27 @@ module snd =
         channels[cnum].handle = isnd.start_sound(sfx_id, volume, sep, pitch, priority)
         if trace then i.print(alloca("S %d{ds.gametic} start %s{sx.name} ch=%d{cnum} vol=%d{volume} sep=%d{sep}\n"))
 
-    let start_sound = (origin: const any*, sfx_id: i32) ->
-        start_sound_at_volume(origin, sfx_id, ds.snd_sfxvolume)
+    // Start a sound from a thing (or a sector's sound origin, which shares
+    // an mobj's leading fields).
+    let start_sound = (origin: const mobj*, sfx_id: i32) ->
+        start_sound_at_volume(some(origin), sfx_id, ds.snd_sfxvolume)
 
-    let stop_sound = (origin: const any*) ->
+    // Start a sound with no position (menus, pickups, full-volume bosses).
+    let start_local_sound = (sfx_id: i32) ->
+        start_sound_at_volume(none(const mobj*), sfx_id, ds.snd_sfxvolume)
+
+    // Is mo the listening player's own mobj?
+    private let is_listener = (listener: const mobj*?, mo: const mobj*) ->
+        match listener with
+        | some(ear) -> ear == mo
+        | none -> false
+
+    // Stop the first sound playing from origin.
+    let stop_sound = (origin: const mobj*) -> stop_sound_from(some(origin))
+
+    // Stop the first sound playing from origin, or (none) the first local
+    // sound, as S_StopSound(NULL) does.
+    private let stop_sound_from = (origin: const mobj*?) ->
         let mut done = false
         for cnum in 0..num_channels do
             if !done && channels[cnum].sfxinfo != 0 && channels[cnum].origin == origin then
@@ -509,7 +535,7 @@ module snd =
             mus_paused = false
 
     // Updates music & sounds
-    let update_sounds = (listener: mobj*) ->
+    let update_sounds = (listener: const mobj*?) ->
         for cnum in 0..num_channels do
             let ch = &channels[cnum]
             if ch.sfxinfo == 0 then continue
@@ -529,10 +555,13 @@ module snd =
                         volume = ds.snd_sfxvolume
                 // check non-local sounds for distance clipping
                 // or modify their params
-                if mem.not_null(ch.origin) && (const any*) listener != ch.origin then
-                    let { rc, v2, s2, p2 } = adjust_sound_params(listener, (const mobj*) ch.origin, volume, sep, pitch)
-                    if !rc then stop_channel((i32) cnum)
-                    else isnd.update_sound_params(ch.handle, v2, s2, p2)
+                match ch.origin with
+                | some(org) ->
+                    if !is_listener(listener, org) then
+                        let { rc, v2, s2, p2 } = adjust_sound_params(listener!, org, volume, sep, pitch)
+                        if !rc then stop_channel((i32) cnum)
+                        else isnd.update_sound_params(ch.handle, v2, s2, p2)
+                | none -> void()
             else
                 // if channel is allocated but sound has stopped, free it
                 stop_channel((i32) cnum)
@@ -613,13 +642,13 @@ module snd =
             { vol > 0, vol, sep, pitch }
 
     // S_getChannel: If none available, return -1. Otherwise channel #.
-    let get_channel = (origin: const any*, sfxid: i32) ->
+    let get_channel = (origin: const mobj*?, sfxid: i32) ->
         // Find an open channel
         let mut cnum = 0
         loop
             if cnum >= num_channels then break
             if channels[cnum].sfxinfo == 0 then break
-            else if mem.not_null(origin) && channels[cnum].origin == origin then
+            else if origin.is_some && channels[cnum].origin == origin then
                 stop_channel(cnum)
                 break
             cnum = cnum + 1

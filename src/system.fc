@@ -94,11 +94,11 @@ module i =
 
 struct memblock =
     size: i64
-    user: any**
+    user: (any*?)*?    // the owner's pointer, cleared when the block is freed
     tag: i32
     id: i32
-    next: memblock*
-    prev: memblock*
+    next: memblock*?
+    prev: memblock*?
     pad: i64
 
 module pu =
@@ -115,7 +115,7 @@ module z =
     let zoneid = 0x1d4a11
     let header = 48
 
-    let mut blocklist = default(memblock*)
+    let mut blocklist = none(memblock*)
 
     let init = () -> void()
 
@@ -127,19 +127,25 @@ module z =
     // it stays inside this one.
     let overread_pad = 128i64
 
-    let malloc = (size: i64, tag: i32, user: any**) ->
+    // A zeroed block of size bytes. An owner (user) is a pointer that
+    // Z_Free clears; purgable blocks need one.
+    let malloc = (size: i64, tag: i32, user: (any*?)*?) ->
         let raw = alloc(u8, size + (i64) header + overread_pad)!
         let b = (memblock*) raw
         b.size = size
         b.user = user
         b.tag = tag
         b.id = zoneid
-        b.prev = default(memblock*)
+        b.prev = none(memblock*)
         b.next = blocklist
-        if mem.not_null(blocklist) then blocklist.prev = b
-        blocklist = b
+        match blocklist with
+        | some(head) -> head.prev = some(b)
+        | none -> void()
+        blocklist = some(b)
         let data = (any*) (raw + header)
-        if mem.not_null(user) then *user = data
+        match user with
+        | some(owner) -> *owner = some(data)
+        | none -> void()
         data
 
     private let block_of = (p: any*) ->
@@ -149,24 +155,32 @@ module z =
 
     let zfree = (p: any*) ->
         let b = block_of(p)
-        if mem.not_null(b.user) then *b.user = default(any*)
-        if mem.not_null(b.prev) then b.prev.next = b.next else blocklist = b.next
-        if mem.not_null(b.next) then b.next.prev = b.prev
+        match b.user with
+        | some(owner) -> *owner = none(any*)
+        | none -> void()
+        match b.prev with
+        | some(prev) -> prev.next = b.next
+        | none -> blocklist = b.next
+        match b.next with
+        | some(next) -> next.prev = b.prev
+        | none -> void()
         b.id = 0
         free(b)
 
     let free_tags = (lowtag: i32, hightag: i32) ->
-        let mut b = blocklist
+        let mut cur = blocklist
         loop
-            if mem.is_null(b) then break
+            let b = match cur with
+            | some(blk) -> blk
+            | none -> break
             let next = b.next
             if b.tag >= lowtag && b.tag <= hightag then
                 zfree((any*) ((u8*) b + header))
-            b = next
+            cur = next
 
     let change_tag = (p: any*, tag: i32) ->
         let b = block_of(p)
-        if tag >= pu.purgelevel && (usize) b.user < 0x100usize then
+        if tag >= pu.purgelevel && b.user.is_none then
             i.fatal("Z_ChangeTag: an owner is required for purgable blocks")
         b.tag = tag
 
@@ -194,7 +208,7 @@ module w =
     let mut nfiles = 0
     let mut lumpinfo = default(lumpinfo[])
     let mut numlumps = 0
-    let mut lumpcache = default(any*[])
+    let mut lumpcache = default((any*?)[])
 
     // Pack an up-to-8-char name, upper-cased and zero-padded, into two
     // words for compares (W_CheckNumForName's name8 union).
@@ -256,7 +270,7 @@ module w =
     let init_multiple_files = (paths: const str[]) ->
         for p in paths do add_file(p)
         if numlumps == 0 then i.fatal("W_InitFiles: no files found")
-        lumpcache = alloc(any*[] { len = numlumps })!
+        lumpcache = alloc((any*?)[] { len = numlumps })!
 
     let num_lumps = () -> numlumps
 
@@ -289,12 +303,14 @@ module w =
     // W_CacheLumpNum: the lump's bytes, loaded once and kept.
     let cache_lump_num = (lump: i32, tag: i32) ->
         if lump >= numlumps || lump < 0 then i.fatal(alloca("W_CacheLumpNum: %d{lump} >= numlumps"))
-        if mem.is_null(lumpcache[lump]) then
-            let p = z.malloc((i64) lumpinfo[lump].size, tag, &lumpcache[lump])
+        match lumpcache[lump] with
+        | some(cached) ->
+            if tag < pu.purgelevel then z.change_tag(cached, tag)
+            (u8*) cached
+        | none ->
+            let p = z.malloc((i64) lumpinfo[lump].size, tag, some(&lumpcache[lump]))
             read_lump(lump, p)
-        else if tag < pu.purgelevel then
-            z.change_tag(lumpcache[lump], tag)
-        (u8*) lumpcache[lump]
+            (u8*) p
 
     let cache_lump_name = (name: const str, tag: i32) ->
         cache_lump_num(get_num_for_name(name), tag)

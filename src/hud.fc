@@ -32,14 +32,18 @@ struct st_percent =
     n: st_number
     p: patch*
 
-// inum indexes p[]; when binum is set (the arms icons, which point at a
-// player's weaponowned[] booleans) it is read as 0/1 instead.
+// What a multicon icon shows: the patch an i32 indexes (the face, the
+// keys), or one of two picked by a boolean (the arms icons, which point at
+// a player's weaponowned[]).
+union iconsource =
+    | index(i32*)
+    | flag(bool*)
+
 struct st_multicon =
     x: i32
     y: i32
     oldinum: i32
-    inum: i32*
-    binum: bool*
+    src: iconsource
     on: bool*
     p: patch**
     data: i32
@@ -356,17 +360,18 @@ module stlib =
         if refresh && *per.n.on then v.draw_patch(per.n.x, per.n.y, fg, per.p)
         update_num(&per.n, refresh)
 
-    let init_mult_icon = (mi: st_multicon*, x: i32, y: i32, il: patch**, inum: i32*, binum: bool*, on: bool*) ->
+    let init_mult_icon = (mi: st_multicon*, x: i32, y: i32, il: patch**, src: iconsource, on: bool*) ->
         mi.x = x
         mi.y = y
         mi.oldinum = -1
-        mi.inum = inum
-        mi.binum = binum
+        mi.src = src
         mi.on = on
         mi.p = il
 
     let multicon_value = (mi: st_multicon*) ->
-        if mem.not_null(mi.binum) then (if *mi.binum then 1 else 0) else *mi.inum
+        match mi.src with
+        | index(n) -> *n
+        | flag(b) -> if *b then 1 else 0
 
     let update_mult_icon = (mi: st_multicon*, refresh: bool) ->
         let cur = multicon_value(mi)
@@ -534,7 +539,9 @@ module st =
                 if cheat.check(&cheat_god, ev.data1) then
                     plyr.cheats = plyr.cheats ^ cf.godmode
                     if (plyr.cheats & cf.godmode) != 0 then
-                        if mem.not_null(plyr.mo) then plyr.mo.health = 100
+                        match plyr.mo with
+                        | some(mo) -> mo.health = 100
+                        | none -> void()
                         plyr.health = 100
                         plyr.message = dstr.ststr_dqdon
                     else
@@ -592,7 +599,7 @@ module st =
                     plyr.message = dstr.ststr_choppers
                 // 'mypos' for player position
                 else if cheat.check(&cheat_mypos, ev.data1) then
-                    let mo = ds.players[ds.consoleplayer].mo
+                    let mo = ds.players[ds.consoleplayer].mo!
                     if mypos_buf.len > 0 then free(mypos_buf)
                     mypos_buf = alloc("ang=0x%x{mo.angle};x,y=(0x%x{mo.x},0x%x{mo.y})")!
                     plyr.message = mypos_buf
@@ -654,23 +661,26 @@ module st =
                     st_facecount = evilgrincount
                     st_faceindex = calc_pain_offset() + evilgrinoffset
         if priority < 8 then
-            if plyr.damagecount != 0 && mem.not_null(plyr.attacker) && plyr.attacker != plyr.mo then
+            let attacker = p.attacker_of(plyr)
+            if plyr.damagecount != 0 && attacker.is_some then
                 // being attacked
                 priority = 7
                 if plyr.health - st_oldhealth > muchpain then
                     st_facecount = turncount
                     st_faceindex = calc_pain_offset() + ouchoffset
                 else
-                    let badguyangle = r.point_to_angle2(plyr.mo.x, plyr.mo.y, plyr.attacker.x, plyr.attacker.y)
+                    let me = plyr.mo!
+                    let bad = attacker!
+                    let badguyangle = r.point_to_angle2(me.x, me.y, bad.x, bad.y)
                     let mut diffang = 0u32
                     let mut turn = false
-                    if badguyangle > plyr.mo.angle then
+                    if badguyangle > me.angle then
                         // whether right or left
-                        diffang = badguyangle - plyr.mo.angle
+                        diffang = badguyangle - me.angle
                         turn = diffang > fx.ang180
                     else
                         // whether left or right
-                        diffang = plyr.mo.angle - badguyangle
+                        diffang = me.angle - badguyangle
                         turn = diffang <= fx.ang180
                     st_facecount = turncount
                     st_faceindex = calc_pain_offset()
@@ -876,17 +886,17 @@ module st =
         // weapons owned
         for k in 0..6 do
             stlib.init_mult_icon(&w_arms[k], 111 + ((i32) k % 3) * 12, 172 + ((i32) k / 3) * 10,
-                                 arms.ptr + (i32) k * 2, default(i32*), &plyr.weaponowned[k + 1], &st_armson)
+                                 arms.ptr + (i32) k * 2, iconsource.flag(&plyr.weaponowned[k + 1]), &st_armson)
         // frags sum
         stlib.init_num(&w_frags, 138, 171, tallnum.ptr, &st_fragscount, &st_fragson, 2)
         // faces
-        stlib.init_mult_icon(&w_faces, 143, 168, faces.ptr, &st_faceindex, default(bool*), &st_statusbaron)
+        stlib.init_mult_icon(&w_faces, 143, 168, faces.ptr, iconsource.index(&st_faceindex), &st_statusbaron)
         // armor percentage - should be colored later
         stlib.init_percent(&w_armor, 221, 171, tallnum.ptr, &plyr.armorpoints, &st_statusbaron, tallpercent)
         // keyboxes 0-2
-        stlib.init_mult_icon(&w_keyboxes[0], 239, 171, keys.ptr, &keyboxes[0], default(bool*), &st_statusbaron)
-        stlib.init_mult_icon(&w_keyboxes[1], 239, 181, keys.ptr, &keyboxes[1], default(bool*), &st_statusbaron)
-        stlib.init_mult_icon(&w_keyboxes[2], 239, 191, keys.ptr, &keyboxes[2], default(bool*), &st_statusbaron)
+        stlib.init_mult_icon(&w_keyboxes[0], 239, 171, keys.ptr, iconsource.index(&keyboxes[0]), &st_statusbaron)
+        stlib.init_mult_icon(&w_keyboxes[1], 239, 181, keys.ptr, iconsource.index(&keyboxes[1]), &st_statusbaron)
+        stlib.init_mult_icon(&w_keyboxes[2], 239, 191, keys.ptr, iconsource.index(&keyboxes[2]), &st_statusbaron)
         // ammo count (all four kinds)
         let ammoy = i32[] { 173, 179, 191, 185 }
         for k in 0..4 do

@@ -222,6 +222,27 @@ else
     skp "DOOM.WAD not in $DATA"
 fi
 
+# ----------------------------------------------------------------------
+section "soak: every map, world state hashed every tic (tests/soak.sh)"
+if have DOOM.WAD || have DOOM2.WAD; then
+    tests/soak.sh "$BIN" "$DATA" > "$TMP/soak.txt"
+    # compare only the runs whose IWAD is present
+    n=0
+    diverged=0
+    while read -r name want; do
+        got=$(grep "^$name " "$TMP/soak.txt" | cut -d' ' -f2)
+        [ -z "$got" ] && continue
+        n=$((n + 1))
+        if [ "$got" != "$want" ]; then
+            diverged=$((diverged + 1))
+            bad "soak $name" "expected [$want] got [$got]"
+        fi
+    done < tests/soak.golden
+    [ $diverged -eq 0 ] && ok "$n soak runs match tests/soak.golden"
+else
+    skp "no IWAD in $DATA"
+fi
+
 echo
 echo "$pass passed, $fail failed, $skip skipped"
 [ $fail -eq 0 ]

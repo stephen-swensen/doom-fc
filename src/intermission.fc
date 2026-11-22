@@ -104,7 +104,7 @@ module wi =
     let mut snl_pointeron = false
 
     // GRAPHICS
-    let mut bg = default(patch*)
+    let mut bg = none(patch*)    // the background, once loaded
     let mut yah = patch*[] { len = 2 }
     let mut splat = default(patch*)
     let mut percent = default(patch*)
@@ -132,7 +132,9 @@ module wi =
     // Repaint the background into screen 1 after the screens were
     // reallocated at a new render scale.
     let redraw_background = () ->
-        if mem.not_null(bg) then v.draw_patch(0, 0, 1, bg)
+        match bg with
+        | some(b) -> v.draw_patch(0, 0, 1, b)
+        | none -> void()
 
     let responder = (ev: event*) -> false
 
@@ -345,42 +347,42 @@ module wi =
             cnt_secret = (pl.ssecret * 100) / wbs.maxsecret
             cnt_time = pl.stime / 35
             cnt_par = wbs.partime / 35
-            snd.start_sound(default(any*), sfx.barexp)
+            snd.start_local_sound(sfx.barexp)
             sp_state = 10
         if sp_state == 2 then
             cnt_kills = cnt_kills + 2
-            if (bcnt & 3) == 0 then snd.start_sound(default(any*), sfx.pistol)
+            if (bcnt & 3) == 0 then snd.start_local_sound(sfx.pistol)
             if cnt_kills >= (pl.skills * 100) / wbs.maxkills then
                 cnt_kills = (pl.skills * 100) / wbs.maxkills
-                snd.start_sound(default(any*), sfx.barexp)
+                snd.start_local_sound(sfx.barexp)
                 sp_state = sp_state + 1
         else if sp_state == 4 then
             cnt_items = cnt_items + 2
-            if (bcnt & 3) == 0 then snd.start_sound(default(any*), sfx.pistol)
+            if (bcnt & 3) == 0 then snd.start_local_sound(sfx.pistol)
             if cnt_items >= (pl.sitems * 100) / wbs.maxitems then
                 cnt_items = (pl.sitems * 100) / wbs.maxitems
-                snd.start_sound(default(any*), sfx.barexp)
+                snd.start_local_sound(sfx.barexp)
                 sp_state = sp_state + 1
         else if sp_state == 6 then
             cnt_secret = cnt_secret + 2
-            if (bcnt & 3) == 0 then snd.start_sound(default(any*), sfx.pistol)
+            if (bcnt & 3) == 0 then snd.start_local_sound(sfx.pistol)
             if cnt_secret >= (pl.ssecret * 100) / wbs.maxsecret then
                 cnt_secret = (pl.ssecret * 100) / wbs.maxsecret
-                snd.start_sound(default(any*), sfx.barexp)
+                snd.start_local_sound(sfx.barexp)
                 sp_state = sp_state + 1
         else if sp_state == 8 then
-            if (bcnt & 3) == 0 then snd.start_sound(default(any*), sfx.pistol)
+            if (bcnt & 3) == 0 then snd.start_local_sound(sfx.pistol)
             cnt_time = cnt_time + 3
             if cnt_time >= pl.stime / 35 then cnt_time = pl.stime / 35
             cnt_par = cnt_par + 3
             if cnt_par >= wbs.partime / 35 then
                 cnt_par = wbs.partime / 35
                 if cnt_time >= pl.stime / 35 then
-                    snd.start_sound(default(any*), sfx.barexp)
+                    snd.start_local_sound(sfx.barexp)
                     sp_state = sp_state + 1
         else if sp_state == 10 then
             if acceleratestage != 0 then
-                snd.start_sound(default(any*), sfx.sgcock)
+                snd.start_local_sound(sfx.sgcock)
                 if ds.gamemode == gmode.commercial then init_no_state()
                 else init_show_next_loc()
         else if (sp_state & 1) != 0 then
@@ -440,8 +442,9 @@ module wi =
     let load_data = () ->
         let name = if ds.gamemode == gmode.commercial || (ds.gamemode == gmode.retail && wbs.epsd == 3) then "INTERPIC"
                    else (const str) "WIMAP%d{wbs.epsd}"
-        bg = (patch*) w.cache_lump_name(name, pu.cache)
-        v.draw_patch(0, 0, 1, bg)
+        let b = (patch*) w.cache_lump_name(name, pu.cache)
+        bg = some(b)
+        v.draw_patch(0, 0, 1, b)
         if ds.gamemode == gmode.commercial then
             for k in 0..32 do lnames[k] = v.patch_named_mut("CWILV%02d{(i32) k}")
         else
