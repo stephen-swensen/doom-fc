@@ -1,55 +1,21 @@
-// C library bindings plus the tiny pointer helpers every module uses.
+// The tiny pointer and byte helpers every module uses.
 //
 // Doom is a C program through and through: raw pointers that may be NULL,
-// memcpy/memset over structs, stdio for WAD and savegame files. Rather than
-// pretend otherwise, doom-fc binds the handful of libc calls it needs here.
+// bulk copies over screens and byte buffers, fixed-size NUL-padded names.
+// FC has no bulk copy or fill intrinsic, so memcpy/memset are bound from
+// libc (the spec's own recommendation). File I/O, the environment, exit,
+// allocation and ASCII case go through FC's built-ins and stdlib instead.
 
 module cmem from "string.h" =
     extern memcpy: (any*, const any*, usize) -> any*
-    extern memmove: (any*, const any*, usize) -> any*
     extern memset: (any*, i32, usize) -> any*
-    extern memcmp: (const any*, const any*, usize) -> i32
-    extern strlen: (const cstr) -> usize
-
-module cstrings from "strings.h" =
-    extern strncasecmp: (const cstr, const cstr, usize) -> i32
-    extern strcasecmp: (const cstr, const cstr) -> i32
-
-module cstdlib from "stdlib.h" =
-    extern malloc: (usize) -> any*
-    extern calloc: (usize, usize) -> any*
-    extern free as c_free: (any*) -> void
-    extern exit: (i32) -> void
-    extern getenv: (const cstr) -> cstr
-    extern atoi: (const cstr) -> i32
-
-module cstdio from "stdio.h" =
-    extern fopen: (const cstr, const cstr) -> any*
-    extern fclose: (any*) -> i32
-    extern fread: (any*, usize, usize, any*) -> usize
-    extern fwrite: (const any*, usize, usize, any*) -> usize
-    extern fseek: (any*, i64, i32) -> i32
-    extern ftell: (any*) -> i64
-    extern fflush: (any*) -> i32
-    extern fputs: (const cstr, any*) -> i32
-    extern SEEK_SET as seek_set: i32
-    extern SEEK_END as seek_end: i32
-
-module cdir from "sys/stat.h" =
-    extern mkdir: (const cstr, u32) -> i32
 
 module c =
+    import text from std::
+
     // NULL tests for raw pointers (FC has no `null` keyword).
     let is_null = (p: const any*) -> (usize) p == 0usize
     let not_null = (p: const any*) -> (usize) p != 0usize
-
-    // Allocate `n` zeroed bytes; abort on failure like Doom's Z_Malloc.
-    let zalloc = (n: i64) ->
-        let p = cstdlib.calloc((usize) (if n < 1 then 1i64 else n), 1usize)
-        if is_null(p) then
-            ignore cstdio.fputs(c"doom-fc: out of memory\n", stderr)
-            cstdlib.exit(1)
-        p
 
     let memcpy = (dst: any*, src: const any*, n: i64) ->
         ignore cmem.memcpy(dst, src, (usize) n)
@@ -59,12 +25,8 @@ module c =
     // Doom's abs() on an int: wraps at INT_MIN exactly like the C original.
     let iabs = (x: i32) -> if x < 0 then 0 - x else x
 
-    // Upper-case an ASCII byte (toupper).
-    let toupper = (ch: u8) ->
-        if ch >= 'a' && ch <= 'z' then ch - 32u8 else ch
-
     // Length of a NUL-terminated name stored in a fixed byte buffer (at most max).
-    let strnlen = (p: const u8*, max: i32) ->
+    private let strnlen = (p: const u8*, max: i32) ->
         let mut n = 0
         loop
             if n >= max || *(p + n) == 0u8 then break
@@ -76,8 +38,8 @@ module c =
         let mut i = 0
         loop
             if i >= 8 then break true
-            let ca = if i < a.len then toupper(a[i]) else 0u8
-            let cb = if i < b.len then toupper(b[i]) else 0u8
+            let ca = if i < a.len then text.to_upper_char(a[i]) else 0u8
+            let cb = if i < b.len then text.to_upper_char(b[i]) else 0u8
             if ca != cb then break false
             if ca == 0u8 then break true
             i = i + 1

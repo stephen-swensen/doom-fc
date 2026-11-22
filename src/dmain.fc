@@ -5,6 +5,8 @@
 
 module d =
     import io from std::
+    import sys from std::
+    import text from std::
 
     let mut demosequence = 0
     let mut pagetic = 0
@@ -197,7 +199,7 @@ module d =
         isnd.shutdown()
         if !iv.headless then misc.save_defaults()
         iv.shutdown_graphics()
-        cstdlib.exit(0)
+        sys.exit(0)
 
     // D_PageTicker: Handles timing for warped projection
     let page_ticker = () ->
@@ -381,7 +383,7 @@ module d =
         let upper = alloc("%s{name}")!
         for k in 0..name.len do
             lower[k] = if name[k] >= 'A' && name[k] <= 'Z' then name[k] + 32u8 else name[k]
-            upper[k] = c.toupper(name[k])
+            upper[k] = text.to_upper_char(name[k])
         let cands = (const str)[] { name, lower, upper }
         let mut found = none(str)
         for cand in cands do
@@ -397,7 +399,7 @@ module d =
     let iwad_names = (const str)[] { "doom2f.wad", "doom2.wad", "plutonia.wad", "tnt.wad", "doomu.wad", "doom.wad", "doom1.wad" }
 
     let resolve_data_dir = () ->
-        match sys_env("DOOM_FC_DATA_DIR") with
+        match sys.env("DOOM_FC_DATA_DIR") with
         | some(dir) -> dir
         | none ->
             let mut has = false
@@ -409,10 +411,6 @@ module d =
                         has = true
                     | none -> void()
             if has then (const str) "data" else (const str) install_path.data_dir
-
-    let sys_env = (name: const str) ->
-        let v0 = cstdlib.getenv(alloca((cstr) name))
-        if c.is_null(v0) then none(const str) else some((const str) v0)
 
     let identify_version = () ->
         let dir = resolve_data_dir()
@@ -461,12 +459,12 @@ module d =
         let k = argv.check_parm("-shotdir")
         if k != 0 && k < argv.count() - 1 then shotdir = alloc("%s{argv.get(k + 1)}")!
         let k2 = argv.check_parm("-shotevery")
-        if k2 != 0 && k2 < argv.count() - 1 then shotevery = cstdlib.atoi(alloca((cstr) argv.get(k2 + 1)))
+        if k2 != 0 && k2 < argv.count() - 1 then shotevery = argv.int_after(k2)
         g.tictrace = argv.check_parm("-tictrace") != 0
         let k4 = argv.check_parm("-script")
         if k4 != 0 && k4 < argv.count() - 1 then iv.script = alloc("%s{argv.get(k4 + 1)}")!
         let k3 = argv.check_parm("-quitat")
-        if k3 != 0 && k3 < argv.count() - 1 then quitat = cstdlib.atoi(alloca((cstr) argv.get(k3 + 1)))
+        if k3 != 0 && k3 < argv.count() - 1 then quitat = argv.int_after(k3)
 
     let doom_main = () ->
         i.init_time()
@@ -491,7 +489,7 @@ module d =
         let pt = argv.check_parm("-turbo")
         if pt != 0 then
             let mut scale = 200
-            if pt < argv.count() - 1 then scale = cstdlib.atoi(alloca((cstr) argv.get(pt + 1)))
+            if pt < argv.count() - 1 then scale = argv.int_after(pt)
             if scale < 10 then scale = 10
             if scale > 400 then scale = 400
             i.print(alloca("turbo scale: %d{scale}%%\n"))
@@ -528,7 +526,7 @@ module d =
         let pw0 = argv.check_parm("-warp")
         if pw0 != 0 && pw0 < argv.count() - 1 then
             if ds.gamemode == gmode.commercial then
-                ds.startmap = cstdlib.atoi(alloca((cstr) argv.get(pw0 + 1)))
+                ds.startmap = argv.int_after(pw0)
             else
                 ds.startepisode = (i32) argv.get(pw0 + 1)[0] - '0'
                 if pw0 < argv.count() - 2 then ds.startmap = (i32) argv.get(pw0 + 2)[0] - '0'

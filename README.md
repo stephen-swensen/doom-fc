@@ -284,6 +284,14 @@ included. These are the deliberate exceptions:
   list and the line-specials list are larger than the originals. When the
   originals overflow they corrupt memory, and FC's bounds checks would abort
   instead. Normal play never reaches the old limits.
+- **Numeric arguments are strict.** linuxdoom reads `-warp` (DOOM II),
+  `-timer`, `-turbo` and `-maxdemo` values with `atoi`, which takes `3x`
+  as 3 and `abc` as 0. doom-fc stops with an error such as
+  `Bad -warp argument: 3x`, and so do its own `-scale`, `-maxscale`,
+  `-quitat` and `-shotevery`. A value that is another option, as in
+  `-turbo -nomonsters`, is an error too. `-timer` with no value is an error,
+  where linuxdoom read past the end of `argv`. A trailing `-turbo` with no
+  value still means 200%.
 - **Quit messages.** linuxdoom's `endmsg[]` is missing two commas and can run
   off its end, so doom-fc uses the DOS v1.9 messages.
 - **Intermission animations.** linuxdoom's `WI_drawAnimatedBack` tests

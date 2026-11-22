@@ -5,6 +5,7 @@
 
 module misc =
     import io from std::
+    import sys from std::
 
     // controls (have defaults)
     let mut key_right = dd.key_rightarrow
@@ -29,14 +30,14 @@ module misc =
     // screenshots live.
     let config_dir = () ->
         if home_dir.len == 0 then
-            let over = cstdlib.getenv(c"DOOM_FC_HOME")
-            if c.not_null(over) then
-                home_dir = alloc("%s{(const str) over}")!
-            else
-                let h = cstdlib.getenv(c"HOME")
-                let base = if c.is_null(h) then (const str) "." else (const str) h
+            match sys.env("DOOM_FC_HOME") with
+            | some(over) -> home_dir = alloc("%s{over}")!
+            | none ->
+                let base = match sys.env("HOME") with
+                    | some(h) -> h
+                    | none -> "."
                 home_dir = alloc("%s{base}/.doom-fc")!
-            ignore cdir.mkdir(alloca((cstr) home_dir), 0o755u32)
+            ignore io.ensure_dir(home_dir)
         (const str) home_dir
 
     let default_file = () -> alloc("%s{config_dir()}/default.cfg")!
@@ -45,25 +46,21 @@ module misc =
 
     // M_WriteFile
     let write_file = (name: const str, source: const u8*, length: i64) ->
-        let f = cstdio.fopen(alloca((cstr) name), c"wb")
-        if c.is_null(f) then false
-        else
-            let count = cstdio.fwrite((const any*) source, 1usize, (usize) length, f)
-            ignore cstdio.fclose(f)
-            (i64) count == length
+        match io.open(name, "wb") with
+        | err(_) -> false
+        | ok(f) ->
+            let count = io.write(const u8[] { ptr = source, len = length }, f)
+            // a close error means buffered bytes never reached the file
+            let closed = match io.close(f) with
+                | ok -> true
+                | err(_) -> false
+            count == length && closed
 
     // M_ReadFile: the whole file in a heap buffer, or none
     let read_file = (name: const str) ->
-        let f = cstdio.fopen(alloca((cstr) name), c"rb")
-        if c.is_null(f) then none(u8[])
-        else
-            ignore cstdio.fseek(f, 0i64, cstdio.seek_end)
-            let len = cstdio.ftell(f)
-            ignore cstdio.fseek(f, 0i64, cstdio.seek_set)
-            let buf = alloc(u8[] { len = if len < 1 then 1i64 else len })!
-            ignore cstdio.fread((any*) buf.ptr, 1usize, (usize) len, f)
-            ignore cstdio.fclose(f)
-            some(buf)
+        match io.read_all(name) with
+        | ok(buf) -> some((u8[]) buf)
+        | err(_) -> none(u8[])
 
     let defaults_names = (const str)[] {
         "mouse_sensitivity", "sfx_volume", "music_volume", "show_messages",
@@ -112,12 +109,13 @@ module misc =
     let save_defaults = () ->
         let name = default_file()
         defer free(name)
-        let f = cstdio.fopen(alloca((cstr) name), c"w")
-        if c.is_null(f) then return
+        let f = match io.open(name, "w") with
+            | ok(h) -> h
+            | err(_) -> return
         for k in 0..defaults_names.len do
             let line = alloca("%s{defaults_names[k]}\t\t%d{*default_ptr((i32) k)}\n")
-            ignore cstdio.fwrite((const any*) line.ptr, 1usize, (usize) line.len, f)
-        ignore cstdio.fclose(f)
+            ignore io.write(line, f)
+        ignore io.close(f)
 
     private let parse_int = (s: const str) ->
         let mut k = 0
@@ -187,7 +185,7 @@ module misc =
     let screen_shot = () ->
         let dir = alloc("%s{config_dir()}/screenshots")!
         defer free(dir)
-        ignore cdir.mkdir(alloca((cstr) dir), 0o755u32)
+        ignore io.ensure_dir(dir)
         let fb = alloc(u32[] { len = v.sw * v.sh })!
         defer free(fb)
         iv.frame_argb(fb)
@@ -219,6 +217,9 @@ struct menudef =
     laston: i32
 
 module m =
+    import io from std::
+    import text from std::
+
     let skullxoff = -32
     let lineheight = 16
     let savestringsize = 24
@@ -414,14 +415,14 @@ module m =
         for k in 0..6 do
             let name = misc.save_name((i32) k)
             defer free(name)
-            let f = cstdio.fopen(alloca((cstr) name), c"rb")
-            if c.is_null(f) then
+            match io.open(name, "rb") with
+            | err(_) ->
                 set_save_string((i32) k, dstr.emptystring)
                 load_menu[k].status = 0
-            else
+            | ok(f) ->
                 let s = save_string((i32) k)
-                ignore cstdio.fread((any*) s.ptr, 1usize, (usize) savestringsize, f)
-                ignore cstdio.fclose(f)
+                ignore io.read(s, (i64) savestringsize, f)
+                ignore io.close(f)
                 load_menu[k].status = 1
 
     let draw_load = () ->
@@ -607,7 +608,7 @@ module m =
             return
         // Yet another hack...
         if ds.gamemode == gmode.registered && choice > 2 then
-            ignore cstdio.fputs(c"M_Episode: 4th episode requires UltimateDOOM\n", stderr)
+            ignore io.write("M_Episode: 4th episode requires UltimateDOOM\n", stderr)
             choice = 0
         epi = choice
         setup_next_menu(&new_def)
@@ -691,7 +692,7 @@ module m =
     let change_detail = (choice: i32) ->
         ds.detail_level = 1 - ds.detail_level
         // FIXME - does not work. Remove anyway?
-        ignore cstdio.fputs(c"M_ChangeDetail: low detail mode n.a.\n", stderr)
+        ignore io.write("M_ChangeDetail: low detail mode n.a.\n", stderr)
 
     let size_display = (choice: i32) ->
         if choice == 0 then
@@ -731,7 +732,7 @@ module m =
     let string_width = (string: const str) ->
         let mut wd = 0
         for ch in string do
-            let cc = (i32) c.toupper(ch) - hu.fontstart
+            let cc = (i32) text.to_upper_char(ch) - hu.fontstart
             if cc < 0 || cc >= hu.fontsize then wd = wd + 4
             else wd = wd + (i32) hulib.font[cc].width
         wd
@@ -754,7 +755,7 @@ module m =
                 cx = x
                 cy = cy + 12
                 continue
-            let cc = (i32) c.toupper(ch) - hu.fontstart
+            let cc = (i32) text.to_upper_char(ch) - hu.fontstart
             if cc < 0 || cc >= hu.fontsize then
                 cx = cx + 4
                 continue
@@ -864,7 +865,7 @@ module m =
                 save_string_enter = false
                 if s[0] != 0u8 then do_save(save_slot)
             else
-                let uc = if ch >= 0 && ch < 256 then (i32) c.toupper((u8) ch) else ch
+                let uc = if ch >= 0 && ch < 256 then (i32) text.to_upper_char((u8) ch) else ch
                 let ok_char = uc == 32 || (uc - hu.fontstart >= 0 && uc - hu.fontstart < hu.fontsize)
                 if ok_char && uc >= 32 && uc <= 127 && save_char_index < savestringsize - 1
                     && string_width(save_string_view(save_slot)) < (savestringsize - 2) * 8 then

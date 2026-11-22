@@ -63,7 +63,7 @@ module cheat =
             + ((a & 16) >> 1) + (a & 32) + ((a & 64) >> 5) + ((a & 128) >> 7)
 
     let make = (seq: const u8[]) ->
-        let mem = (u8*) c.zalloc(seq.len)
+        let mem = alloc(u8, seq.len)!
         for k in 0..seq.len do *(mem + k) = seq[k]
         cheatseq { sequence = mem, p = -1 }
 
@@ -102,6 +102,8 @@ module cheat =
         if *p == 0xffu8 then buffer[k] = 0u8
 
 module hulib =
+    import text from std::
+
     let fg = 0
     let mut font = patch*[] { len = 63 }
 
@@ -138,7 +140,7 @@ module hulib =
         let mut k = 0
         loop
             if k >= l.len then break
-            let ch = (i32) c.toupper(l.l[k])
+            let ch = (i32) text.to_upper_char(l.l[k])
             k = k + 1
             if ch != ' ' && ch >= l.sc && ch <= '_' then
                 let f = font[ch - l.sc]

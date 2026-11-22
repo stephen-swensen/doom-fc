@@ -18,6 +18,8 @@ struct intercept =
     line: line*
 
 module p =
+    import io from std::
+
     // ------------------------------------------------------------------
     // p_local.h
     // ------------------------------------------------------------------
@@ -704,7 +706,7 @@ module p =
 
     let spawn_mobj = (x: i32, y: i32, z0: i32, type: i32) ->
         let mobj = (mobj*) z.malloc(sizeof(mobj), pu.level, default(any**))
-        c.memset((any*) mobj, 0, sizeof(mobj))
+        *mobj = default(mobj)
         let inf = &info.mobjinfo[type]
         mobj.type = type
         mobj.info = inf
@@ -4349,7 +4351,7 @@ module p =
                 h = h + 1
             // Check for overflow. Exit.
             if h >= max_adjoining_sectors then
-                ignore cstdio.fputs(c"Sector with more than 20 adjoining sectors\n", stderr)
+                ignore io.write("Sector with more than 20 adjoining sectors\n", stderr)
                 break
         // Find lowest height in list
         if h == 0 then currentheight
@@ -4693,7 +4695,7 @@ module p =
                     // (the original passes &soundorg, the address of this
                     // pointer field, as the origin; we pass the origin itself)
                     snd.start_sound(b.soundorg, sfx.swtchn)
-                    c.memset((any*) b, 0, sizeof(button))
+                    *b = default(button)
 
     // Special Stuff that can not be categorized
     let ev_do_donut = (ln: line*) ->
@@ -4754,7 +4756,7 @@ module p =
             level_time_count = 20 * 60 * 35
         let k2 = argv.check_parm("-timer")
         if k2 != 0 && ds.deathmatch != 0 then
-            let time = cstdlib.atoi(alloca((cstr) argv.get(k2 + 1))) * 60 * 35
+            let time = argv.int_after(k2) * 60 * 35
             level_timer = true
             level_time_count = time
         // Init special SECTORs.
@@ -4788,7 +4790,7 @@ module p =
         // Init other misc stuff
         for k in 0..maxceilings do activeceilings[k] = default(ceiling*)
         for k in 0..maxplats do activeplats[k] = default(plat*)
-        for k in 0..maxbuttons do c.memset((any*) &buttonlist[k], 0, sizeof(button))
+        for k in 0..maxbuttons do buttonlist[k] = default(button)
 
     // ==================================================================
     // p_switch

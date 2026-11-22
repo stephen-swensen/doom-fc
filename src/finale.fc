@@ -6,6 +6,8 @@ struct castinfo =
     type: i32
 
 module f =
+    import text from std::
+
     let textspeed = 3
     let textwait = 250
 
@@ -143,7 +145,7 @@ module f =
                 cx = 10
                 cy = cy + 11
                 continue
-            let cc = (i32) c.toupper(ch) - hu.fontstart
+            let cc = (i32) text.to_upper_char(ch) - hu.fontstart
             if cc < 0 || cc > hu.fontsize then
                 cx = cx + 4
                 continue
@@ -242,17 +244,17 @@ module f =
         if cast_info().deathsound != 0 then snd.start_sound(default(any*), cast_info().deathsound)
         true
 
-    let cast_print = (text: const str) ->
+    let cast_print = (label: const str) ->
         // find width
         let mut width = 0
-        for ch in text do
-            let cc = (i32) c.toupper(ch) - hu.fontstart
+        for ch in label do
+            let cc = (i32) text.to_upper_char(ch) - hu.fontstart
             if cc < 0 || cc > hu.fontsize then width = width + 4
             else width = width + (i32) hulib.font[cc].width
         // draw it
         let mut cx = 160 - width / 2
-        for ch in text do
-            let cc = (i32) c.toupper(ch) - hu.fontstart
+        for ch in label do
+            let cc = (i32) text.to_upper_char(ch) - hu.fontstart
             if cc < 0 || cc > hu.fontsize then cx = cx + 4
             else
                 let w = (i32) hulib.font[cc].width

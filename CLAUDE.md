@@ -87,6 +87,12 @@ Doom's C files call each other in every direction, so:
 - Globals are module-level `let mut`, named as in C but snake_case
   (`ds.gametic`, `r.viewx`, `p.tmfloorz`). Unlike wolf-fc, mutable module
   globals are fine here, because that is Doom's design.
+- libc is bound only for what FC lacks: `memcpy`/`memset` in libc.fc,
+  next to the `c` helpers (null tests, `iabs`, lump names, little-endian
+  readers). File I/O, the environment, exit and ASCII case use std
+  `io`/`sys`/`text`. Heap memory uses `alloc(T, n)!`/`free`, and a zeroed
+  struct is `*p = default(T)`. Numeric command-line values go through
+  `argv.int_after`, which is a fatal error on a bad value.
 - C function pointers become small dispatches. A thinker's function is
   `enum thinkf`, dispatched in `p.run_thinker`. A state's codepointer is
   `enum actionf`, dispatched in `p.call_mobj_action` / `p.call_psp_action`.

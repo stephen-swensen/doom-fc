@@ -713,7 +713,7 @@ module r =
             tex.height = (i32) c.rd_i16(mtex + 14)
             tex.patchcount = (i32) c.rd_i16(mtex + 20)
             for b in 0..8 do tex.name[b] = *(mtex + b)
-            tex.patches = (texpatch*) c.zalloc((i64) tex.patchcount * sizeof(texpatch))
+            tex.patches = alloc(texpatch, (i64) tex.patchcount)!
             for j in 0..tex.patchcount do
                 let mp = mtex + 22 + j * 10
                 let tp = tex.patches + j
@@ -757,7 +757,7 @@ module r =
 
     let init_colormaps = () ->
         let lump = w.get_num_for_name("COLORMAP")
-        colormaps = (u8*) c.zalloc((i64) w.lump_length(lump))
+        colormaps = alloc(u8, (i64) w.lump_length(lump))!
         w.read_lump(lump, (any*) colormaps)
 
     let init_data = () ->
@@ -885,7 +885,7 @@ module r =
         else draw_translated_column()
 
     let init_translation_tables = () ->
-        translationtables = (u8*) c.zalloc(256i64 * 3)
+        translationtables = alloc(u8, 256i64 * 3)!
         for k in 0..256 do
             if k >= 0x70 && k <= 0x7f then
                 *(translationtables + k) = (u8) (0x60 + (k & 0xf))
@@ -1694,7 +1694,7 @@ module r =
                             if sprtemp[f].lump[rr] == -1 then
                                 i.fatal(alloca("R_InitSprites: Sprite %.8s{spritename} frame %c{(u8) ('A' + f)} is missing rotations"))
                 sprites[k].numframes = maxframe
-                let frames = (spriteframe*) c.zalloc((i64) maxframe * sizeof(spriteframe))
+                let frames = alloc(spriteframe, (i64) maxframe)!
                 c.memcpy((any*) frames, (const any*) sprtemp.ptr, (i64) maxframe * sizeof(spriteframe))
                 sprites[k].spriteframes = frames
 

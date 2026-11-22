@@ -5,6 +5,8 @@
 // m_argv
 // ------------------------------------------------------------------
 module argv =
+    import text from std::
+
     let mut myargv = default(str[])
 
     let set = (args: str[]) ->
@@ -22,32 +24,49 @@ module argv =
 
     let get = (idx: i32) -> (const str) myargv[idx]
 
+    // The integer after the parm at index k. Where linuxdoom used atoi,
+    // which reads "3x" as 3 and "abc" as 0, a missing or malformed number
+    // is a fatal error.
+    let int_after = (k: i32) ->
+        if k + 1 >= count() then
+            i.fatal(alloca("%s{get(k)} needs a number"))
+            0
+        else
+            match text.parse_i32(get(k + 1)) with
+            | ok(n) -> n
+            | err(_) ->
+                i.fatal(alloca("Bad %s{get(k)} argument: %s{get(k + 1)}"))
+                0
+
     private let ascii_eq = (a: const str, b: const str) ->
         if a.len != b.len then false
         else
             let mut same = true
             for k in 0..a.len do
-                if c.toupper(a[k]) != c.toupper(b[k]) then same = false
+                if text.to_upper_char(a[k]) != text.to_upper_char(b[k]) then same = false
             same
 
 // ------------------------------------------------------------------
 // i_system
 // ------------------------------------------------------------------
 module i =
+    import io from std::
+    import sys from std::
+
     let mut base_counter = 0u64
     let mut counter_freq = 1u64
 
     let fatal = (msg: const str) ->
-        ignore cstdio.fputs(c"Error: ", stderr)
-        ignore cstdio.fwrite(msg.ptr, 1usize, (usize) msg.len, stderr)
-        ignore cstdio.fputs(c"\n", stderr)
-        ignore cstdio.fflush(stderr)
+        ignore io.write("Error: ", stderr)
+        ignore io.write(msg, stderr)
+        ignore io.write("\n", stderr)
+        ignore io.flush(stderr)
         // no SDL_Quit: it joins the audio thread, which may be wedged (isnd)
-        cstdlib.exit(-1)
+        sys.exit(-1)
 
     let print = (msg: const str) ->
-        ignore cstdio.fwrite(msg.ptr, 1usize, (usize) msg.len, stdout)
-        ignore cstdio.fflush(stdout)
+        ignore io.write(msg, stdout)
+        ignore io.flush(stdout)
 
     let init_time = () ->
         counter_freq = sdl2.get_perf_frequency()
@@ -112,7 +131,7 @@ module z =
     let overread_pad = 128i64
 
     let malloc = (size: i64, tag: i32, user: any**) ->
-        let raw = c.zalloc(size + (i64) header + overread_pad)
+        let raw = alloc(u8, size + (i64) header + overread_pad)!
         let b = (memblock*) raw
         b.size = size
         b.user = user
@@ -122,7 +141,7 @@ module z =
         b.next = blocklist
         if c.not_null(blocklist) then blocklist.prev = b
         blocklist = b
-        let data = (any*) ((u8*) raw + header)
+        let data = (any*) (raw + header)
         if c.not_null(user) then *user = data
         data
 
@@ -137,7 +156,7 @@ module z =
         if c.not_null(b.prev) then b.prev.next = b.next else blocklist = b.next
         if c.not_null(b.next) then b.next.prev = b.prev
         b.id = 0
-        cstdlib.c_free((any*) b)
+        free(b)
 
     let free_tags = (lowtag: i32, hightag: i32) ->
         let mut b = blocklist
@@ -170,6 +189,9 @@ struct lumpinfo =
     size: i32
 
 module w =
+    import io from std::
+    import text from std::
+
     let mut files = default(u8[][])
     let mut nfiles = 0
     let mut lumpinfo = default(lumpinfo[])
@@ -183,29 +205,17 @@ module w =
         let mut k2 = 0u32
         let mut ended = false
         for idx in 0..8 do
-            let ch = if ended || idx >= name.len then 0u8 else c.toupper(name[idx])
+            let ch = if ended || idx >= name.len then 0u8 else text.to_upper_char(name[idx])
             if ch == 0u8 then ended = true
             if idx < 4 then k1 = k1 | ((u32) ch << (idx * 8))
             else k2 = k2 | ((u32) ch << ((idx - 4) * 8))
         { k1, k2 }
 
-    private let read_file = (path: const str) ->
-        let f = cstdio.fopen(alloca((cstr) path), c"rb")
-        if c.is_null(f) then none(u8[])
-        else
-            ignore cstdio.fseek(f, 0i64, cstdio.seek_end)
-            let len = cstdio.ftell(f)
-            ignore cstdio.fseek(f, 0i64, cstdio.seek_set)
-            let buf = alloc(u8[] { len = len })!
-            ignore cstdio.fread((any*) buf.ptr, 1usize, (usize) len, f)
-            ignore cstdio.fclose(f)
-            some(buf)
-
     // W_AddFile (WAD files only; single-lump files are not supported).
     let add_file = (path: const str) ->
-        match read_file(path) with
-        | none -> i.print(alloca(" couldn't open %s{path}\n"))
-        | some(data) ->
+        match io.read_all(path) with
+        | err(_) -> i.print(alloca(" couldn't open %s{path}\n"))
+        | ok(data) ->
             i.print(alloca(" adding %s{path}\n"))
             let id = c.name_view(data.ptr, 4)
             if id != "IWAD" && id != "PWAD" then
