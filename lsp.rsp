@@ -1,0 +1,21 @@
+# doom-fc: the editor's compilation unit.
+#
+# `fcc --lsp` finds this file by walking up from the open file and analyses
+# exactly what it lists, so the editor resolves names the way `make` does.
+# It mirrors the Makefile's `fcc $(SRCS_FC) $(GEN_FC) $(SRCS_STDLIB)`.
+# Paths are relative to this file.
+
+# The game: every module in src/.
+src/*.fc
+
+# The generated install-path constant, written by `make`. Before the first
+# build this matches nothing and only `install_path` reads as undefined.
+build/*/install_path.fc
+
+# The stdlib modules the Makefile links. These are the installed copies,
+# which is what the Makefile picks up from `command -v fcc`. With another
+# PREFIX or FCC_STDLIB, point these there (or at ../fc-lang/stdlib).
+/usr/local/share/fcc/stdlib/io.fc
+/usr/local/share/fcc/stdlib/text.fc
+/usr/local/share/fcc/stdlib/sys.fc
+/usr/local/share/fcc/stdlib/math.fc
