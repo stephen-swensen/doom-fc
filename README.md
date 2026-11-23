@@ -49,8 +49,9 @@ make native          # fcc --native build: sub-second compiles, slower code
 make install         # binary + ./data/*.WAD under $(PREFIX)
 ```
 
-Config, savegames (`doomsavN.dsg`) and screenshots live in `~/.doom-fc/`, or
-in `$DOOM_FC_HOME` if that is set.
+Config and screenshots live in `~/.doom-fc/`, or in `$DOOM_FC_HOME` if that
+is set. Savegames (`doomsavN.dsg`) go in a folder per IWAD under it, such as
+`savegames/doom2.wad/`.
 
 ## Controls
 
@@ -292,6 +293,10 @@ included. These are the deliberate exceptions:
   lines, in demos too, because the fix only changes the case that would
   crash.
 
+- **Savegames are kept per IWAD,** in `savegames/<iwad>/` (the IWAD's file
+  name, lowercased). linuxdoom keeps every game's saves in one place, but a
+  save records only the episode and map numbers, so a DOOM E1M1 save loaded
+  in DOOM II is read onto MAP01 and crashes.
 - **Ultimate DOOM detection.** linuxdoom recognises Ultimate DOOM only by the
   file name `doomu.wad`. doom-fc also treats a `doom.wad` that contains E4M1
   as retail, so episode 4 is available.

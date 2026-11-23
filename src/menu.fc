@@ -40,7 +40,24 @@ module misc =
 
     let default_file = () -> alloc("%s{config_dir()}/default.cfg")!
 
-    let save_name = (slot: i32) -> alloc("%s{config_dir()}/doomsav%d{slot}.dsg")!
+    // The IWAD's lowercase file name (doom2.wad), set by D_IdentifyVersion.
+    let mut iwad_name = default(str)
+
+    // savegames/<iwad> under config_dir() (created on demand). Each IWAD
+    // keeps its own saves: a save records only the episode and map
+    // numbers, so a Doom E1M1 save loaded in Doom 2 reads its sectors
+    // onto MAP01 and crashes.
+    let save_dir = () ->
+        let top = alloca("%s{config_dir()}/savegames")
+        ignore io.ensure_dir(top)
+        let dir = alloc("%s{top}/%s{iwad_name}")!
+        ignore io.ensure_dir(dir)
+        dir
+
+    let save_name = (slot: i32) ->
+        let dir = save_dir()
+        defer free(dir)
+        alloc("%s{dir}/doomsav%d{slot}.dsg")!
 
     // M_WriteFile
     let write_file = (name: const str, source: const u8*, length: i64) ->

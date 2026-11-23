@@ -433,6 +433,7 @@ module d =
                               else if base == "doomu.wad" then gmode.retail
                               else if base == "doom1.wad" then gmode.shareware
                               else gmode.registered
+                misc.iwad_name = alloc("%s{base}")!
                 add_file(pth)
                 free(pth)
             return
@@ -447,6 +448,7 @@ module d =
                 match find_in(dir, iwad_names[k]) with
                 | some(pth) ->
                     ds.gamemode = modes[k]
+                    misc.iwad_name = alloc("%s{iwad_names[k]}")!
                     add_file(pth)
                     free(pth)
                     done = true

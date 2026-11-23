@@ -175,15 +175,21 @@ fi
 # ----------------------------------------------------------------------
 section "save / load"
 if have DOOM.WAD; then
-    rm -f "$DOOM_FC_HOME"/doomsav*.dsg
+    savedir="$DOOM_FC_HOME/savegames/doom.wad"
+    rm -f "$savedir"/doomsav*.dsg
     saved=$(run -doom1 -warp 1 1 -tictrace -quitat 140 -script "w40 dup w30 uup w20 pf2 w2 penter w2 pt pe ps pt w1 penter w10" | grep '^T 95 ')
-    [ -f "$DOOM_FC_HOME/doomsav0.dsg" ] && ok "F2 / slot 1 / typed name writes doomsav0.dsg" || bad "F2 / slot 1 / typed name writes doomsav0.dsg"
+    [ -f "$savedir/doomsav0.dsg" ] && ok "F2 / slot 1 / typed name writes savegames/doom.wad/doomsav0.dsg" || bad "F2 / slot 1 / typed name writes savegames/doom.wad/doomsav0.dsg"
     loaded=$(run -doom1 -loadgame 0 -tictrace -quitat 3 | grep '^T 0 ')
     # The save is written at the start of the tic after the menu Enter, so
     # the loaded game's first tic is tic 95 of the saving run: position,
     # the momentum-driven step and health all survive the round trip
     # (the RNG index is not saved, as in the original)
     assert_eq "loaded game resumes exactly where it was saved" "$(echo "$saved" | cut -d' ' -f4-6)" "$(echo "$loaded" | cut -d' ' -f4-6)"
+    # Each IWAD has its own saves: DOOM II must not load the E1M1 save
+    # onto MAP01 (which once crashed)
+    if have DOOM2.WAD; then
+        run -doom2 -loadgame 0 -quitat 3 >/dev/null && ok "DOOM II does not see a DOOM save" || bad "DOOM II does not see a DOOM save"
+    fi
 else
     skp "DOOM.WAD not in $DATA"
 fi
