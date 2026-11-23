@@ -85,42 +85,32 @@ module dd =
     let key_lalt = key_ralt
 
 // GameMode_t
-module gmode =
-    let shareware = 0
-    let registered = 1
-    let commercial = 2
-    let retail = 3
-    let indetermined = 4
-
-// GameMission_t
-module gmission =
-    let doom = 0
-    let doom2 = 1
-    let pack_tnt = 2
-    let pack_plut = 3
-    let none_x = 4
+enum gmode =
+    | shareware      // DOOM 1 shareware, E1, M9
+    | registered     // DOOM 1 registered, E3, M27
+    | commercial     // DOOM 2 retail, E1 M34
+    | retail         // DOOM 1 retail, E4, M36
+    | indetermined   // Well, no IWAD found.
 
 // gamestate_t
-module gs =
-    let level = 0
-    let intermission = 1
-    let finale = 2
-    let demoscreen = 3
-    // wipegamestate's "force a wipe" value
-    let force_wipe = -1
+enum gs =
+    | level
+    | intermission
+    | finale
+    | demoscreen
 
 // gameaction_t
-module ga =
-    let nothing = 0
-    let loadlevel = 1
-    let newgame = 2
-    let loadgame = 3
-    let savegame = 4
-    let playdemo = 5
-    let completed = 6
-    let victory = 7
-    let worlddone = 8
-    let screenshot = 9
+enum ga =
+    | nothing
+    | loadlevel
+    | newgame
+    | loadgame
+    | savegame
+    | playdemo
+    | completed
+    | victory
+    | worlddone
+    | screenshot
 
 // skill_t
 module sk =
@@ -179,23 +169,16 @@ module pw =
     let irontics = 60 * 35
 
 // playerstate_t
-module pst =
-    let live = 0
-    let dead = 1
-    let reborn = 2
+enum pst =
+    | live      // Playing or camping.
+    | dead      // Dead on the ground, view follows killer.
+    | reborn    // Ready to restart/respawn???
 
 // cheat_t
 module cf =
     let noclip = 1
     let godmode = 2
     let nomomentum = 4
-
-// evtype_t
-module evt =
-    let keydown = 0
-    let keyup = 1
-    let mouse = 2
-    let joystick = 3
 
 // buttoncode_t
 module bt =
@@ -345,11 +328,19 @@ struct ticcmd =
     chatchar: u8
     buttons: u8
 
-struct event =
-    type: i32
-    data1: i32
-    data2: i32
-    data3: i32
+// The mouse buttons held (bit 0 left, 1 right, 2 middle) and how far it
+// moved since the last event.
+struct mouse_motion =
+    buttons: i32
+    dx: i32
+    dy: i32
+
+// An input event (event_t): a key going down or up, as a dd.key_* or
+// ASCII code, or the mouse.
+union event =
+    | keydown(i32)
+    | keyup(i32)
+    | mouse(mouse_motion)
 
 struct mapthing =
     x: i32
@@ -418,7 +409,7 @@ struct pspdef =
 
 struct player =
     mo: mobj*?
-    playerstate: i32
+    playerstate: pst
     cmd: ticcmd
     viewz: i32
     viewheight: i32
@@ -654,9 +645,77 @@ struct glow =
 // sound origin, always the line's front sector's.
 struct button =
     line: line*?    // none: a free slot
-    where: i32
+    where: button_where
     btexture: i32
     btimer: i32
+
+// What T_MovePlane did (result_e)
+enum move_result =
+    | okay
+    | crushed
+    | pastdest
+
+// plat_e
+enum plat_status =
+    | up
+    | down
+    | waiting
+    | in_stasis
+
+// plattype_e
+enum plat_type =
+    | perpetual_raise
+    | down_wait_up_stay
+    | raise_and_change
+    | raise_to_nearest_and_change
+    | blaze_dwus
+
+// vldoor_e
+enum door_type =
+    | normal
+    | close30_then_open
+    | close
+    | open
+    | raise_in5_mins
+    | blaze_raise
+    | blaze_open
+    | blaze_close
+
+// ceiling_e
+enum ceiling_type =
+    | lower_to_floor
+    | raise_to_highest
+    | lower_and_crush
+    | crush_and_raise
+    | fast_crush_and_raise
+    | silent_crush_and_raise
+
+// floor_e
+enum floor_type =
+    | lower_floor
+    | lower_floor_to_lowest
+    | turbo_lower
+    | raise_floor
+    | raise_floor_to_nearest
+    | raise_to_texture
+    | lower_and_change
+    | raise_floor24
+    | raise_floor24_and_change
+    | raise_floor_crush
+    | raise_floor_turbo
+    | donut_raise
+    | raise_floor512
+
+// stair_e
+enum stair_type =
+    | build8    // slowly build by 8
+    | turbo16   // quickly build by 16
+
+// Which texture of a line's front side a switch changes (bwhere_e)
+enum button_where =
+    | top
+    | middle
+    | bottom
 
 struct plat =
     thinker: thinker
@@ -666,15 +725,15 @@ struct plat =
     high: i32
     wait: i32
     count: i32
-    status: i32
-    oldstatus: i32
+    status: plat_status
+    oldstatus: plat_status
     crush: bool
     tag: i32
-    type: i32
+    type: plat_type
 
 struct vldoor =
     thinker: thinker
-    type: i32
+    type: door_type
     sector: sector*
     topheight: i32
     speed: i32
@@ -684,7 +743,7 @@ struct vldoor =
 
 struct ceiling =
     thinker: thinker
-    type: i32
+    type: ceiling_type
     sector: sector*
     bottomheight: i32
     topheight: i32
@@ -696,7 +755,7 @@ struct ceiling =
 
 struct floormove =
     thinker: thinker
-    type: i32
+    type: floor_type
     crush: bool
     sector: sector*
     direction: i32

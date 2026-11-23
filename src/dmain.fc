@@ -17,7 +17,7 @@ module d =
     let mut menuactivestate = false
     let mut inhelpscreensstate = false
     let mut fullscreen = false
-    let mut oldgamestate = -1
+    let mut oldgamestate = none(gs)
     let mut borderdrawcount = 0
 
     // d_net single-player state
@@ -35,7 +35,7 @@ module d =
         if ds.gamemode == gmode.commercial && w.check_num_for_name("map01") < 0 then return
         loop
             if ds.eventtail == ds.eventhead then break
-            let ev = &ds.events[ds.eventtail]
+            let ev = ds.events[ds.eventtail]
             if !m.responder(ev) then ignore g.responder(ev)    // menu ate the event?
             ds.eventtail = (ds.eventtail + 1) & (ds.maxevents - 1)
 
@@ -67,33 +67,33 @@ module d =
         // change the view size if needed
         if ds.setsizeneeded then
             r.execute_set_view_size()
-            oldgamestate = -1    // force background redraw
+            oldgamestate = none(gs)    // force background redraw
             borderdrawcount = 3
         // save the current screen if about to wipe
-        let wipe_now = ds.gamestate != ds.wipegamestate
+        let wipe_now = some(ds.gamestate) != ds.wipegamestate
         if wipe_now then wipe.start_screen(0, 0, 320, 200)
         if ds.gamestate == gs.level && ds.gametic != 0 then hu.erase()
         // do buffered drawing
-        let state = ds.gamestate
-        if state == gs.level then
+        match ds.gamestate with
+        | level ->
             if ds.gametic != 0 then
                 if ds.automapactive then amap.drawer()
                 if wipe_now || (ds.viewheight != v.sh && fullscreen) then redrawsbar = true
                 if inhelpscreensstate && !ds.inhelpscreens then redrawsbar = true    // just put away the help screen
                 st.drawer(ds.viewheight == v.sh, redrawsbar)
                 fullscreen = ds.viewheight == v.sh
-        else if state == gs.intermission then wi.drawer()
-        else if state == gs.finale then f.drawer()
-        else if state == gs.demoscreen then page_drawer()
+        | intermission -> wi.drawer()
+        | finale -> f.drawer()
+        | demoscreen -> page_drawer()
         // draw the view directly
         if ds.gamestate == gs.level && !ds.automapactive && ds.gametic != 0 then
             r.render_player_view(&ds.players[ds.displayplayer])
         if ds.gamestate == gs.level && ds.gametic != 0 then hu.drawer()
         // clean up border stuff
-        if ds.gamestate != oldgamestate && ds.gamestate != gs.level then
+        if some(ds.gamestate) != oldgamestate && ds.gamestate != gs.level then
             iv.set_palette(w.cache_lump_name("PLAYPAL", pu.cache))
         // see if the border needs to be initially drawn
-        if ds.gamestate == gs.level && oldgamestate != gs.level then
+        if ds.gamestate == gs.level && oldgamestate != some(gs.level) then
             viewactivestate = false    // view was not active
             r.fill_back_screen()    // draw the pattern into the back screen
         // see if the border needs to be updated to the screen
@@ -105,8 +105,8 @@ module d =
         menuactivestate = ds.menuactive
         viewactivestate = ds.viewactive
         inhelpscreensstate = ds.inhelpscreens
-        oldgamestate = ds.gamestate
-        ds.wipegamestate = ds.gamestate
+        oldgamestate = some(ds.gamestate)
+        ds.wipegamestate = some(ds.gamestate)
         // draw pause pic
         if ds.paused then
             let n = v.hires
@@ -124,7 +124,7 @@ module d =
         if iv.headless then
             // run the melt to completion without real time passing
             loop
-                let done = wipe.screen_wipe(wipe.melt, 0, 0, 320, 200, 1)
+                let done = wipe.screen_wipe(wipe.kind.melt, 0, 0, 320, 200, 1)
                 if done then break
             return
         let mut wipestart = i.get_time() - 1
@@ -137,7 +137,7 @@ module d =
                 if tics != 0 then break
                 i.sleep_ms(1)
             wipestart = nowtime
-            let done = wipe.screen_wipe(wipe.melt, 0, 0, 320, 200, tics)
+            let done = wipe.screen_wipe(wipe.kind.melt, 0, 0, 320, 200, tics)
             iv.update_no_blit()
             m.drawer()    // menu is drawn even on top of wipes
             iv.finish_update()    // page flip or blit buffer
@@ -436,7 +436,7 @@ module d =
                 add_file(pth)
                 free(pth)
             return
-        let modes = i32[] { gmode.commercial, gmode.commercial, gmode.commercial, gmode.commercial,
+        let modes = gmode[] { gmode.commercial, gmode.commercial, gmode.commercial, gmode.commercial,
                             gmode.retail, gmode.registered, gmode.shareware }
         // -doom1 / -doom2 pick between installed IWADs
         let prefer1 = argv.check_parm("-doom1") != 0 || argv.check_parm("-doom") != 0
@@ -480,12 +480,12 @@ module d =
         if argv.check_parm("-altdeath") != 0 then ds.deathmatch = 2
         else if argv.check_parm("-deathmatch") != 0 then ds.deathmatch = 1
         let ver = "v%d{dd.version / 100}.%d{dd.version % 100}"
-        let gm = ds.gamemode
-        let title = if gm == gmode.retail then "The Ultimate DOOM Startup"
-                    else if gm == gmode.shareware then "DOOM Shareware Startup"
-                    else if gm == gmode.registered then "DOOM Registered Startup"
-                    else if gm == gmode.commercial then "DOOM 2: Hell on Earth"
-                    else "Public DOOM"
+        let title = match ds.gamemode with
+                    | retail -> "The Ultimate DOOM Startup"
+                    | shareware -> "DOOM Shareware Startup"
+                    | registered -> "DOOM Registered Startup"
+                    | commercial -> "DOOM 2: Hell on Earth"
+                    | indetermined -> "Public DOOM"
         i.print(alloca("                         %s{title} %s{ver}                           \n"))
         if ds.devparm then i.print(dstr.d_devstr)
         // turbo option

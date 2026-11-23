@@ -668,11 +668,11 @@ module iv =
                 let mut n = 0
                 for ch in arg do n = n * 10 + (i32) ch - '0'
                 script_wait = n - 1
-            else if op == 'd' then post_key(evt.keydown, key_named(arg))
-            else if op == 'u' then post_key(evt.keyup, key_named(arg))
+            else if op == 'd' then post_key(true, key_named(arg))
+            else if op == 'u' then post_key(false, key_named(arg))
             else if op == 'p' then
-                post_key(evt.keydown, key_named(arg))
-                post_key(evt.keyup, key_named(arg))
+                post_key(true, key_named(arg))
+                post_key(false, key_named(arg))
             else if op == 't' then
                 // test hook: face DEG degrees (0 = east, 90 = north)
                 let mut n = 0
@@ -689,8 +689,8 @@ module iv =
                 // the shot shows this tic; later tokens run next tic
                 break
 
-    let post_key = (type: i32, k: i32) ->
-        if k != 0 then ds.post_event(event { type = type, data1 = k })
+    let post_key = (down: bool, k: i32) ->
+        if k != 0 then ds.post_event(if down then event.keydown(k) else event.keyup(k))
 
     // I_StartTic: drain SDL events into Doom's event queue.
     let start_tic = () ->
@@ -721,9 +721,7 @@ module iv =
                     else
                         let dk = xlatekey(k)
                         if dk != 0 then
-                            ds.post_event(event {
-                                type = if t == sdl2.keydown_event then evt.keydown else evt.keyup,
-                                data1 = dk })
+                            post_key(t == sdl2.keydown_event, dk)
                 else if t == sdl2.mousemotion_event then
                     if mouse_grabbed then
                         mdx = mdx + e.motion.xrel
@@ -738,10 +736,10 @@ module iv =
                                   | _ -> 0
                         if t == sdl2.mousebuttondown_event then mouse_buttons = mouse_buttons | bit
                         else mouse_buttons = mouse_buttons & ~bit
-                        ds.post_event(event { type = evt.mouse, data1 = mouse_buttons })
+                        ds.post_event(event.mouse(mouse_motion { buttons = mouse_buttons }))
             if moved then
-                ds.post_event(event { type = evt.mouse, data1 = mouse_buttons,
-                                      data2 = mdx << 2, data3 = if novert then 0 else (0 - mdy) << 2 })
+                ds.post_event(event.mouse(mouse_motion { buttons = mouse_buttons,
+                                                         dx = mdx << 2, dy = if novert then 0 else (0 - mdy) << 2 }))
             // grab the mouse only while actually playing
             set_grab(grabmouse && ds.gamestate == gs.level && !ds.menuactive && !ds.paused
                      && !ds.demoplayback)

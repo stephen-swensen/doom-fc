@@ -291,9 +291,8 @@ module hu =
                 message_nottobefuckedwith = message_dontfuckwithme
                 message_dontfuckwithme = false
 
-    let responder = (ev: event*) ->
-        if ev.type != evt.keydown then return false
-        if !chat_on && ev.data1 == msgrefresh then
+    let responder = (ev: event) ->
+        if !chat_on && ev == event.keydown(msgrefresh) then
             message_on = true
             message_counter = msgtimeout
             return true
@@ -436,9 +435,6 @@ module st =
     let rampagedelay = 2 * 35
     let muchpain = 20
 
-    let am_msgheader = ('a' << 24) + ('m' << 16)
-    let am_msgentered = (('a' << 24) + ('m' << 16)) | ('e' << 8)
-    let am_msgexited = (('a' << 24) + ('m' << 16)) | ('x' << 8)
 
     let mut plyr = default(player*)
     let mut st_firsttime = false
@@ -521,113 +517,114 @@ module st =
             if ds.netgame then v.draw_patch(st_fx, 0, stlib.bg, faceback)
             v.copy_rect(st_x, 0, stlib.bg, st_width, st_height, st_x, st_y, stlib.fg)
 
+    // The automap tells the status bar when it opens (true) and closes.
+    // (C sends this down the responder as a keyup with a magic code.)
+    let automap_changed = (entered: bool) ->
+        st_automap = entered
+        if entered then st_firsttime = true
+
     // Respond to keyboard input events, intercept cheats.
-    let responder = (ev: event*) ->
-        // Filter automap on/off.
-        if ev.type == evt.keyup && (ev.data1 & (i32) 0xffff0000u32) == am_msgheader then
-            if ev.data1 == am_msgentered then
-                st_automap = true
-                st_firsttime = true
-            else if ev.data1 == am_msgexited then
-                st_automap = false
-        // if a user keypress...
-        else if ev.type == evt.keydown then
-            if !ds.netgame then
-                // b. - enabled for more debug fun.
-                // if (gameskill != sk_nightmare) {
-                // 'dqd' cheat for toggleable god mode
-                if cheat.check(&cheat_god, ev.data1) then
-                    plyr.cheats = plyr.cheats ^ cf.godmode
-                    if (plyr.cheats & cf.godmode) != 0 then
-                        match plyr.mo with
-                        | some(mo) -> mo.health = 100
-                        | none -> void()
-                        plyr.health = 100
-                        plyr.message = dstr.ststr_dqdon
-                    else
-                        plyr.message = dstr.ststr_dqdoff
-                // 'fa' cheat for killer fucking arsenal
-                else if cheat.check(&cheat_ammonokey, ev.data1) then
-                    plyr.armorpoints = 200
-                    plyr.armortype = 2
-                    for k in 0..wp.numweapons do plyr.weaponowned[k] = true
-                    for k in 0..am.numammo do plyr.ammo[k] = plyr.maxammo[k]
-                    plyr.message = dstr.ststr_faadded
-                // 'kfa' cheat for key full ammo
-                else if cheat.check(&cheat_ammo, ev.data1) then
-                    plyr.armorpoints = 200
-                    plyr.armortype = 2
-                    for k in 0..wp.numweapons do plyr.weaponowned[k] = true
-                    for k in 0..am.numammo do plyr.ammo[k] = plyr.maxammo[k]
-                    for k in 0..it.numcards do plyr.cards[k] = true
-                    plyr.message = dstr.ststr_kfaadded
-                // 'mus' cheat for changing music
-                else if cheat.check(&cheat_mus, ev.data1) then
-                    let buf = u8[] { len = 3 }
-                    plyr.message = dstr.ststr_mus
-                    cheat.get_param(&cheat_mus, buf)
-                    if ds.gamemode == gmode.commercial then
-                        let n = ((i32) buf[0] - '0') * 10 + (i32) buf[1] - '0'
-                        let musnum = mus.runnin + n - 1
-                        if n > 35 then plyr.message = dstr.ststr_nomus
-                        else snd.change_music(musnum, true)
-                    else
-                        let n = ((i32) buf[0] - '1') * 9 + (i32) buf[1] - '1'
-                        let musnum = mus.e1m1 + n
-                        if n > 31 then plyr.message = dstr.ststr_nomus
-                        else snd.change_music(musnum, true)
-                // Simplified, accepting both "noclip" and "idspispopd".
-                // no clipping mode cheat
-                else if cheat.check(&cheat_noclip, ev.data1) || cheat.check(&cheat_commercial_noclip, ev.data1) then
-                    plyr.cheats = plyr.cheats ^ cf.noclip
-                    if (plyr.cheats & cf.noclip) != 0 then plyr.message = dstr.ststr_ncon
-                    else plyr.message = dstr.ststr_ncoff
-                // 'behold?' power-up cheats
-                for k in 0..6 do
-                    if cheat.check(&cheat_powerup[k], ev.data1) then
-                        if plyr.powers[k] == 0 then ignore p.give_power(plyr, (i32) k)
-                        else if (i32) k != pw.strength then plyr.powers[k] = 1
-                        else plyr.powers[k] = 0
-                        plyr.message = dstr.ststr_beholdx
-                // 'behold' power-up menu
-                if cheat.check(&cheat_powerup[6], ev.data1) then
-                    plyr.message = dstr.ststr_behold
-                // 'choppers' invulnerability & chainsaw
-                else if cheat.check(&cheat_choppers, ev.data1) then
-                    plyr.weaponowned[wp.chainsaw] = true
-                    plyr.powers[pw.invulnerability] = 1
-                    plyr.message = dstr.ststr_choppers
-                // 'mypos' for player position
-                else if cheat.check(&cheat_mypos, ev.data1) then
-                    let mo = ds.players[ds.consoleplayer].mo!
-                    if mypos_buf.len > 0 then free(mypos_buf)
-                    mypos_buf = alloc("ang=0x%x{mo.angle};x,y=(0x%x{mo.x},0x%x{mo.y})")!
-                    plyr.message = mypos_buf
-            // 'clev' change-level cheat
-            if cheat.check(&cheat_clev, ev.data1) then
-                let buf = u8[] { len = 3 }
-                cheat.get_param(&cheat_clev, buf)
-                let mut epsd = 0
-                let mut map = 0
-                if ds.gamemode == gmode.commercial then
-                    epsd = 0
-                    map = ((i32) buf[0] - '0') * 10 + (i32) buf[1] - '0'
+    let responder = (ev: event) ->
+        let key = match ev with
+                  | keydown(k) -> k
+                  | _ -> return false
+        // a user keypress...
+        if !ds.netgame then
+            // b. - enabled for more debug fun.
+            // if (gameskill != sk_nightmare) {
+            // 'dqd' cheat for toggleable god mode
+            if cheat.check(&cheat_god, key) then
+                plyr.cheats = plyr.cheats ^ cf.godmode
+                if (plyr.cheats & cf.godmode) != 0 then
+                    match plyr.mo with
+                    | some(mo) -> mo.health = 100
+                    | none -> void()
+                    plyr.health = 100
+                    plyr.message = dstr.ststr_dqdon
                 else
-                    epsd = (i32) buf[0] - '0'
-                    map = (i32) buf[1] - '0'
-                // Catch invalid maps.
-                let gm = ds.gamemode
-                // (the commercial check in linuxdoom also rejects epsd 0,
-                // so idclev never works in Doom II there; kept as is)
-                let bad = epsd < 1 || map < 1
-                    || (gm == gmode.retail && (epsd > 4 || map > 9))
-                    || (gm == gmode.registered && (epsd > 3 || map > 9))
-                    || (gm == gmode.shareware && (epsd > 1 || map > 9))
-                    || (gm == gmode.commercial && (epsd > 1 || map > 34))
-                if !bad then
-                    // So be it.
-                    plyr.message = dstr.ststr_clev
-                    ds.g_defered_init_new(ds.gameskill, epsd, map)
+                    plyr.message = dstr.ststr_dqdoff
+            // 'fa' cheat for killer fucking arsenal
+            else if cheat.check(&cheat_ammonokey, key) then
+                plyr.armorpoints = 200
+                plyr.armortype = 2
+                for k in 0..wp.numweapons do plyr.weaponowned[k] = true
+                for k in 0..am.numammo do plyr.ammo[k] = plyr.maxammo[k]
+                plyr.message = dstr.ststr_faadded
+            // 'kfa' cheat for key full ammo
+            else if cheat.check(&cheat_ammo, key) then
+                plyr.armorpoints = 200
+                plyr.armortype = 2
+                for k in 0..wp.numweapons do plyr.weaponowned[k] = true
+                for k in 0..am.numammo do plyr.ammo[k] = plyr.maxammo[k]
+                for k in 0..it.numcards do plyr.cards[k] = true
+                plyr.message = dstr.ststr_kfaadded
+            // 'mus' cheat for changing music
+            else if cheat.check(&cheat_mus, key) then
+                let buf = u8[] { len = 3 }
+                plyr.message = dstr.ststr_mus
+                cheat.get_param(&cheat_mus, buf)
+                if ds.gamemode == gmode.commercial then
+                    let n = ((i32) buf[0] - '0') * 10 + (i32) buf[1] - '0'
+                    let musnum = mus.runnin + n - 1
+                    if n > 35 then plyr.message = dstr.ststr_nomus
+                    else snd.change_music(musnum, true)
+                else
+                    let n = ((i32) buf[0] - '1') * 9 + (i32) buf[1] - '1'
+                    let musnum = mus.e1m1 + n
+                    if n > 31 then plyr.message = dstr.ststr_nomus
+                    else snd.change_music(musnum, true)
+            // Simplified, accepting both "noclip" and "idspispopd".
+            // no clipping mode cheat
+            else if cheat.check(&cheat_noclip, key) || cheat.check(&cheat_commercial_noclip, key) then
+                plyr.cheats = plyr.cheats ^ cf.noclip
+                if (plyr.cheats & cf.noclip) != 0 then plyr.message = dstr.ststr_ncon
+                else plyr.message = dstr.ststr_ncoff
+            // 'behold?' power-up cheats
+            for k in 0..6 do
+                if cheat.check(&cheat_powerup[k], key) then
+                    if plyr.powers[k] == 0 then ignore p.give_power(plyr, (i32) k)
+                    else if (i32) k != pw.strength then plyr.powers[k] = 1
+                    else plyr.powers[k] = 0
+                    plyr.message = dstr.ststr_beholdx
+            // 'behold' power-up menu
+            if cheat.check(&cheat_powerup[6], key) then
+                plyr.message = dstr.ststr_behold
+            // 'choppers' invulnerability & chainsaw
+            else if cheat.check(&cheat_choppers, key) then
+                plyr.weaponowned[wp.chainsaw] = true
+                plyr.powers[pw.invulnerability] = 1
+                plyr.message = dstr.ststr_choppers
+            // 'mypos' for player position
+            else if cheat.check(&cheat_mypos, key) then
+                let mo = ds.players[ds.consoleplayer].mo!
+                if mypos_buf.len > 0 then free(mypos_buf)
+                mypos_buf = alloc("ang=0x%x{mo.angle};x,y=(0x%x{mo.x},0x%x{mo.y})")!
+                plyr.message = mypos_buf
+        // 'clev' change-level cheat
+        if cheat.check(&cheat_clev, key) then
+            let buf = u8[] { len = 3 }
+            cheat.get_param(&cheat_clev, buf)
+            let mut epsd = 0
+            let mut map = 0
+            if ds.gamemode == gmode.commercial then
+                epsd = 0
+                map = ((i32) buf[0] - '0') * 10 + (i32) buf[1] - '0'
+            else
+                epsd = (i32) buf[0] - '0'
+                map = (i32) buf[1] - '0'
+            // Catch invalid maps.
+            let gm = ds.gamemode
+            // (the commercial check in linuxdoom also rejects epsd 0,
+            // so idclev never works in Doom II there; kept as is)
+            let bad = epsd < 1 || map < 1
+                || (gm == gmode.retail && (epsd > 4 || map > 9))
+                || (gm == gmode.registered && (epsd > 3 || map > 9))
+                || (gm == gmode.shareware && (epsd > 1 || map > 9))
+                || (gm == gmode.commercial && (epsd > 1 || map > 34))
+            if !bad then
+                // So be it.
+                plyr.message = dstr.ststr_clev
+                ds.g_defered_init_new(ds.gameskill, epsd, map)
         false
 
     let calc_pain_offset = () ->

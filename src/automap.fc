@@ -274,8 +274,7 @@ module amap =
         old_m_w = m_w
         old_m_h = m_h
         // inform the status bar of the change
-        let mut st_notify = event { type = evt.keyup, data1 = st.am_msgentered }
-        ignore st.responder(&st_notify)
+        st.automap_changed(true)
 
     let load_pics = () ->
         for k in 0..10 do marknums[k] = v.patch_named_mut("AMMNUM%d{(i32) k}")
@@ -301,8 +300,7 @@ module amap =
 
     let stop = () ->
         ds.automapactive = false
-        let mut st_notify = event { type = evt.keyup, data1 = st.am_msgexited }
-        ignore st.responder(&st_notify)
+        st.automap_changed(false)
         stopped = true
 
     let start = () ->
@@ -328,76 +326,77 @@ module amap =
         activate_new_scale()
 
     // Handle events (user inputs) in automap mode
-    let responder = (ev: event*) ->
+    let responder = (ev: event) ->
         let mut rc = false
         if !ds.automapactive then
-            if ev.type == evt.keydown && ev.data1 == startkey then
+            if ev == event.keydown(startkey) then
                 start()
                 ds.viewactive = false
                 rc = true
-        else if ev.type == evt.keydown then
-            rc = true
-            let k = ev.data1
-            if k == panrightkey then
-                // pan right
-                if !followplayer then m_paninc_x = ftom(f_paninc * v.hires) else rc = false
-            else if k == panleftkey then
-                // pan left
-                if !followplayer then m_paninc_x = 0 - ftom(f_paninc * v.hires) else rc = false
-            else if k == panupkey then
-                // pan up
-                if !followplayer then m_paninc_y = ftom(f_paninc * v.hires) else rc = false
-            else if k == pandownkey then
-                // pan down
-                if !followplayer then m_paninc_y = 0 - ftom(f_paninc * v.hires) else rc = false
-            else if k == zoomoutkey then
-                // zoom out
-                mtof_zoommul = m_zoomout
-                ftom_zoommul = m_zoomin
-            else if k == zoominkey then
-                // zoom in
-                mtof_zoommul = m_zoomin
-                ftom_zoommul = m_zoomout
-            else if k == endkey then
-                bigstate = false
-                ds.viewactive = true
-                stop()
-            else if k == gobigkey then
-                bigstate = !bigstate
-                if bigstate then
-                    save_scale_and_loc()
-                    min_out_window_scale()
-                else restore_scale_and_loc()
-            else if k == followkey then
-                followplayer = !followplayer
-                f_oldloc_x = i32.max
-                plr.message = if followplayer then dstr.amstr_followon else dstr.amstr_followoff
-            else if k == gridkey then
-                grid = !grid
-                plr.message = if grid then dstr.amstr_gridon else dstr.amstr_gridoff
-            else if k == markkey then
-                if markbuf.len > 0 then free(markbuf)
-                markbuf = alloc("%s{dstr.amstr_markedspot} %d{markpointnum}")!
-                plr.message = markbuf
-                add_mark()
-            else if k == clearmarkkey then
-                clear_marks()
-                plr.message = dstr.amstr_markscleared
-            else
+        else
+            match ev with
+            | keydown(k) ->
+                rc = true
+                if k == panrightkey then
+                    // pan right
+                    if !followplayer then m_paninc_x = ftom(f_paninc * v.hires) else rc = false
+                else if k == panleftkey then
+                    // pan left
+                    if !followplayer then m_paninc_x = 0 - ftom(f_paninc * v.hires) else rc = false
+                else if k == panupkey then
+                    // pan up
+                    if !followplayer then m_paninc_y = ftom(f_paninc * v.hires) else rc = false
+                else if k == pandownkey then
+                    // pan down
+                    if !followplayer then m_paninc_y = 0 - ftom(f_paninc * v.hires) else rc = false
+                else if k == zoomoutkey then
+                    // zoom out
+                    mtof_zoommul = m_zoomout
+                    ftom_zoommul = m_zoomin
+                else if k == zoominkey then
+                    // zoom in
+                    mtof_zoommul = m_zoomin
+                    ftom_zoommul = m_zoomout
+                else if k == endkey then
+                    bigstate = false
+                    ds.viewactive = true
+                    stop()
+                else if k == gobigkey then
+                    bigstate = !bigstate
+                    if bigstate then
+                        save_scale_and_loc()
+                        min_out_window_scale()
+                    else restore_scale_and_loc()
+                else if k == followkey then
+                    followplayer = !followplayer
+                    f_oldloc_x = i32.max
+                    plr.message = if followplayer then dstr.amstr_followon else dstr.amstr_followoff
+                else if k == gridkey then
+                    grid = !grid
+                    plr.message = if grid then dstr.amstr_gridon else dstr.amstr_gridoff
+                else if k == markkey then
+                    if markbuf.len > 0 then free(markbuf)
+                    markbuf = alloc("%s{dstr.amstr_markedspot} %d{markpointnum}")!
+                    plr.message = markbuf
+                    add_mark()
+                else if k == clearmarkkey then
+                    clear_marks()
+                    plr.message = dstr.amstr_markscleared
+                else
+                    rc = false
+                if ds.deathmatch == 0 && cheat.check(&cheat_amap, k) then
+                    rc = false
+                    cheating = (cheating + 1) % 3
+            | keyup(k) ->
                 rc = false
-            if ds.deathmatch == 0 && cheat.check(&cheat_amap, ev.data1) then
-                rc = false
-                cheating = (cheating + 1) % 3
-        else if ev.type == evt.keyup then
-            rc = false
-            let k = ev.data1
-            if k == panrightkey || k == panleftkey then
-                if !followplayer then m_paninc_x = 0
-            else if k == panupkey || k == pandownkey then
-                if !followplayer then m_paninc_y = 0
-            else if k == zoomoutkey || k == zoominkey then
-                mtof_zoommul = fx.fracunit
-                ftom_zoommul = fx.fracunit
+                if k == panrightkey || k == panleftkey then
+                    if !followplayer then m_paninc_x = 0
+                else if k == panupkey || k == pandownkey then
+                    if !followplayer then m_paninc_y = 0
+                else if k == zoomoutkey || k == zoominkey then
+                    mtof_zoommul = fx.fracunit
+                    ftom_zoommul = fx.fracunit
+            | mouse(_) -> void()
         rc
 
     // Zooming

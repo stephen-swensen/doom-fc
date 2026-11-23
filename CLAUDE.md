@@ -117,14 +117,27 @@ Doom's C files call each other in every direction, so:
   A sound has an origin (`snd.start_sound(mo, id)`) or none
   (`snd.start_local_sound(id)`). An intercept is a union, `line` or
   `thing`.
-- C function pointers become small dispatches. A thinker's function is
-  `enum thinkf`, dispatched in `p.run_thinker`. A state's codepointer is
-  `enum actionf`, dispatched in `p.call_mobj_action` / `p.call_psp_action`.
-  Menu routines are ints, dispatched in `m.call_routine`. The column drawer
-  is `r.colfunc`.
-- C enums with arithmetic on them are `i32` constants in small modules named
-  after the C prefix: `wp.pistol`, `am.clip`, `gs.level`, `sn.play_run1`
-  (statenum), `mt.troop` (mobjtype), `spr.troo`, `sfx.pistol`, `mus.e1m1`.
+- C function pointers that reach savegames or generated tables become
+  small dispatches. A thinker's function is `enum thinkf`, dispatched in
+  `p.run_thinker`. A state's codepointer is `enum actionf`, dispatched in
+  `p.call_mobj_action` / `p.call_psp_action`. Menu routines, drawers and
+  message responses are never saved, so they are FC function values
+  (`menuitem.routine`, `menudef.drawer`, `m.message_routine`). The column
+  drawer is `r.colfunc`.
+- A C enum that is a closed set, only compared or switched on, is an FC
+  `enum`, and its switches are exhaustive `match`es: `gs`, `ga`, `gmode`,
+  `pst`, the p_spec thinker types (`plat_status`, `door_type`,
+  `ceiling_type`, `floor_type`, `move_result`, ...), `wi_anim`,
+  `f.stage`, `wi.stage`, `wipe.kind`, `item_status`. An enum keeps the
+  C module's name where there was one, so `gs.level` reads as before.
+  An `enum` of `i32` has the field's old layout, so savegames are
+  unchanged. A sentinel outside the set (C's `wipegamestate = -1`) is an
+  option (`gs?`). `event` is a union (`keydown`, `keyup`, `mouse`).
+- C enums with arithmetic on them, sentinels such as `numweapons`, or
+  loops over their values stay `i32` constants in small modules named
+  after the C prefix: `wp.pistol`, `am.clip`, `sk.nightmare`,
+  `sn.play_run1` (statenum), `mt.troop` (mobjtype), `spr.troo`,
+  `sfx.pistol`, `mus.e1m1`. So do bit flags (`mf`, `ml`, `bt`, `cf`).
   Watch for collisions: `am` is ammo (the automap is `amap`), and `mus` is
   the music enum (the player is `musplay`).
 - **Audio threading follows wolf-fc, and it is load-bearing.** The main
@@ -185,6 +198,11 @@ Doom's C files call each other in every direction, so:
   Continuation lines must be indented deeper than the statement.
 - Closures cannot capture `let mut` locals. Use a struct and pointer (see
   music.fc's parser) or module state.
+- A character literal is a `u8`, and a shift masks its count to the
+  operand's width, so `('a' << 24) + ('m' << 16)` is `0xce`, not C's
+  `0x616d0000`. Cast first (`(i32) 'a' << 24`). This silently broke the
+  automap's AM_MSGENTERED notice to the status bar until `event` became a
+  union.
 - Reserved words that bite in Doom code: `error`, `free`, `ok`, `none`,
   `in`, `from`. So it's `i.fatal` (I_Error), `z.zfree` (Z_Free),
   `res_ok`/`okay`, `none_x`, and `in_game`.

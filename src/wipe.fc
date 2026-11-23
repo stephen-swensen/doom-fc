@@ -2,8 +2,9 @@
 // linuxdoom-1.10 (GPLv2).
 
 module wipe =
-    let color_xform = 0
-    let melt = 1
+    enum kind =
+        | color_xform    // simple gradual pixel change for 8-bit only
+        | melt           // weird screen melt
 
     let mut go = false
     let mut wipe_scr_start = default(u8*)
@@ -92,16 +93,19 @@ module wipe =
         iv.read_screen(wipe_scr_end)
         v.copy_screen(2, 0)    // restore start scr.
 
-    let screen_wipe = (wipeno: i32, x: i32, y: i32, width: i32, height: i32, ticks: i32) ->
+    let screen_wipe = (wipeno: kind, x: i32, y: i32, width: i32, height: i32, ticks: i32) ->
         // initial stuff
         if !go then
             go = true
             wipe_scr = v.screens[0]
-            if wipeno == melt then init_melt(width, height, ticks)
-            else init_color_xform(width, height, ticks)
+            match wipeno with
+            | melt -> init_melt(width, height, ticks)
+            | color_xform -> init_color_xform(width, height, ticks)
         // do a piece of wipe-in
         v.mark_rect(0, 0, width, height)
-        let rc = if wipeno == melt then do_melt(width, height, ticks) else do_color_xform(width, height, ticks)
+        let rc = match wipeno with
+                 | melt -> do_melt(width, height, ticks)
+                 | color_xform -> do_color_xform(width, height, ticks)
         // final stuff
         if rc then go = false
         !go

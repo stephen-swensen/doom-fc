@@ -62,59 +62,6 @@ module p =
     let di_southeast = 7
     let di_nodir = 8
 
-    // p_spec.h enums
-    let res_ok = 0
-    let res_crushed = 1
-    let res_pastdest = 2
-
-    let plat_up = 0
-    let plat_down = 1
-    let plat_waiting = 2
-    let plat_in_stasis = 3
-
-    let perpetual_raise = 0
-    let down_wait_up_stay = 1
-    let raise_and_change = 2
-    let raise_to_nearest_and_change = 3
-    let blaze_dwus = 4
-
-    let door_normal = 0
-    let door_close30_then_open = 1
-    let door_close = 2
-    let door_open = 3
-    let door_raise_in5_mins = 4
-    let door_blaze_raise = 5
-    let door_blaze_open = 6
-    let door_blaze_close = 7
-
-    let ceil_lower_to_floor = 0
-    let ceil_raise_to_highest = 1
-    let ceil_lower_and_crush = 2
-    let ceil_crush_and_raise = 3
-    let ceil_fast_crush_and_raise = 4
-    let ceil_silent_crush_and_raise = 5
-
-    let lower_floor = 0
-    let lower_floor_to_lowest = 1
-    let turbo_lower = 2
-    let raise_floor = 3
-    let raise_floor_to_nearest = 4
-    let raise_to_texture = 5
-    let lower_and_change = 6
-    let raise_floor24 = 7
-    let raise_floor24_and_change = 8
-    let raise_floor_crush = 9
-    let raise_floor_turbo = 10
-    let donut_raise = 11
-    let raise_floor512 = 12
-
-    let build8 = 0
-    let turbo16 = 1
-
-    let bw_top = 0
-    let bw_middle = 1
-    let bw_bottom = 2
-
     let glowspeed = 8
     let strobebright = 5
     let fastdark = 15
@@ -2315,7 +2262,7 @@ module p =
                     return    // other Keen not dead
             th = th.next
         junk.tag = 666
-        ignore ev_do_door(&junk, door_open)
+        ignore ev_do_door(&junk, door_type.open)
 
     // ACTION ROUTINES
 
@@ -2859,25 +2806,25 @@ module p =
             if ds.gamemap == 7 then
                 if mo.type == mt.fatso then
                     junk.tag = 666
-                    ignore ev_do_floor(&junk, lower_floor_to_lowest)
+                    ignore ev_do_floor(&junk, floor_type.lower_floor_to_lowest)
                     return
                 if mo.type == mt.baby then
                     junk.tag = 667
-                    ignore ev_do_floor(&junk, raise_to_texture)
+                    ignore ev_do_floor(&junk, floor_type.raise_to_texture)
                     return
         else
             if ds.gameepisode == 1 then
                 junk.tag = 666
-                ignore ev_do_floor(&junk, lower_floor_to_lowest)
+                ignore ev_do_floor(&junk, floor_type.lower_floor_to_lowest)
                 return
             if ds.gameepisode == 4 then
                 if ds.gamemap == 6 then
                     junk.tag = 666
-                    ignore ev_do_door(&junk, door_blaze_open)
+                    ignore ev_do_door(&junk, door_type.blaze_open)
                     return
                 if ds.gamemap == 8 then
                     junk.tag = 666
-                    ignore ev_do_floor(&junk, lower_floor_to_lowest)
+                    ignore ev_do_floor(&junk, floor_type.lower_floor_to_lowest)
                     return
         ds.g_exit_level()
 
@@ -3712,40 +3659,45 @@ module p =
     // Move a plat up and down
     let t_plat_raise = (pl: plat*) ->
         let org = (mobj*) &pl.sector.soundorg
-        if pl.status == plat_up then
+        match pl.status with
+        | up ->
             let res = t_move_plane(pl.sector, pl.speed, pl.high, pl.crush, 0, 1)
-            if pl.type == raise_and_change || pl.type == raise_to_nearest_and_change then
+            match pl.type with
+            | raise_and_change | raise_to_nearest_and_change ->
                 if (ds.leveltime & 7) == 0 then snd.start_sound(org, sfx.stnmov)
-            if res == res_crushed && !pl.crush then
+            | _ -> void()
+            if res == move_result.crushed && !pl.crush then
                 pl.count = pl.wait
-                pl.status = plat_down
+                pl.status = plat_status.down
                 snd.start_sound(org, sfx.pstart)
-            else if res == res_pastdest then
+            else if res == move_result.pastdest then
                 pl.count = pl.wait
-                pl.status = plat_waiting
+                pl.status = plat_status.waiting
                 snd.start_sound(org, sfx.pstop)
-                if pl.type == blaze_dwus || pl.type == down_wait_up_stay
-                    || pl.type == raise_and_change || pl.type == raise_to_nearest_and_change then
+                match pl.type with
+                | blaze_dwus | down_wait_up_stay | raise_and_change | raise_to_nearest_and_change ->
                     remove_active_plat(pl)
-        else if pl.status == plat_down then
+                | perpetual_raise -> void()
+        | down ->
             let res = t_move_plane(pl.sector, pl.speed, pl.low, false, 0, -1)
-            if res == res_pastdest then
+            if res == move_result.pastdest then
                 pl.count = pl.wait
-                pl.status = plat_waiting
+                pl.status = plat_status.waiting
                 snd.start_sound(org, sfx.pstop)
-        else if pl.status == plat_waiting then
+        | waiting ->
             pl.count = pl.count - 1
             if pl.count == 0 then
-                if pl.sector.floorheight == pl.low then pl.status = plat_up
-                else pl.status = plat_down
+                if pl.sector.floorheight == pl.low then pl.status = plat_status.up
+                else pl.status = plat_status.down
                 snd.start_sound(org, sfx.pstart)
+        | in_stasis -> void()
 
     // Do Platforms. "amount" is only used for SOME platforms.
-    let ev_do_plat = (ln: line*, type: i32, amount: i32) ->
+    let ev_do_plat = (ln: line*, type: plat_type, amount: i32) ->
         let mut secnum = -1
         let mut rtn = 0
         // Activate all <type> plats that are in_stasis
-        if type == perpetual_raise then activate_in_stasis(ln.tag)
+        if type == plat_type.perpetual_raise then activate_in_stasis(ln.tag)
         loop
             secnum = find_sector_from_line_tag(ln, secnum)
             if secnum < 0 then break
@@ -3760,38 +3712,39 @@ module p =
             pl.crush = false
             pl.tag = ln.tag
             let org = (mobj*) &sec.soundorg
-            if type == raise_to_nearest_and_change then
+            match type with
+            | raise_to_nearest_and_change ->
                 pl.speed = platspeed / 2
                 sec.floorpic = r.sides[ln.sidenum[0]].sector.floorpic
                 pl.high = find_next_highest_floor(sec, sec.floorheight)
                 pl.wait = 0
-                pl.status = plat_up
+                pl.status = plat_status.up
                 // NO MORE DAMAGE, IF APPLICABLE
                 sec.special = 0
                 snd.start_sound(org, sfx.stnmov)
-            else if type == raise_and_change then
+            | raise_and_change ->
                 pl.speed = platspeed / 2
                 sec.floorpic = r.sides[ln.sidenum[0]].sector.floorpic
                 pl.high = sec.floorheight + amount * fx.fracunit
                 pl.wait = 0
-                pl.status = plat_up
+                pl.status = plat_status.up
                 snd.start_sound(org, sfx.stnmov)
-            else if type == down_wait_up_stay || type == blaze_dwus then
-                pl.speed = if type == blaze_dwus then platspeed * 8 else platspeed * 4
+            | down_wait_up_stay | blaze_dwus ->
+                pl.speed = if type == plat_type.blaze_dwus then platspeed * 8 else platspeed * 4
                 pl.low = find_lowest_floor_surrounding(sec)
                 if pl.low > sec.floorheight then pl.low = sec.floorheight
                 pl.high = sec.floorheight
                 pl.wait = 35 * platwait
-                pl.status = plat_down
+                pl.status = plat_status.down
                 snd.start_sound(org, sfx.pstart)
-            else if type == perpetual_raise then
+            | perpetual_raise ->
                 pl.speed = platspeed
                 pl.low = find_lowest_floor_surrounding(sec)
                 if pl.low > sec.floorheight then pl.low = sec.floorheight
                 pl.high = find_highest_floor_surrounding(sec)
                 if pl.high < sec.floorheight then pl.high = sec.floorheight
                 pl.wait = 35 * platwait
-                pl.status = rnd.p_random() & 1
+                pl.status = if (rnd.p_random() & 1) == 0 then plat_status.up else plat_status.down
                 snd.start_sound(org, sfx.pstart)
             add_active_plat(pl)
         rtn
@@ -3800,7 +3753,7 @@ module p =
         for k in 0..maxplats do
             match activeplats[k] with
             | some(ap) ->
-                if ap.tag == tag && ap.status == plat_in_stasis then
+                if ap.tag == tag && ap.status == plat_status.in_stasis then
                     ap.status = ap.oldstatus
                     ap.thinker.function = thinkf.plat_raise
             | none -> void()
@@ -3809,9 +3762,9 @@ module p =
         for j in 0..maxplats do
             match activeplats[j] with
             | some(ap) ->
-                if ap.status != plat_in_stasis && ap.tag == ln.tag then
+                if ap.status != plat_status.in_stasis && ap.tag == ln.tag then
                     ap.oldstatus = ap.status
-                    ap.status = plat_in_stasis
+                    ap.status = plat_status.in_stasis
                     ap.thinker.function = thinkf.nil
             | none -> void()
 
@@ -3845,43 +3798,45 @@ module p =
             // UP
             let res = t_move_plane(cl.sector, cl.speed, cl.topheight, false, 1, cl.direction)
             if (ds.leveltime & 7) == 0 then
-                if cl.type != ceil_silent_crush_and_raise then snd.start_sound(org, sfx.stnmov)
-            if res == res_pastdest then
-                if cl.type == ceil_raise_to_highest then remove_active_ceiling(cl)
-                else if cl.type == ceil_silent_crush_and_raise then
+                if cl.type != ceiling_type.silent_crush_and_raise then snd.start_sound(org, sfx.stnmov)
+            if res == move_result.pastdest then
+                match cl.type with
+                | raise_to_highest -> remove_active_ceiling(cl)
+                | silent_crush_and_raise ->
                     snd.start_sound(org, sfx.pstop)
                     cl.direction = -1
-                else if cl.type == ceil_fast_crush_and_raise || cl.type == ceil_crush_and_raise then
-                    cl.direction = -1
+                | fast_crush_and_raise | crush_and_raise -> cl.direction = -1
+                | lower_to_floor | lower_and_crush -> void()
         else if cl.direction == -1 then
             // DOWN
             let res = t_move_plane(cl.sector, cl.speed, cl.bottomheight, cl.crush, 1, cl.direction)
             if (ds.leveltime & 7) == 0 then
-                if cl.type != ceil_silent_crush_and_raise then snd.start_sound(org, sfx.stnmov)
-            if res == res_pastdest then
-                if cl.type == ceil_silent_crush_and_raise then
+                if cl.type != ceiling_type.silent_crush_and_raise then snd.start_sound(org, sfx.stnmov)
+            if res == move_result.pastdest then
+                match cl.type with
+                | silent_crush_and_raise ->
                     snd.start_sound(org, sfx.pstop)
                     cl.speed = ceilspeed
                     cl.direction = 1
-                else if cl.type == ceil_crush_and_raise then
+                | crush_and_raise ->
                     cl.speed = ceilspeed
                     cl.direction = 1
-                else if cl.type == ceil_fast_crush_and_raise then
-                    cl.direction = 1
-                else if cl.type == ceil_lower_and_crush || cl.type == ceil_lower_to_floor then
-                    remove_active_ceiling(cl)
-            else if res == res_crushed then
-                if cl.type == ceil_silent_crush_and_raise || cl.type == ceil_crush_and_raise
-                    || cl.type == ceil_lower_and_crush then
-                    cl.speed = ceilspeed / 8
+                | fast_crush_and_raise -> cl.direction = 1
+                | lower_and_crush | lower_to_floor -> remove_active_ceiling(cl)
+                | raise_to_highest -> void()
+            else if res == move_result.crushed then
+                match cl.type with
+                | silent_crush_and_raise | crush_and_raise | lower_and_crush -> cl.speed = ceilspeed / 8
+                | _ -> void()
 
     // Move a ceiling up/down and all around!
-    let ev_do_ceiling = (ln: line*, type: i32) ->
+    let ev_do_ceiling = (ln: line*, type: ceiling_type) ->
         let mut secnum = -1
         let mut rtn = 0
         // Reactivate in-stasis ceilings...for certain types.
-        if type == ceil_fast_crush_and_raise || type == ceil_silent_crush_and_raise || type == ceil_crush_and_raise then
-            activate_in_stasis_ceiling(ln)
+        match type with
+        | fast_crush_and_raise | silent_crush_and_raise | crush_and_raise -> activate_in_stasis_ceiling(ln)
+        | _ -> void()
         loop
             secnum = find_sector_from_line_tag(ln, secnum)
             if secnum < 0 then break
@@ -3893,22 +3848,22 @@ module p =
             sec.specialdata = some(&cl.thinker)
             cl.sector = sec
             cl.crush = false
-            if type == ceil_fast_crush_and_raise then
+            match type with
+            | fast_crush_and_raise ->
                 cl.crush = true
                 cl.topheight = sec.ceilingheight
                 cl.bottomheight = sec.floorheight + (8 * fx.fracunit)
                 cl.direction = -1
                 cl.speed = ceilspeed * 2
-            else if type == ceil_silent_crush_and_raise || type == ceil_crush_and_raise
-                    || type == ceil_lower_and_crush || type == ceil_lower_to_floor then
-                if type == ceil_silent_crush_and_raise || type == ceil_crush_and_raise then
+            | silent_crush_and_raise | crush_and_raise | lower_and_crush | lower_to_floor ->
+                if type == ceiling_type.silent_crush_and_raise || type == ceiling_type.crush_and_raise then
                     cl.crush = true
                     cl.topheight = sec.ceilingheight
                 cl.bottomheight = sec.floorheight
-                if type != ceil_lower_to_floor then cl.bottomheight = cl.bottomheight + 8 * fx.fracunit
+                if type != ceiling_type.lower_to_floor then cl.bottomheight = cl.bottomheight + 8 * fx.fracunit
                 cl.direction = -1
                 cl.speed = ceilspeed
-            else if type == ceil_raise_to_highest then
+            | raise_to_highest ->
                 cl.topheight = find_highest_ceiling_surrounding(sec)
                 cl.direction = 1
                 cl.speed = ceilspeed
@@ -3967,51 +3922,58 @@ module p =
             // WAITING
             door.topcountdown = door.topcountdown - 1
             if door.topcountdown == 0 then
-                if door.type == door_blaze_raise then
+                match door.type with
+                | blaze_raise ->
                     door.direction = -1    // time to go back down
                     snd.start_sound(org, sfx.bdcls)
-                else if door.type == door_normal then
+                | normal ->
                     door.direction = -1    // time to go back down
                     snd.start_sound(org, sfx.dorcls)
-                else if door.type == door_close30_then_open then
+                | close30_then_open ->
                     door.direction = 1
                     snd.start_sound(org, sfx.doropn)
+                | _ -> void()
         else if door.direction == 2 then
             //  INITIAL WAIT
             door.topcountdown = door.topcountdown - 1
-            if door.topcountdown == 0 then
-                if door.type == door_raise_in5_mins then
-                    door.direction = 1
-                    door.type = door_normal
-                    snd.start_sound(org, sfx.doropn)
+            if door.topcountdown == 0 && door.type == door_type.raise_in5_mins then
+                door.direction = 1
+                door.type = door_type.normal
+                snd.start_sound(org, sfx.doropn)
         else if door.direction == -1 then
             // DOWN
             let res = t_move_plane(door.sector, door.speed, door.sector.floorheight, false, 1, door.direction)
-            if res == res_pastdest then
-                if door.type == door_blaze_raise || door.type == door_blaze_close then
+            if res == move_result.pastdest then
+                match door.type with
+                | blaze_raise | blaze_close ->
                     door.sector.specialdata = none(thinker*)
                     remove_thinker(&door.thinker)    // unlink and free
                     snd.start_sound(org, sfx.bdcls)
-                else if door.type == door_normal || door.type == door_close then
+                | normal | close ->
                     door.sector.specialdata = none(thinker*)
                     remove_thinker(&door.thinker)    // unlink and free
-                else if door.type == door_close30_then_open then
+                | close30_then_open ->
                     door.direction = 0
                     door.topcountdown = 35 * 30
-            else if res == res_crushed then
-                if door.type != door_blaze_close && door.type != door_close then
+                | _ -> void()
+            else if res == move_result.crushed then
+                match door.type with
+                | blaze_close | close -> void()    // DO NOT GO BACK UP!
+                | _ ->
                     door.direction = 1
                     snd.start_sound(org, sfx.doropn)
         else if door.direction == 1 then
             // UP
             let res = t_move_plane(door.sector, door.speed, door.topheight, false, 1, door.direction)
-            if res == res_pastdest then
-                if door.type == door_blaze_raise || door.type == door_normal then
+            if res == move_result.pastdest then
+                match door.type with
+                | blaze_raise | normal ->
                     door.direction = 0    // wait at top
                     door.topcountdown = door.topwait
-                else if door.type == door_close30_then_open || door.type == door_blaze_open || door.type == door_open then
+                | close30_then_open | blaze_open | open ->
                     door.sector.specialdata = none(thinker*)
                     remove_thinker(&door.thinker)    // unlink and free
+                | _ -> void()
 
     // A locked door's test: is it a player holding the card or skull key?
     // A player without either is told (msg) and grunts.
@@ -4026,7 +3988,7 @@ module p =
         | none -> false
 
     // Move a locked door up/down
-    let ev_do_locked_door = (ln: line*, type: i32, thing: mobj*) ->
+    let ev_do_locked_door = (ln: line*, type: door_type, thing: mobj*) ->
         let pl = thing.player
         if pl.is_none then return 0
         let sp = ln.special
@@ -4041,7 +4003,7 @@ module p =
             if !holds_key(pl, it.yellowcard, it.yellowskull, dstr.pd_yellowo) then return 0
         ev_do_door(ln, type)
 
-    let ev_do_door = (ln: line*, type: i32) ->
+    let ev_do_door = (ln: line*, type: door_type) ->
         let mut secnum = -1
         let mut rtn = 0
         loop
@@ -4058,32 +4020,34 @@ module p =
             door.topwait = vdoorwait
             door.speed = vdoorspeed
             let org = (mobj*) &door.sector.soundorg
-            if type == door_blaze_close then
+            match type with
+            | blaze_close ->
                 door.topheight = find_lowest_ceiling_surrounding(sec)
                 door.topheight = door.topheight - 4 * fx.fracunit
                 door.direction = -1
                 door.speed = vdoorspeed * 4
                 snd.start_sound(org, sfx.bdcls)
-            else if type == door_close then
+            | close ->
                 door.topheight = find_lowest_ceiling_surrounding(sec)
                 door.topheight = door.topheight - 4 * fx.fracunit
                 door.direction = -1
                 snd.start_sound(org, sfx.dorcls)
-            else if type == door_close30_then_open then
+            | close30_then_open ->
                 door.topheight = sec.ceilingheight
                 door.direction = -1
                 snd.start_sound(org, sfx.dorcls)
-            else if type == door_blaze_raise || type == door_blaze_open then
+            | blaze_raise | blaze_open ->
                 door.direction = 1
                 door.topheight = find_lowest_ceiling_surrounding(sec)
                 door.topheight = door.topheight - 4 * fx.fracunit
                 door.speed = vdoorspeed * 4
                 if door.topheight != sec.ceilingheight then snd.start_sound(org, sfx.bdopn)
-            else if type == door_normal || type == door_open then
+            | normal | open ->
                 door.direction = 1
                 door.topheight = find_lowest_ceiling_surrounding(sec)
                 door.topheight = door.topheight - 4 * fx.fracunit
                 if door.topheight != sec.ceilingheight then snd.start_sound(org, sfx.doropn)
+            | raise_in5_mins -> void()
         rtn
 
     // open a door manually, no tag value
@@ -4126,17 +4090,17 @@ module p =
         door.speed = vdoorspeed
         door.topwait = vdoorwait
         if sp == 1 || sp == 26 || sp == 27 || sp == 28 then
-            door.type = door_normal
+            door.type = door_type.normal
         else if sp == 31 || sp == 32 || sp == 33 || sp == 34 then
-            door.type = door_open
+            door.type = door_type.open
             ln.special = 0
         else if sp == 117 then
             // blazing door raise
-            door.type = door_blaze_raise
+            door.type = door_type.blaze_raise
             door.speed = vdoorspeed * 4
         else if sp == 118 then
             // blazing door open
-            door.type = door_blaze_open
+            door.type = door_type.blaze_open
             ln.special = 0
             door.speed = vdoorspeed * 4
         // find the top and bottom of the movement range
@@ -4150,7 +4114,7 @@ module p =
         sec.special = 0
         door.sector = sec
         door.direction = 0
-        door.type = door_normal
+        door.type = door_type.normal
         door.speed = vdoorspeed
         door.topcountdown = 30 * 35
 
@@ -4161,7 +4125,7 @@ module p =
         sec.special = 0
         door.sector = sec
         door.direction = 2
-        door.type = door_raise_in5_mins
+        door.type = door_type.raise_in5_mins
         door.speed = vdoorspeed
         door.topheight = find_lowest_ceiling_surrounding(sec)
         door.topheight = door.topheight - 4 * fx.fracunit
@@ -4184,14 +4148,14 @@ module p =
                     if change_sector(sector, crush) then
                         sector.floorheight = lastpos
                         ignore change_sector(sector, crush)
-                    return res_pastdest
+                    return move_result.pastdest
                 else
                     let lastpos = sector.floorheight
                     sector.floorheight = sector.floorheight - speed
                     if change_sector(sector, crush) then
                         sector.floorheight = lastpos
                         ignore change_sector(sector, crush)
-                        return res_crushed
+                        return move_result.crushed
             else if direction == 1 then
                 // UP
                 if sector.floorheight + speed > dest then
@@ -4200,16 +4164,16 @@ module p =
                     if change_sector(sector, crush) then
                         sector.floorheight = lastpos
                         ignore change_sector(sector, crush)
-                    return res_pastdest
+                    return move_result.pastdest
                 else
                     // COULD GET CRUSHED
                     let lastpos = sector.floorheight
                     sector.floorheight = sector.floorheight + speed
                     if change_sector(sector, crush) then
-                        if crush then return res_crushed
+                        if crush then return move_result.crushed
                         sector.floorheight = lastpos
                         ignore change_sector(sector, crush)
-                        return res_crushed
+                        return move_result.crushed
         else if floor_or_ceiling == 1 then
             // CEILING
             if direction == -1 then
@@ -4220,16 +4184,16 @@ module p =
                     if change_sector(sector, crush) then
                         sector.ceilingheight = lastpos
                         ignore change_sector(sector, crush)
-                    return res_pastdest
+                    return move_result.pastdest
                 else
                     // COULD GET CRUSHED
                     let lastpos = sector.ceilingheight
                     sector.ceilingheight = sector.ceilingheight - speed
                     if change_sector(sector, crush) then
-                        if crush then return res_crushed
+                        if crush then return move_result.crushed
                         sector.ceilingheight = lastpos
                         ignore change_sector(sector, crush)
-                        return res_crushed
+                        return move_result.crushed
             else if direction == 1 then
                 // UP
                 if sector.ceilingheight + speed > dest then
@@ -4238,32 +4202,32 @@ module p =
                     if change_sector(sector, crush) then
                         sector.ceilingheight = lastpos
                         ignore change_sector(sector, crush)
-                    return res_pastdest
+                    return move_result.pastdest
                 else
                     sector.ceilingheight = sector.ceilingheight + speed
                     ignore change_sector(sector, crush)
-        res_ok
+        move_result.okay
 
     // MOVE A FLOOR TO IT'S DESTINATION (UP OR DOWN)
     let t_move_floor = (floor: floormove*) ->
         let res = t_move_plane(floor.sector, floor.speed, floor.floordestheight, floor.crush, 0, floor.direction)
         let org = (mobj*) &floor.sector.soundorg
         if (ds.leveltime & 7) == 0 then snd.start_sound(org, sfx.stnmov)
-        if res == res_pastdest then
+        if res == move_result.pastdest then
             floor.sector.specialdata = none(thinker*)
             if floor.direction == 1 then
-                if floor.type == donut_raise then
+                if floor.type == floor_type.donut_raise then
                     floor.sector.special = floor.newspecial
                     floor.sector.floorpic = floor.texture
             else if floor.direction == -1 then
-                if floor.type == lower_and_change then
+                if floor.type == floor_type.lower_and_change then
                     floor.sector.special = floor.newspecial
                     floor.sector.floorpic = floor.texture
             remove_thinker(&floor.thinker)
             snd.start_sound(org, sfx.pstop)
 
     // HANDLE FLOOR TYPES
-    let ev_do_floor = (ln: line*, floortype: i32) ->
+    let ev_do_floor = (ln: line*, floortype: floor_type) ->
         let mut secnum = -1
         let mut rtn = 0
         loop
@@ -4278,60 +4242,61 @@ module p =
             sec.specialdata = some(&floor.thinker)
             floor.type = floortype
             floor.crush = false
-            if floortype == lower_floor then
+            match floortype with
+            | lower_floor ->
                 floor.direction = -1
                 floor.sector = sec
                 floor.speed = floorspeed
                 floor.floordestheight = find_highest_floor_surrounding(sec)
-            else if floortype == lower_floor_to_lowest then
+            | lower_floor_to_lowest ->
                 floor.direction = -1
                 floor.sector = sec
                 floor.speed = floorspeed
                 floor.floordestheight = find_lowest_floor_surrounding(sec)
-            else if floortype == turbo_lower then
+            | turbo_lower ->
                 floor.direction = -1
                 floor.sector = sec
                 floor.speed = floorspeed * 4
                 floor.floordestheight = find_highest_floor_surrounding(sec)
                 if floor.floordestheight != sec.floorheight then
                     floor.floordestheight = floor.floordestheight + 8 * fx.fracunit
-            else if floortype == raise_floor_crush || floortype == raise_floor then
-                if floortype == raise_floor_crush then floor.crush = true
+            | raise_floor_crush | raise_floor ->
+                if floortype == floor_type.raise_floor_crush then floor.crush = true
                 floor.direction = 1
                 floor.sector = sec
                 floor.speed = floorspeed
                 floor.floordestheight = find_lowest_ceiling_surrounding(sec)
                 if floor.floordestheight > sec.ceilingheight then floor.floordestheight = sec.ceilingheight
                 floor.floordestheight = floor.floordestheight
-                    - (8 * fx.fracunit) * (if floortype == raise_floor_crush then 1 else 0)
-            else if floortype == raise_floor_turbo then
+                    - (8 * fx.fracunit) * (if floortype == floor_type.raise_floor_crush then 1 else 0)
+            | raise_floor_turbo ->
                 floor.direction = 1
                 floor.sector = sec
                 floor.speed = floorspeed * 4
                 floor.floordestheight = find_next_highest_floor(sec, sec.floorheight)
-            else if floortype == raise_floor_to_nearest then
+            | raise_floor_to_nearest ->
                 floor.direction = 1
                 floor.sector = sec
                 floor.speed = floorspeed
                 floor.floordestheight = find_next_highest_floor(sec, sec.floorheight)
-            else if floortype == raise_floor24 then
+            | raise_floor24 ->
                 floor.direction = 1
                 floor.sector = sec
                 floor.speed = floorspeed
                 floor.floordestheight = floor.sector.floorheight + 24 * fx.fracunit
-            else if floortype == raise_floor512 then
+            | raise_floor512 ->
                 floor.direction = 1
                 floor.sector = sec
                 floor.speed = floorspeed
                 floor.floordestheight = floor.sector.floorheight + 512 * fx.fracunit
-            else if floortype == raise_floor24_and_change then
+            | raise_floor24_and_change ->
                 floor.direction = 1
                 floor.sector = sec
                 floor.speed = floorspeed
                 floor.floordestheight = floor.sector.floorheight + 24 * fx.fracunit
                 sec.floorpic = ln.frontsector.floorpic
                 sec.special = ln.frontsector.special
-            else if floortype == raise_to_texture then
+            | raise_to_texture ->
                 let mut minsize = i32.max
                 floor.direction = 1
                 floor.sector = sec
@@ -4345,7 +4310,7 @@ module p =
                         if sd.bottomtexture >= 0 then
                             if r.textureheight[sd.bottomtexture] < minsize then minsize = r.textureheight[sd.bottomtexture]
                 floor.floordestheight = floor.sector.floorheight + minsize
-            else if floortype == lower_and_change then
+            | lower_and_change ->
                 floor.direction = -1
                 floor.sector = sec
                 floor.speed = floorspeed
@@ -4368,10 +4333,11 @@ module p =
                                 floor.newspecial = sec.special
                                 break
                     k = k + 1
+            | donut_raise -> void()
         rtn
 
     // BUILD A STAIRCASE!
-    let ev_build_stairs = (ln: line*, type: i32) ->
+    let ev_build_stairs = (ln: line*, type: stair_type) ->
         let mut secnum = -1
         let mut rtn = 0
         loop
@@ -4386,8 +4352,8 @@ module p =
             sec.specialdata = some(&floor.thinker)
             floor.direction = 1
             floor.sector = sec
-            let speed = if type == build8 then floorspeed / 4 else floorspeed * 4
-            let stairsize = if type == build8 then 8 * fx.fracunit else 16 * fx.fracunit
+            let speed = if type == stair_type.build8 then floorspeed / 4 else floorspeed * 4
+            let stairsize = if type == stair_type.build8 then 8 * fx.fracunit else 16 * fx.fracunit
             floor.speed = speed
             let mut height = sec.floorheight + stairsize
             floor.floordestheight = height
@@ -4595,31 +4561,31 @@ module p =
         // TRIGGERS. All from here till RETRIGGERS.
         | 2 ->
             // Open Door
-            ignore ev_do_door(ln, door_open)
+            ignore ev_do_door(ln, door_type.open)
             ln.special = 0
         | 3 ->
             // Close Door
-            ignore ev_do_door(ln, door_close)
+            ignore ev_do_door(ln, door_type.close)
             ln.special = 0
         | 4 ->
             // Raise Door
-            ignore ev_do_door(ln, door_normal)
+            ignore ev_do_door(ln, door_type.normal)
             ln.special = 0
         | 5 ->
             // Raise Floor
-            ignore ev_do_floor(ln, raise_floor)
+            ignore ev_do_floor(ln, floor_type.raise_floor)
             ln.special = 0
         | 6 ->
             // Fast Ceiling Crush & Raise
-            ignore ev_do_ceiling(ln, ceil_fast_crush_and_raise)
+            ignore ev_do_ceiling(ln, ceiling_type.fast_crush_and_raise)
             ln.special = 0
         | 8 ->
             // Build Stairs
-            ignore ev_build_stairs(ln, build8)
+            ignore ev_build_stairs(ln, stair_type.build8)
             ln.special = 0
         | 10 ->
             // PlatDownWaitUp
-            ignore ev_do_plat(ln, down_wait_up_stay, 0)
+            ignore ev_do_plat(ln, plat_type.down_wait_up_stay, 0)
             ln.special = 0
         | 12 ->
             // Light Turn On - brightest near
@@ -4631,7 +4597,7 @@ module p =
             ln.special = 0
         | 16 ->
             // Close Door 30
-            ignore ev_do_door(ln, door_close30_then_open)
+            ignore ev_do_door(ln, door_type.close30_then_open)
             ln.special = 0
         | 17 ->
             // Start Light Strobing
@@ -4639,19 +4605,19 @@ module p =
             ln.special = 0
         | 19 ->
             // Lower Floor
-            ignore ev_do_floor(ln, lower_floor)
+            ignore ev_do_floor(ln, floor_type.lower_floor)
             ln.special = 0
         | 22 ->
             // Raise floor to nearest height and change texture
-            ignore ev_do_plat(ln, raise_to_nearest_and_change, 0)
+            ignore ev_do_plat(ln, plat_type.raise_to_nearest_and_change, 0)
             ln.special = 0
         | 25 ->
             // Ceiling Crush and Raise
-            ignore ev_do_ceiling(ln, ceil_crush_and_raise)
+            ignore ev_do_ceiling(ln, ceiling_type.crush_and_raise)
             ln.special = 0
         | 30 ->
             // Raise floor to shortest texture height on either side of lines.
-            ignore ev_do_floor(ln, raise_to_texture)
+            ignore ev_do_floor(ln, floor_type.raise_to_texture)
             ln.special = 0
         | 35 ->
             // Lights Very Dark
@@ -4659,15 +4625,15 @@ module p =
             ln.special = 0
         | 36 ->
             // Lower Floor (TURBO)
-            ignore ev_do_floor(ln, turbo_lower)
+            ignore ev_do_floor(ln, floor_type.turbo_lower)
             ln.special = 0
         | 37 ->
             // LowerAndChange
-            ignore ev_do_floor(ln, lower_and_change)
+            ignore ev_do_floor(ln, floor_type.lower_and_change)
             ln.special = 0
         | 38 ->
             // Lower Floor To Lowest
-            ignore ev_do_floor(ln, lower_floor_to_lowest)
+            ignore ev_do_floor(ln, floor_type.lower_floor_to_lowest)
             ln.special = 0
         | 39 ->
             // TELEPORT!
@@ -4675,19 +4641,19 @@ module p =
             ln.special = 0
         | 40 ->
             // RaiseCeilingLowerFloor
-            ignore ev_do_ceiling(ln, ceil_raise_to_highest)
-            ignore ev_do_floor(ln, lower_floor_to_lowest)
+            ignore ev_do_ceiling(ln, ceiling_type.raise_to_highest)
+            ignore ev_do_floor(ln, floor_type.lower_floor_to_lowest)
             ln.special = 0
         | 44 ->
             // Ceiling Crush
-            ignore ev_do_ceiling(ln, ceil_lower_and_crush)
+            ignore ev_do_ceiling(ln, ceiling_type.lower_and_crush)
             ln.special = 0
         | 52 ->
             // EXIT!
             ds.g_exit_level()
         | 53 ->
             // Perpetual Platform Raise
-            ignore ev_do_plat(ln, perpetual_raise, 0)
+            ignore ev_do_plat(ln, plat_type.perpetual_raise, 0)
             ln.special = 0
         | 54 ->
             // Platform Stop
@@ -4695,7 +4661,7 @@ module p =
             ln.special = 0
         | 56 ->
             // Raise Floor Crush
-            ignore ev_do_floor(ln, raise_floor_crush)
+            ignore ev_do_floor(ln, floor_type.raise_floor_crush)
             ln.special = 0
         | 57 ->
             // Ceiling Crush Stop
@@ -4703,11 +4669,11 @@ module p =
             ln.special = 0
         | 58 ->
             // Raise Floor 24
-            ignore ev_do_floor(ln, raise_floor24)
+            ignore ev_do_floor(ln, floor_type.raise_floor24)
             ln.special = 0
         | 59 ->
             // Raise Floor 24 And Change
-            ignore ev_do_floor(ln, raise_floor24_and_change)
+            ignore ev_do_floor(ln, floor_type.raise_floor24_and_change)
             ln.special = 0
         | 104 ->
             // Turn lights off in sector(tag)
@@ -4715,27 +4681,27 @@ module p =
             ln.special = 0
         | 108 ->
             // Blazing Door Raise (faster than TURBO!)
-            ignore ev_do_door(ln, door_blaze_raise)
+            ignore ev_do_door(ln, door_type.blaze_raise)
             ln.special = 0
         | 109 ->
             // Blazing Door Open (faster than TURBO!)
-            ignore ev_do_door(ln, door_blaze_open)
+            ignore ev_do_door(ln, door_type.blaze_open)
             ln.special = 0
         | 100 ->
             // Build Stairs Turbo 16
-            ignore ev_build_stairs(ln, turbo16)
+            ignore ev_build_stairs(ln, stair_type.turbo16)
             ln.special = 0
         | 110 ->
             // Blazing Door Close (faster than TURBO!)
-            ignore ev_do_door(ln, door_blaze_close)
+            ignore ev_do_door(ln, door_type.blaze_close)
             ln.special = 0
         | 119 ->
             // Raise floor to nearest surr. floor
-            ignore ev_do_floor(ln, raise_floor_to_nearest)
+            ignore ev_do_floor(ln, floor_type.raise_floor_to_nearest)
             ln.special = 0
         | 121 ->
             // Blazing PlatDownWaitUpStay
-            ignore ev_do_plat(ln, blaze_dwus, 0)
+            ignore ev_do_plat(ln, plat_type.blaze_dwus, 0)
             ln.special = 0
         | 124 ->
             // Secret EXIT
@@ -4747,47 +4713,47 @@ module p =
                 ln.special = 0
         | 130 ->
             // Raise Floor Turbo
-            ignore ev_do_floor(ln, raise_floor_turbo)
+            ignore ev_do_floor(ln, floor_type.raise_floor_turbo)
             ln.special = 0
         | 141 ->
             // Silent Ceiling Crush & Raise
-            ignore ev_do_ceiling(ln, ceil_silent_crush_and_raise)
+            ignore ev_do_ceiling(ln, ceiling_type.silent_crush_and_raise)
             ln.special = 0
         // RETRIGGERS.  All from here till end.
-        | 72 -> ignore ev_do_ceiling(ln, ceil_lower_and_crush)
-        | 73 -> ignore ev_do_ceiling(ln, ceil_crush_and_raise)
+        | 72 -> ignore ev_do_ceiling(ln, ceiling_type.lower_and_crush)
+        | 73 -> ignore ev_do_ceiling(ln, ceiling_type.crush_and_raise)
         | 74 -> ignore ev_ceiling_crush_stop(ln)
-        | 75 -> ignore ev_do_door(ln, door_close)
-        | 76 -> ignore ev_do_door(ln, door_close30_then_open)
-        | 77 -> ignore ev_do_ceiling(ln, ceil_fast_crush_and_raise)
+        | 75 -> ignore ev_do_door(ln, door_type.close)
+        | 76 -> ignore ev_do_door(ln, door_type.close30_then_open)
+        | 77 -> ignore ev_do_ceiling(ln, ceiling_type.fast_crush_and_raise)
         | 79 -> ev_light_turn_on(ln, 35)
         | 80 -> ev_light_turn_on(ln, 0)
         | 81 -> ev_light_turn_on(ln, 255)
-        | 82 -> ignore ev_do_floor(ln, lower_floor_to_lowest)
-        | 83 -> ignore ev_do_floor(ln, lower_floor)
-        | 84 -> ignore ev_do_floor(ln, lower_and_change)
-        | 86 -> ignore ev_do_door(ln, door_open)
-        | 87 -> ignore ev_do_plat(ln, perpetual_raise, 0)
-        | 88 -> ignore ev_do_plat(ln, down_wait_up_stay, 0)
+        | 82 -> ignore ev_do_floor(ln, floor_type.lower_floor_to_lowest)
+        | 83 -> ignore ev_do_floor(ln, floor_type.lower_floor)
+        | 84 -> ignore ev_do_floor(ln, floor_type.lower_and_change)
+        | 86 -> ignore ev_do_door(ln, door_type.open)
+        | 87 -> ignore ev_do_plat(ln, plat_type.perpetual_raise, 0)
+        | 88 -> ignore ev_do_plat(ln, plat_type.down_wait_up_stay, 0)
         | 89 -> ev_stop_plat(ln)
-        | 90 -> ignore ev_do_door(ln, door_normal)
-        | 91 -> ignore ev_do_floor(ln, raise_floor)
-        | 92 -> ignore ev_do_floor(ln, raise_floor24)
-        | 93 -> ignore ev_do_floor(ln, raise_floor24_and_change)
-        | 94 -> ignore ev_do_floor(ln, raise_floor_crush)
-        | 95 -> ignore ev_do_plat(ln, raise_to_nearest_and_change, 0)
-        | 96 -> ignore ev_do_floor(ln, raise_to_texture)
+        | 90 -> ignore ev_do_door(ln, door_type.normal)
+        | 91 -> ignore ev_do_floor(ln, floor_type.raise_floor)
+        | 92 -> ignore ev_do_floor(ln, floor_type.raise_floor24)
+        | 93 -> ignore ev_do_floor(ln, floor_type.raise_floor24_and_change)
+        | 94 -> ignore ev_do_floor(ln, floor_type.raise_floor_crush)
+        | 95 -> ignore ev_do_plat(ln, plat_type.raise_to_nearest_and_change, 0)
+        | 96 -> ignore ev_do_floor(ln, floor_type.raise_to_texture)
         | 97 -> ignore ev_teleport(ln, side, thing)
-        | 98 -> ignore ev_do_floor(ln, turbo_lower)
-        | 105 -> ignore ev_do_door(ln, door_blaze_raise)
-        | 106 -> ignore ev_do_door(ln, door_blaze_open)
-        | 107 -> ignore ev_do_door(ln, door_blaze_close)
-        | 120 -> ignore ev_do_plat(ln, blaze_dwus, 0)
+        | 98 -> ignore ev_do_floor(ln, floor_type.turbo_lower)
+        | 105 -> ignore ev_do_door(ln, door_type.blaze_raise)
+        | 106 -> ignore ev_do_door(ln, door_type.blaze_open)
+        | 107 -> ignore ev_do_door(ln, door_type.blaze_close)
+        | 120 -> ignore ev_do_plat(ln, plat_type.blaze_dwus, 0)
         | 126 ->
             // TELEPORT MonsterONLY.
             if thing.player.is_none then ignore ev_teleport(ln, side, thing)
-        | 128 -> ignore ev_do_floor(ln, raise_floor_to_nearest)
-        | 129 -> ignore ev_do_floor(ln, raise_floor_turbo)
+        | 128 -> ignore ev_do_floor(ln, floor_type.raise_floor_to_nearest)
+        | 129 -> ignore ev_do_floor(ln, floor_type.raise_floor_turbo)
         | _ -> void()
 
     // Called when a thing shoots a special line.
@@ -4798,15 +4764,15 @@ module p =
         match ln.special with
         | 24 ->
             // RAISE FLOOR
-            ignore ev_do_floor(ln, raise_floor)
+            ignore ev_do_floor(ln, floor_type.raise_floor)
             change_switch_texture(ln, 0)
         | 46 ->
             // OPEN DOOR
-            ignore ev_do_door(ln, door_open)
+            ignore ev_do_door(ln, door_type.open)
             change_switch_texture(ln, 1)
         | 47 ->
             // RAISE FLOOR NEAR AND CHANGE
-            ignore ev_do_plat(ln, raise_to_nearest_and_change, 0)
+            ignore ev_do_plat(ln, plat_type.raise_to_nearest_and_change, 0)
             change_switch_texture(ln, 0)
         | _ -> void()
 
@@ -4872,9 +4838,10 @@ module p =
                 if b.btimer == 0 then
                     let ln = b.line!
                     let sd = &r.sides[ln.sidenum[0]]
-                    if b.where == bw_top then sd.toptexture = b.btexture
-                    else if b.where == bw_middle then sd.midtexture = b.btexture
-                    else if b.where == bw_bottom then sd.bottomtexture = b.btexture
+                    match b.where with
+                    | top -> sd.toptexture = b.btexture
+                    | middle -> sd.midtexture = b.btexture
+                    | bottom -> sd.bottomtexture = b.btexture
                     // (the original passes &soundorg, the address of its
                     // pointer field, as the origin; we pass the origin itself)
                     snd.start_sound((mobj*) &ln.frontsector.soundorg, sfx.swtchn)
@@ -4905,7 +4872,7 @@ module p =
                 // Spawn rising slime
                 let mut floor = (floormove*) alloc_thinker(sizeof(floormove), thinkf.move_floor)
                 s2.specialdata = some(&floor.thinker)
-                floor.type = donut_raise
+                floor.type = floor_type.donut_raise
                 floor.crush = false
                 floor.direction = 1
                 floor.sector = s2
@@ -4916,7 +4883,7 @@ module p =
                 // Spawn lowering donut-hole
                 floor = (floormove*) alloc_thinker(sizeof(floormove), thinkf.move_floor)
                 s1.specialdata = some(&floor.thinker)
-                floor.type = lower_floor
+                floor.type = floor_type.lower_floor
                 floor.crush = false
                 floor.direction = -1
                 floor.sector = s1
@@ -5026,7 +4993,7 @@ module p =
         switchlist[index] = -1
 
     // Start a button counting down till it turns off.
-    let start_button = (ln: line*, wh: i32, texture: i32, time: i32) ->
+    let start_button = (ln: line*, wh: button_where, texture: i32, time: i32) ->
         // See if button is already pressed
         for k in 0..maxbuttons do
             if buttonlist[k].btimer != 0 && buttonlist[k].line == some(ln) then return
@@ -5059,17 +5026,17 @@ module p =
             if switchlist[k] == tex_top then
                 snd.start_sound(org, sound)
                 sd.toptexture = switchlist[k ^ 1]
-                if use_again != 0 then start_button(ln, bw_top, switchlist[k], buttontime)
+                if use_again != 0 then start_button(ln, button_where.top, switchlist[k], buttontime)
                 return
             else if switchlist[k] == tex_mid then
                 snd.start_sound(org, sound)
                 sd.midtexture = switchlist[k ^ 1]
-                if use_again != 0 then start_button(ln, bw_middle, switchlist[k], buttontime)
+                if use_again != 0 then start_button(ln, button_where.middle, switchlist[k], buttontime)
                 return
             else if switchlist[k] == tex_bot then
                 snd.start_sound(org, sound)
                 sd.bottomtexture = switchlist[k ^ 1]
-                if use_again != 0 then start_button(ln, bw_bottom, switchlist[k], buttontime)
+                if use_again != 0 then start_button(ln, button_where.bottom, switchlist[k], buttontime)
                 return
 
     // Called when a thing uses a special line. Only the front sides of
@@ -5091,60 +5058,60 @@ module p =
         // MANUALS
         | 1 | 26 | 27 | 28 | 31 | 32 | 33 | 34 | 117 | 118 -> ev_vertical_door(ln, thing)
         // SWITCHES
-        | 7 -> sw(ev_build_stairs(ln, build8), 0)    // Build Stairs
+        | 7 -> sw(ev_build_stairs(ln, stair_type.build8), 0)    // Build Stairs
         | 9 -> sw(ev_do_donut(ln), 0)    // Change Donut
         | 11 ->
             // Exit level
             change_switch_texture(ln, 0)
             ds.g_exit_level()
-        | 14 -> sw(ev_do_plat(ln, raise_and_change, 32), 0)    // Raise Floor 32 and change texture
-        | 15 -> sw(ev_do_plat(ln, raise_and_change, 24), 0)    // Raise Floor 24 and change texture
-        | 18 -> sw(ev_do_floor(ln, raise_floor_to_nearest), 0)    // Raise Floor to next highest floor
-        | 20 -> sw(ev_do_plat(ln, raise_to_nearest_and_change, 0), 0)    // Raise Plat next highest floor and change texture
-        | 21 -> sw(ev_do_plat(ln, down_wait_up_stay, 0), 0)    // PlatDownWaitUpStay
-        | 23 -> sw(ev_do_floor(ln, lower_floor_to_lowest), 0)    // Lower Floor to Lowest
-        | 29 -> sw(ev_do_door(ln, door_normal), 0)    // Raise Door
-        | 41 -> sw(ev_do_ceiling(ln, ceil_lower_to_floor), 0)    // Lower Ceiling to Floor
-        | 71 -> sw(ev_do_floor(ln, turbo_lower), 0)    // Turbo Lower Floor
-        | 49 -> sw(ev_do_ceiling(ln, ceil_crush_and_raise), 0)    // Ceiling Crush And Raise
-        | 50 -> sw(ev_do_door(ln, door_close), 0)    // Close Door
+        | 14 -> sw(ev_do_plat(ln, plat_type.raise_and_change, 32), 0)    // Raise Floor 32 and change texture
+        | 15 -> sw(ev_do_plat(ln, plat_type.raise_and_change, 24), 0)    // Raise Floor 24 and change texture
+        | 18 -> sw(ev_do_floor(ln, floor_type.raise_floor_to_nearest), 0)    // Raise Floor to next highest floor
+        | 20 -> sw(ev_do_plat(ln, plat_type.raise_to_nearest_and_change, 0), 0)    // Raise Plat next highest floor and change texture
+        | 21 -> sw(ev_do_plat(ln, plat_type.down_wait_up_stay, 0), 0)    // PlatDownWaitUpStay
+        | 23 -> sw(ev_do_floor(ln, floor_type.lower_floor_to_lowest), 0)    // Lower Floor to Lowest
+        | 29 -> sw(ev_do_door(ln, door_type.normal), 0)    // Raise Door
+        | 41 -> sw(ev_do_ceiling(ln, ceiling_type.lower_to_floor), 0)    // Lower Ceiling to Floor
+        | 71 -> sw(ev_do_floor(ln, floor_type.turbo_lower), 0)    // Turbo Lower Floor
+        | 49 -> sw(ev_do_ceiling(ln, ceiling_type.crush_and_raise), 0)    // Ceiling Crush And Raise
+        | 50 -> sw(ev_do_door(ln, door_type.close), 0)    // Close Door
         | 51 ->
             // Secret EXIT
             change_switch_texture(ln, 0)
             ds.g_secret_exit_level()
-        | 55 -> sw(ev_do_floor(ln, raise_floor_crush), 0)    // Raise Floor Crush
-        | 101 -> sw(ev_do_floor(ln, raise_floor), 0)    // Raise Floor
-        | 102 -> sw(ev_do_floor(ln, lower_floor), 0)    // Lower Floor to Surrounding floor height
-        | 103 -> sw(ev_do_door(ln, door_open), 0)    // Open Door
-        | 111 -> sw(ev_do_door(ln, door_blaze_raise), 0)    // Blazing Door Raise (faster than TURBO!)
-        | 112 -> sw(ev_do_door(ln, door_blaze_open), 0)    // Blazing Door Open (faster than TURBO!)
-        | 113 -> sw(ev_do_door(ln, door_blaze_close), 0)    // Blazing Door Close (faster than TURBO!)
-        | 122 -> sw(ev_do_plat(ln, blaze_dwus, 0), 0)    // Blazing PlatDownWaitUpStay
-        | 127 -> sw(ev_build_stairs(ln, turbo16), 0)    // Build Stairs Turbo 16
-        | 131 -> sw(ev_do_floor(ln, raise_floor_turbo), 0)    // Raise Floor Turbo
-        | 133 | 135 | 137 -> sw(ev_do_locked_door(ln, door_blaze_open, thing), 0)    // BlzOpenDoor BLUE / RED / YELLOW
-        | 140 -> sw(ev_do_floor(ln, raise_floor512), 0)    // Raise Floor 512
+        | 55 -> sw(ev_do_floor(ln, floor_type.raise_floor_crush), 0)    // Raise Floor Crush
+        | 101 -> sw(ev_do_floor(ln, floor_type.raise_floor), 0)    // Raise Floor
+        | 102 -> sw(ev_do_floor(ln, floor_type.lower_floor), 0)    // Lower Floor to Surrounding floor height
+        | 103 -> sw(ev_do_door(ln, door_type.open), 0)    // Open Door
+        | 111 -> sw(ev_do_door(ln, door_type.blaze_raise), 0)    // Blazing Door Raise (faster than TURBO!)
+        | 112 -> sw(ev_do_door(ln, door_type.blaze_open), 0)    // Blazing Door Open (faster than TURBO!)
+        | 113 -> sw(ev_do_door(ln, door_type.blaze_close), 0)    // Blazing Door Close (faster than TURBO!)
+        | 122 -> sw(ev_do_plat(ln, plat_type.blaze_dwus, 0), 0)    // Blazing PlatDownWaitUpStay
+        | 127 -> sw(ev_build_stairs(ln, stair_type.turbo16), 0)    // Build Stairs Turbo 16
+        | 131 -> sw(ev_do_floor(ln, floor_type.raise_floor_turbo), 0)    // Raise Floor Turbo
+        | 133 | 135 | 137 -> sw(ev_do_locked_door(ln, door_type.blaze_open, thing), 0)    // BlzOpenDoor BLUE / RED / YELLOW
+        | 140 -> sw(ev_do_floor(ln, floor_type.raise_floor512), 0)    // Raise Floor 512
         // BUTTONS
-        | 42 -> sw(ev_do_door(ln, door_close), 1)    // Close Door
-        | 43 -> sw(ev_do_ceiling(ln, ceil_lower_to_floor), 1)    // Lower Ceiling to Floor
-        | 45 -> sw(ev_do_floor(ln, lower_floor), 1)    // Lower Floor to Surrounding floor height
-        | 60 -> sw(ev_do_floor(ln, lower_floor_to_lowest), 1)    // Lower Floor to Lowest
-        | 61 -> sw(ev_do_door(ln, door_open), 1)    // Open Door
-        | 62 -> sw(ev_do_plat(ln, down_wait_up_stay, 1), 1)    // PlatDownWaitUpStay
-        | 63 -> sw(ev_do_door(ln, door_normal), 1)    // Raise Door
-        | 64 -> sw(ev_do_floor(ln, raise_floor), 1)    // Raise Floor to ceiling
-        | 66 -> sw(ev_do_plat(ln, raise_and_change, 24), 1)    // Raise Floor 24 and change texture
-        | 67 -> sw(ev_do_plat(ln, raise_and_change, 32), 1)    // Raise Floor 32 and change texture
-        | 65 -> sw(ev_do_floor(ln, raise_floor_crush), 1)    // Raise Floor Crush
-        | 68 -> sw(ev_do_plat(ln, raise_to_nearest_and_change, 0), 1)    // Raise Plat to next highest floor and change texture
-        | 69 -> sw(ev_do_floor(ln, raise_floor_to_nearest), 1)    // Raise Floor to next highest floor
-        | 70 -> sw(ev_do_floor(ln, turbo_lower), 1)    // Turbo Lower Floor
-        | 114 -> sw(ev_do_door(ln, door_blaze_raise), 1)    // Blazing Door Raise (faster than TURBO!)
-        | 115 -> sw(ev_do_door(ln, door_blaze_open), 1)    // Blazing Door Open (faster than TURBO!)
-        | 116 -> sw(ev_do_door(ln, door_blaze_close), 1)    // Blazing Door Close (faster than TURBO!)
-        | 123 -> sw(ev_do_plat(ln, blaze_dwus, 0), 1)    // Blazing PlatDownWaitUpStay
-        | 132 -> sw(ev_do_floor(ln, raise_floor_turbo), 1)    // Raise Floor Turbo
-        | 99 | 134 | 136 -> sw(ev_do_locked_door(ln, door_blaze_open, thing), 1)    // BlzOpenDoor BLUE / RED / YELLOW
+        | 42 -> sw(ev_do_door(ln, door_type.close), 1)    // Close Door
+        | 43 -> sw(ev_do_ceiling(ln, ceiling_type.lower_to_floor), 1)    // Lower Ceiling to Floor
+        | 45 -> sw(ev_do_floor(ln, floor_type.lower_floor), 1)    // Lower Floor to Surrounding floor height
+        | 60 -> sw(ev_do_floor(ln, floor_type.lower_floor_to_lowest), 1)    // Lower Floor to Lowest
+        | 61 -> sw(ev_do_door(ln, door_type.open), 1)    // Open Door
+        | 62 -> sw(ev_do_plat(ln, plat_type.down_wait_up_stay, 1), 1)    // PlatDownWaitUpStay
+        | 63 -> sw(ev_do_door(ln, door_type.normal), 1)    // Raise Door
+        | 64 -> sw(ev_do_floor(ln, floor_type.raise_floor), 1)    // Raise Floor to ceiling
+        | 66 -> sw(ev_do_plat(ln, plat_type.raise_and_change, 24), 1)    // Raise Floor 24 and change texture
+        | 67 -> sw(ev_do_plat(ln, plat_type.raise_and_change, 32), 1)    // Raise Floor 32 and change texture
+        | 65 -> sw(ev_do_floor(ln, floor_type.raise_floor_crush), 1)    // Raise Floor Crush
+        | 68 -> sw(ev_do_plat(ln, plat_type.raise_to_nearest_and_change, 0), 1)    // Raise Plat to next highest floor and change texture
+        | 69 -> sw(ev_do_floor(ln, floor_type.raise_floor_to_nearest), 1)    // Raise Floor to next highest floor
+        | 70 -> sw(ev_do_floor(ln, floor_type.turbo_lower), 1)    // Turbo Lower Floor
+        | 114 -> sw(ev_do_door(ln, door_type.blaze_raise), 1)    // Blazing Door Raise (faster than TURBO!)
+        | 115 -> sw(ev_do_door(ln, door_type.blaze_open), 1)    // Blazing Door Open (faster than TURBO!)
+        | 116 -> sw(ev_do_door(ln, door_type.blaze_close), 1)    // Blazing Door Close (faster than TURBO!)
+        | 123 -> sw(ev_do_plat(ln, plat_type.blaze_dwus, 0), 1)    // Blazing PlatDownWaitUpStay
+        | 132 -> sw(ev_do_floor(ln, floor_type.raise_floor_turbo), 1)    // Raise Floor Turbo
+        | 99 | 134 | 136 -> sw(ev_do_locked_door(ln, door_type.blaze_open, thing), 1)    // BlzOpenDoor BLUE / RED / YELLOW
         | 138 ->
             // Light Turn On
             ev_light_turn_on(ln, 255)

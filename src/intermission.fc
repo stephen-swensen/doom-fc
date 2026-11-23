@@ -3,8 +3,14 @@
 // linuxdoom-1.10 (GPLv2). The deathmatch / co-op tallies are left out
 // since doom-fc has no net game.
 
+// animenum_t: how an intermission animation advances
+enum wi_anim =
+    | always    // every period tics
+    | random    // after a random wait
+    | level     // once a given level is reached
+
 struct wianim =
-    type: i32
+    type: wi_anim
     period: i32
     nanims: i32
     locx: i32
@@ -30,14 +36,11 @@ module wi =
     let sp_timey = 200 - 32
     let shownextlocdelay = 4
 
-    let anim_always = 0
-    let anim_random = 1
-    let anim_level = 2
-
-    // states
-    let nostate = -1
-    let statcount = 0
-    let shownextloc = 1
+    // stateenum_t
+    enum stage =
+        | no_state = -1
+        | stat_count
+        | show_next_loc
 
     let lnodes_x = i32[] {
         185, 148, 69, 209, 116, 166, 71, 135, 71,
@@ -50,7 +53,7 @@ module wi =
         168, 154, 95, 75, 48, 23, 48, 25, 136
     }
 
-    let mk = (type: i32, period: i32, nanims: i32, x: i32, y: i32, data1: i32) ->
+    let mk = (type: wi_anim, period: i32, nanims: i32, x: i32, y: i32, data1: i32) ->
         wianim { type = type, period = period, nanims = nanims, locx = x, locy = y, data1 = data1 }
 
     let mut epsd0animinfo = default(wianim[])
@@ -60,21 +63,21 @@ module wi =
     let init_anims = () ->
         let t3 = 35 / 3
         epsd0animinfo = alloc(wianim[] {
-            mk(anim_always, t3, 3, 224, 104, 0), mk(anim_always, t3, 3, 184, 160, 0),
-            mk(anim_always, t3, 3, 112, 136, 0), mk(anim_always, t3, 3, 72, 112, 0),
-            mk(anim_always, t3, 3, 88, 96, 0), mk(anim_always, t3, 3, 64, 48, 0),
-            mk(anim_always, t3, 3, 192, 40, 0), mk(anim_always, t3, 3, 136, 16, 0),
-            mk(anim_always, t3, 3, 80, 16, 0), mk(anim_always, t3, 3, 64, 24, 0) })!
+            mk(wi_anim.always, t3, 3, 224, 104, 0), mk(wi_anim.always, t3, 3, 184, 160, 0),
+            mk(wi_anim.always, t3, 3, 112, 136, 0), mk(wi_anim.always, t3, 3, 72, 112, 0),
+            mk(wi_anim.always, t3, 3, 88, 96, 0), mk(wi_anim.always, t3, 3, 64, 48, 0),
+            mk(wi_anim.always, t3, 3, 192, 40, 0), mk(wi_anim.always, t3, 3, 136, 16, 0),
+            mk(wi_anim.always, t3, 3, 80, 16, 0), mk(wi_anim.always, t3, 3, 64, 24, 0) })!
         epsd1animinfo = alloc(wianim[] {
-            mk(anim_level, t3, 1, 128, 136, 1), mk(anim_level, t3, 1, 128, 136, 2),
-            mk(anim_level, t3, 1, 128, 136, 3), mk(anim_level, t3, 1, 128, 136, 4),
-            mk(anim_level, t3, 1, 128, 136, 5), mk(anim_level, t3, 1, 128, 136, 6),
-            mk(anim_level, t3, 1, 128, 136, 7), mk(anim_level, t3, 3, 192, 144, 8),
-            mk(anim_level, t3, 1, 128, 136, 8) })!
+            mk(wi_anim.level, t3, 1, 128, 136, 1), mk(wi_anim.level, t3, 1, 128, 136, 2),
+            mk(wi_anim.level, t3, 1, 128, 136, 3), mk(wi_anim.level, t3, 1, 128, 136, 4),
+            mk(wi_anim.level, t3, 1, 128, 136, 5), mk(wi_anim.level, t3, 1, 128, 136, 6),
+            mk(wi_anim.level, t3, 1, 128, 136, 7), mk(wi_anim.level, t3, 3, 192, 144, 8),
+            mk(wi_anim.level, t3, 1, 128, 136, 8) })!
         epsd2animinfo = alloc(wianim[] {
-            mk(anim_always, t3, 3, 104, 168, 0), mk(anim_always, t3, 3, 40, 136, 0),
-            mk(anim_always, t3, 3, 160, 96, 0), mk(anim_always, t3, 3, 104, 80, 0),
-            mk(anim_always, t3, 3, 120, 32, 0), mk(anim_always, 35 / 4, 3, 40, 0, 0) })!
+            mk(wi_anim.always, t3, 3, 104, 168, 0), mk(wi_anim.always, t3, 3, 40, 136, 0),
+            mk(wi_anim.always, t3, 3, 160, 96, 0), mk(wi_anim.always, t3, 3, 104, 80, 0),
+            mk(wi_anim.always, t3, 3, 120, 32, 0), mk(wi_anim.always, 35 / 4, 3, 40, 0, 0) })!
 
     let anims_for = (epsd: i32) ->
         if epsd == 0 then epsd0animinfo else if epsd == 1 then epsd1animinfo else epsd2animinfo
@@ -87,7 +90,7 @@ module wi =
     // wbs->pnum
     let mut me = 0
     // specifies current state
-    let mut state = 0
+    let mut state = stage.stat_count
     // contains information passed into intermission
     let mut wbs = default(wbstartstruct*)
     // used for general timing
@@ -136,7 +139,7 @@ module wi =
         | some(b) -> v.draw_patch(0, 0, 1, b)
         | none -> void()
 
-    let responder = (ev: event*) -> false
+    let responder = (ev: event) -> false
 
     // Draws "<Levelname> Finished!"
     let draw_lf = () ->
@@ -184,9 +187,10 @@ module wi =
             // init variables
             a.ctr = -1
             // specify the next time to draw it
-            if a.type == anim_always then a.nexttic = bcnt + 1 + (rnd.m_random() % a.period)
-            else if a.type == anim_random then a.nexttic = bcnt + 1 + a.data2 + (rnd.m_random() % a.data1)
-            else if a.type == anim_level then a.nexttic = bcnt + 1
+            match a.type with
+            | always -> a.nexttic = bcnt + 1 + (rnd.m_random() % a.period)
+            | random -> a.nexttic = bcnt + 1 + a.data2 + (rnd.m_random() % a.data1)
+            | level -> a.nexttic = bcnt + 1
 
     let update_animated_back = () ->
         if ds.gamemode == gmode.commercial then return
@@ -195,19 +199,20 @@ module wi =
         for k in 0..anims.len do
             let a = &anims[k]
             if bcnt == a.nexttic then
-                if a.type == anim_always then
+                match a.type with
+                | always ->
                     a.ctr = a.ctr + 1
                     if a.ctr >= a.nanims then a.ctr = 0
                     a.nexttic = bcnt + a.period
-                else if a.type == anim_random then
+                | random ->
                     a.ctr = a.ctr + 1
                     if a.ctr == a.nanims then
                         a.ctr = -1
                         a.nexttic = bcnt + a.data2 + (rnd.m_random() % a.data1)
                     else a.nexttic = bcnt + a.period
-                else if a.type == anim_level then
+                | level ->
                     // gawd-awful hack for level anims
-                    if !(state == statcount && k == 7) && wbs.next == a.data1 then
+                    if !(state == stage.stat_count && k == 7) && wbs.next == a.data1 then
                         a.ctr = a.ctr + 1
                         if a.ctr == a.nanims then a.ctr = a.ctr - 1
                         a.nexttic = bcnt + a.period
@@ -281,7 +286,7 @@ module wi =
             v.draw_patch(x - sucks.width, y, 0, sucks)
 
     let init_no_state = () ->
-        state = nostate
+        state = stage.no_state
         acceleratestage = 0
         cnt = 10
 
@@ -291,7 +296,7 @@ module wi =
         if cnt == 0 then g_world_done()
 
     let init_show_next_loc = () ->
-        state = shownextloc
+        state = stage.show_next_loc
         acceleratestage = 0
         cnt = shownextlocdelay * 35
         init_animated_back()
@@ -326,7 +331,7 @@ module wi =
         draw_show_next_loc()
 
     let init_stats = () ->
-        state = statcount
+        state = stage.stat_count
         acceleratestage = 0
         sp_state = 1
         cnt_kills = -1
@@ -435,9 +440,10 @@ module wi =
             if ds.gamemode == gmode.commercial then snd.change_music(mus.dm2int, true)
             else snd.change_music(mus.inter, true)
         check_for_accelerate()
-        if state == statcount then update_stats()
-        else if state == shownextloc then update_show_next_loc()
-        else update_no_state()
+        match state with
+        | stat_count -> update_stats()
+        | show_next_loc -> update_show_next_loc()
+        | no_state -> update_no_state()
 
     let load_data = () ->
         let name = if ds.gamemode == gmode.commercial || (ds.gamemode == gmode.retail && wbs.epsd == 3) then "INTERPIC"
@@ -492,9 +498,10 @@ module wi =
         par = v.patch_named_mut("WIPAR")
 
     let drawer = () ->
-        if state == statcount then draw_stats()
-        else if state == shownextloc then draw_show_next_loc()
-        else draw_no_state()
+        match state with
+        | stat_count -> draw_stats()
+        | show_next_loc -> draw_show_next_loc()
+        | no_state -> draw_no_state()
 
     let init_variables = (wbstartstruct: wbstartstruct*) ->
         wbs = wbstartstruct

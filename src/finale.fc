@@ -11,8 +11,13 @@ module f =
     let textspeed = 3
     let textwait = 250
 
-    // Stage of animation: 0 = text, 1 = art screen, 2 = character cast
-    let mut finalestage = 0
+    // Stage of animation
+    enum stage =
+        | text
+        | art_screen
+        | cast
+
+    let mut finalestage = stage.text
     let mut finalecount = 0
     let mut finaletext = ""
     let mut finaleflat = ""
@@ -53,8 +58,8 @@ module f =
         ds.automapactive = false
         // Okay - IWAD dependend stuff. This has been changed severly, and
         // some stuff might have changed in the process.
-        let gm = ds.gamemode
-        if gm == gmode.shareware || gm == gmode.registered || gm == gmode.retail then
+        match ds.gamemode with
+        | shareware | registered | retail ->
             // DOOM 1 - E1, E3 or E4, but each nine missions
             snd.change_music(mus.victor, true)
             let ep = ds.gameepisode
@@ -70,7 +75,7 @@ module f =
             else if ep == 4 then
                 finaleflat = "MFLR8_3"
                 finaletext = dstr.e4text
-        else if gm == gmode.commercial then
+        | commercial ->
             // DOOM II and missions packs with E1, M34
             snd.change_music(mus.read_m, true)
             let mp = ds.gamemap
@@ -92,16 +97,15 @@ module f =
             else if mp == 31 then
                 finaleflat = "RROCK19"
                 finaletext = dstr.c6text
-        else
-            // Indeterminate.
+        | indetermined ->
             snd.change_music(mus.read_m, true)
             finaleflat = "F_SKY1"    // Not used anywhere else.
             finaletext = dstr.c1text    // FIXME - other text, music?
-        finalestage = 0
+        finalestage = stage.text
         finalecount = 0
 
-    let responder = (ev: event*) ->
-        if finalestage == 2 then cast_responder(ev) else false
+    let responder = (ev: event) ->
+        if finalestage == stage.cast then cast_responder(ev) else false
 
     let ticker = () ->
         // check for skipping
@@ -115,14 +119,14 @@ module f =
                 else ds.gameaction = ga.worlddone
         // advance animation
         finalecount = finalecount + 1
-        if finalestage == 2 then
+        if finalestage == stage.cast then
             cast_ticker()
             return
         if ds.gamemode == gmode.commercial then return
-        if finalestage == 0 && finalecount > (i32) finaletext.len * textspeed + textwait then
+        if finalestage == stage.text && finalecount > (i32) finaletext.len * textspeed + textwait then
             finalecount = 0
-            finalestage = 1
-            ds.wipegamestate = gs.force_wipe    // force a wipe
+            finalestage = stage.art_screen
+            ds.wipegamestate = none(gs)    // force a wipe
             if ds.gameepisode == 3 then snd.start_music(mus.bunny)
 
     let text_write = () ->
@@ -159,12 +163,12 @@ module f =
     let state_at = (n: i32) -> (const state*) &info.states[n]
 
     let start_cast = () ->
-        ds.wipegamestate = gs.force_wipe    // force a screen wipe
+        ds.wipegamestate = none(gs)    // force a screen wipe
         castnum = 0
         caststate = state_at(cast_info().seestate)
         casttics = caststate.tics
         castdeath = false
-        finalestage = 2
+        finalestage = stage.cast
         castframes = 0
         castonmelee = 0
         castattacking = false
@@ -232,8 +236,10 @@ module f =
         casttics = caststate.tics
         if casttics == -1 then casttics = 15
 
-    let cast_responder = (ev: event*) ->
-        if ev.type != evt.keydown then return false
+    let cast_responder = (ev: event) ->
+        match ev with
+        | keydown(_) -> void()
+        | _ -> return false
         if castdeath then return true    // already in dying frames
         // go into death frame
         castdeath = true
@@ -300,10 +306,10 @@ module f =
         v.draw_patch((320 - 13 * 8) / 2, (200 - 8 * 8) / 2, 0, v.patch_named("END%d{stage}"))
 
     let drawer = () ->
-        if finalestage == 2 then
+        if finalestage == stage.cast then
             cast_drawer()
             return
-        if finalestage == 0 then text_write()
+        if finalestage == stage.text then text_write()
         else
             let ep = ds.gameepisode
             if ep == 1 then

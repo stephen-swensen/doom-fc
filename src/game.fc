@@ -156,7 +156,7 @@ module g =
             if ds.gamemap < 12 then ds.skytexture = r.texture_num_for_name("SKY1")
             else if ds.gamemap < 21 then ds.skytexture = r.texture_num_for_name("SKY2")
         ds.levelstarttic = ds.gametic    // for time calculation
-        if ds.wipegamestate == gs.level then ds.wipegamestate = gs.force_wipe    // force a wipe
+        if ds.wipegamestate == some(gs.level) then ds.wipegamestate = none(gs)    // force a wipe
         ds.gamestate = gs.level
         for k in 0..dd.maxplayers do
             if ds.playeringame[k] && ds.players[k].playerstate == pst.dead then ds.players[k].playerstate = pst.reborn
@@ -175,9 +175,9 @@ module g =
         for k in 0..3 do mousebuttons[k] = false
 
     // Get info needed to make ticcmd_ts for the players.
-    let responder = (ev: event*) ->
+    let responder = (ev: event) ->
         // allow spy mode changes even during the demo
-        if ds.gamestate == gs.level && ev.type == evt.keydown && ev.data1 == dd.key_f12
+        if ds.gamestate == gs.level && ev == event.keydown(dd.key_f12)
             && (ds.singledemo || ds.deathmatch == 0) then
             // spy mode
             loop
@@ -187,35 +187,39 @@ module g =
             return true
         // any other key pops up menu if in demos
         if ds.gameaction == ga.nothing && !ds.singledemo && (ds.demoplayback || ds.gamestate == gs.demoscreen) then
-            if ev.type == evt.keydown || (ev.type == evt.mouse && ev.data1 != 0) then
+            match ev with
+            | keydown(_) ->
                 m.start_control_panel()
                 return true
-            return false
+            | mouse(mm) when mm.buttons != 0 ->
+                m.start_control_panel()
+                return true
+            | _ -> return false
         if ds.gamestate == gs.level then
             if hu.responder(ev) then return true    // chat ate the event
             if st.responder(ev) then return true    // status window ate it
             if amap.responder(ev) then return true    // automap ate it
         if ds.gamestate == gs.finale then
             if f.responder(ev) then return true    // finale ate the event
-        if ev.type == evt.keydown then
-            if ev.data1 == dd.key_pause then
+        match ev with
+        | keydown(key) ->
+            if key == dd.key_pause then
                 ds.sendpause = true
                 return true
-            if ev.data1 < numkeys && ev.data1 >= 0 then gamekeydown[ev.data1] = true
-            return true    // eat key down events
-        else if ev.type == evt.keyup then
-            if ev.data1 < numkeys && ev.data1 >= 0 then gamekeydown[ev.data1] = false
-            return false    // always let key up events filter down
-        else if ev.type == evt.mouse then
-            mousebuttons[0] = (ev.data1 & 1) != 0
-            mousebuttons[1] = (ev.data1 & 2) != 0
-            mousebuttons[2] = (ev.data1 & 4) != 0
+            if key < numkeys && key >= 0 then gamekeydown[key] = true
+            true    // eat key down events
+        | keyup(key) ->
+            if key < numkeys && key >= 0 then gamekeydown[key] = false
+            false    // always let key up events filter down
+        | mouse(mm) ->
+            mousebuttons[0] = (mm.buttons & 1) != 0
+            mousebuttons[1] = (mm.buttons & 2) != 0
+            mousebuttons[2] = (mm.buttons & 4) != 0
             // accumulate: with frame interpolation input is read every
             // frame, so several mouse events can arrive per ticcmd
-            mousex = mousex + ev.data2 * (ds.mouse_sensitivity + 5) / 10
-            mousey = mousey + ev.data3 * (ds.mouse_sensitivity + 5) / 10
-            return true    // eat events
-        false
+            mousex = mousex + mm.dx * (ds.mouse_sensitivity + 5) / 10
+            mousey = mousey + mm.dy * (ds.mouse_sensitivity + 5) / 10
+            true    // eat events
 
     // Make ticcmd_ts for the players.
     // FNV-1a over the playsim state -worldtrace reports: every mobj (with
@@ -280,7 +284,7 @@ module g =
             if ds.playeringame[k] then
                 let pl = &ds.players[k]
                 mix_mobj_ref(pl.mo)
-                mix(pl.playerstate)
+                mix((i32) pl.playerstate)
                 mix(pl.viewz)
                 mix(pl.health)
                 mix(pl.armorpoints)
@@ -326,17 +330,17 @@ module g =
             if ds.playeringame[k] && ds.players[k].playerstate == pst.reborn then do_reborn((i32) k)
         // do things to change the game state
         loop
-            if ds.gameaction == ga.nothing then break
-            let ga0 = ds.gameaction
-            if ga0 == ga.loadlevel then do_load_level()
-            else if ga0 == ga.newgame then do_new_game()
-            else if ga0 == ga.loadgame then do_load_game()
-            else if ga0 == ga.savegame then do_save_game()
-            else if ga0 == ga.playdemo then do_play_demo()
-            else if ga0 == ga.completed then do_completed()
-            else if ga0 == ga.victory then f.start_finale()
-            else if ga0 == ga.worlddone then do_world_done()
-            else if ga0 == ga.screenshot then
+            match ds.gameaction with
+            | nothing -> break
+            | loadlevel -> do_load_level()
+            | newgame -> do_new_game()
+            | loadgame -> do_load_game()
+            | savegame -> do_save_game()
+            | playdemo -> do_play_demo()
+            | completed -> do_completed()
+            | victory -> f.start_finale()
+            | worlddone -> do_world_done()
+            | screenshot ->
                 misc.screen_shot()
                 ds.gameaction = ga.nothing
         // get commands, check consistancy, and build new consistancy check
@@ -370,14 +374,15 @@ module g =
                         ds.gameaction = ga.savegame
         // do main actions
         let state = ds.gamestate
-        if state == gs.level then
+        match state with
+        | level ->
             p.ticker()
             st.ticker()
             amap.ticker()
             hu.ticker()
-        else if state == gs.intermission then wi.ticker()
-        else if state == gs.finale then f.ticker()
-        else if state == gs.demoscreen then d_page_ticker()
+        | intermission -> wi.ticker()
+        | finale -> f.ticker()
+        | demoscreen -> d_page_ticker()
         // -tictrace: one line per tic, the format tools/refdemo prints
         if tictrace then
             match ds.players[ds.consoleplayer].mo with
@@ -869,4 +874,4 @@ module g =
             | some(mo) ->
                 i.print(alloca("DEMOEND gametic=%d{ds.gametic} map=E%d{ds.gameepisode}M%d{ds.gamemap} health=%d{pl.health} kills=%d{pl.killcount} items=%d{pl.itemcount} secrets=%d{pl.secretcount} x=%d{mo.x} y=%d{mo.y} rnd=%d{rnd.prndindex}\n"))
             | none ->
-                i.print(alloca("DEMOEND gametic=%d{ds.gametic} gamestate=%d{ds.gamestate} rnd=%d{rnd.prndindex}\n"))
+                i.print(alloca("DEMOEND gametic=%d{ds.gametic} gamestate=%d{(i32) ds.gamestate} rnd=%d{rnd.prndindex}\n"))

@@ -11,7 +11,6 @@ module ds =
     let mut devparm = false
 
     let mut gamemode = gmode.indetermined
-    let mut gamemission = gmission.doom
     let mut modifiedgame = false
 
     let mut startskill = sk.medium
@@ -68,7 +67,8 @@ module ds =
     let demo_compat = () -> demoplayback || demorecording
 
     let mut gamestate = gs.demoscreen
-    let mut wipegamestate = gs.demoscreen
+    // The state the last frame drew; none forces a wipe (C's -1)
+    let mut wipegamestate = some(gs.demoscreen)
     let mut gameaction = ga.nothing
     let mut gametic = 0
 
