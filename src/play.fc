@@ -392,7 +392,7 @@ module p =
             for k in 0..intercept_p do
                 if intercepts[k].frac < dist then
                     dist = intercepts[k].frac
-                    best = (i32) k
+                    best = k
             if dist > maxfrac then break
             let ic = &intercepts[best]
             if !func(ic) then
@@ -1875,7 +1875,7 @@ module p =
             if !pl.backpack then
                 for k in 0..am.numammo do pl.maxammo[k] = pl.maxammo[k] * 2
                 pl.backpack = true
-            for k in 0..am.numammo do ignore give_ammo(pl, (i32) k, 1)
+            for k in 0..am.numammo do ignore give_ammo(pl, k, 1)
             pl.message = dstr.gotbackpack
         // weapons
         else if s == spr.bfug then
@@ -3289,7 +3289,7 @@ module p =
                 // a -1 tic count never changes
                 if psp.tics != -1 then
                     psp.tics = psp.tics - 1
-                    if psp.tics == 0 then set_psprite(pl, (i32) k, st.nextstate)
+                    if psp.tics == 0 then set_psprite(pl, k, st.nextstate)
             | none -> void()
         pl.psprites[ps.flash].sx = pl.psprites[ps.weapon].sx
         pl.psprites[ps.flash].sy = pl.psprites[ps.weapon].sy
@@ -4302,11 +4302,11 @@ module p =
                 floor.sector = sec
                 floor.speed = floorspeed
                 for k in 0..sec.linecount do
-                    if two_sided(secnum, (i32) k) then
-                        let mut sd = get_side(secnum, (i32) k, 0)
+                    if two_sided(secnum, k) then
+                        let mut sd = get_side(secnum, k, 0)
                         if sd.bottomtexture >= 0 then
                             if r.textureheight[sd.bottomtexture] < minsize then minsize = r.textureheight[sd.bottomtexture]
-                        sd = get_side(secnum, (i32) k, 1)
+                        sd = get_side(secnum, k, 1)
                         if sd.bottomtexture >= 0 then
                             if r.textureheight[sd.bottomtexture] < minsize then minsize = r.textureheight[sd.bottomtexture]
                 floor.floordestheight = floor.sector.floorheight + minsize
@@ -4926,7 +4926,7 @@ module p =
             | 10 -> spawn_door_close_in30(sector)    // DOOR CLOSE IN 30 SECONDS
             | 12 -> spawn_strobe_flash(sector, slowdark, 1)    // SYNC STROBE SLOW
             | 13 -> spawn_strobe_flash(sector, fastdark, 1)    // SYNC STROBE FAST
-            | 14 -> spawn_door_raise_in5_mins(sector, (i32) k)    // DOOR RAISE IN 5 MINUTES
+            | 14 -> spawn_door_raise_in5_mins(sector, k)    // DOOR RAISE IN 5 MINUTES
             | 17 -> spawn_fire_flicker(sector)
             | _ -> void()
         // Init line EFFECTs
@@ -5392,7 +5392,7 @@ module p =
             for k in 0..dd.maxplayers do
                 if ds.playeringame[k] then
                     ds.players[k].mo = none(mobj*)
-                    g_death_match_spawn_player((i32) k)
+                    g_death_match_spawn_player(k)
         // clear special respawning que
         iquehead = 0
         iquetail = 0

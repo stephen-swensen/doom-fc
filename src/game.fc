@@ -89,9 +89,9 @@ module g =
         // chainsaw overrides
         let mut done = false
         for k in 0..wp.numweapons - 1 do
-            if !done && gamekeydown['1' + (i32) k] then
+            if !done && gamekeydown['1' + k] then
                 cmd.buttons = cmd.buttons | (u8) bt.change
-                cmd.buttons = cmd.buttons | (u8) ((i32) k << bt.weaponshift)
+                cmd.buttons = cmd.buttons | (u8) (k << bt.weaponshift)
                 done = true
         // mouse
         if mousebuttons[misc.mousebforward] then forward = forward + forwardmove[speed]
@@ -327,7 +327,7 @@ module g =
     let ticker = () ->
         // do player reborns if needed
         for k in 0..dd.maxplayers do
-            if ds.playeringame[k] && ds.players[k].playerstate == pst.reborn then do_reborn((i32) k)
+            if ds.playeringame[k] && ds.players[k].playerstate == pst.reborn then do_reborn(k)
         // do things to change the game state
         loop
             match ds.gameaction with
@@ -348,12 +348,12 @@ module g =
         for k in 0..dd.maxplayers do
             if ds.playeringame[k] then
                 let cmd = &ds.players[k].cmd
-                *cmd = ds.netcmds[(i32) k * ds.backuptics + buf]
+                *cmd = ds.netcmds[k * ds.backuptics + buf]
                 if ds.demoplayback then read_demo_ticcmd(cmd)
                 if ds.demorecording then write_demo_ticcmd(cmd)
                 // check for turbo cheats
                 if (i32) cmd.forwardmove > turbothreshold && (ds.gametic & 31) == 0
-                    && ((ds.gametic >> 5) & 3) == (i32) k then
+                    && ((ds.gametic >> 5) & 3) == k then
                     if turbomessage.len > 0 then free(turbomessage)
                     turbomessage = alloc("%s{player_names[k]} is turbo!")!
                     ds.players[ds.consoleplayer].message = turbomessage
@@ -488,7 +488,7 @@ module g =
                 if check_spot(playernum, &ds.playerstarts[k]) then
                     ds.playerstarts[k].type = playernum + 1    // fake as other player
                     p.spawn_player(&ds.playerstarts[k])
-                    ds.playerstarts[k].type = (i32) k + 1    // restore
+                    ds.playerstarts[k].type = k + 1    // restore
                     return
                 // he's going to be inside something. Too bad.
             p.spawn_player(&ds.playerstarts[playernum])
@@ -511,7 +511,7 @@ module g =
     let do_completed = () ->
         ds.gameaction = ga.nothing
         for k in 0..dd.maxplayers do
-            if ds.playeringame[k] then player_finish_level((i32) k)    // take away cards and stuff
+            if ds.playeringame[k] then player_finish_level(k)    // take away cards and stuff
         if ds.automapactive then amap.stop()
         if ds.gamemode != gmode.commercial then
             if ds.gamemap == 8 then

@@ -127,7 +127,7 @@ module isnd =
     // I_SetChannels: the pitch step table.
     let set_channels = () ->
         for k in 0..256 do
-            steptable[k] = (i32) (math.pow(2.0, (f64) ((i32) k - 128) / 64.0) * 65536.0)
+            steptable[k] = (i32) (math.pow(2.0, (f64) (k - 128) / 64.0) * 65536.0)
 
     // Bring up SDL audio, preferring the native PipeWire backend: SDL's
     // default order picks pulseaudio first, which on a PipeWire desktop
@@ -151,7 +151,7 @@ module isnd =
         if nosound then return
         for k in 1..sfx.numsfx do
             let sx = &sounds.s_sfx[k]
-            if sx.link == -1 then load_sfx((i32) k)
+            if sx.link == -1 then load_sfx(k)
         for k in 1..sfx.numsfx do
             let sx = &sounds.s_sfx[k]
             if sx.link != -1 then
@@ -234,7 +234,7 @@ module isnd =
     let slot_of = (handle: i32) ->
         let mut slot = -1
         for k in 0..num_channels do
-            if slot == -1 && slot_handle[k] == handle && busy((i32) k) then slot = (i32) k
+            if slot == -1 && slot_handle[k] == handle && busy(k) then slot = k
         slot
 
     // Doom volumes run 0..15; the mixer's lookup runs 0..127.
@@ -250,16 +250,16 @@ module isnd =
         if id == sfx.sawup || id == sfx.sawidl || id == sfx.sawful || id == sfx.sawhit
             || id == sfx.stnmov || id == sfx.pistol then
             for k in 0..num_channels do
-                if slot == -1 && busy((i32) k) && slot_id[k] == id then slot = (i32) k
+                if slot == -1 && busy(k) && slot_id[k] == id then slot = k
         // else a free channel, or the oldest one
         if slot == -1 then
             let mut oldest = ds.gametic
             let mut oldestnum = 0
             for k in 0..num_channels do
                 if slot == -1 then
-                    if !busy((i32) k) then slot = (i32) k
+                    if !busy(k) then slot = k
                     else if slot_start[k] < oldest then
-                        oldestnum = (i32) k
+                        oldestnum = k
                         oldest = slot_start[k]
             if slot == -1 then slot = oldestnum
         handlenums = handlenums + 1
@@ -438,7 +438,7 @@ module snd =
         // kill all playing sounds at start of level
         // (trust me - a good idea)
         for cnum in 0..num_channels do
-            if channels[cnum].sfxinfo != 0 then stop_channel((i32) cnum)
+            if channels[cnum].sfxinfo != 0 then stop_channel(cnum)
         // start new music for the level
         mus_paused = false
         let mnum = if ds.gamemode == gmode.commercial then mus.runnin + ds.gamemap - 1
@@ -520,7 +520,7 @@ module snd =
         let mut done = false
         for cnum in 0..num_channels do
             if !done && channels[cnum].sfxinfo != 0 && channels[cnum].origin == origin then
-                stop_channel((i32) cnum)
+                stop_channel(cnum)
                 done = true
 
     // Stop and resume music, during game PAUSE.
@@ -549,7 +549,7 @@ module snd =
                     pitch = sx.pitch
                     volume = volume + sx.volume
                     if volume < 1 then
-                        stop_channel((i32) cnum)
+                        stop_channel(cnum)
                         continue
                     else if volume > ds.snd_sfxvolume then
                         volume = ds.snd_sfxvolume
@@ -559,12 +559,12 @@ module snd =
                 | some(org) ->
                     if !is_listener(listener, org) then
                         let { rc, v2, s2, p2 } = adjust_sound_params(listener!, org, volume, sep, pitch)
-                        if !rc then stop_channel((i32) cnum)
+                        if !rc then stop_channel(cnum)
                         else isnd.update_sound_params(ch.handle, v2, s2, p2)
                 | none -> void()
             else
                 // if channel is allocated but sound has stopped, free it
-                stop_channel((i32) cnum)
+                stop_channel(cnum)
 
     let set_music_volume = (volume: i32) ->
         if volume < 0 || volume > 127 then i.fatal(alloca("Attempt to set music volume at %d{volume}"))

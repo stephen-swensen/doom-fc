@@ -188,7 +188,7 @@ module hulib =
         s.laston = true
         s.cl = 0
         for k in 0..h do
-            init_text_line(&s.l[k], x, y - (i32) k * ((i32) font[0].height + 1), startchar)
+            init_text_line(&s.l[k], x, y - k * ((i32) font[0].height + 1), startchar)
 
     let add_line_to_stext = (s: hu_stext*) ->
         // add a clear line
@@ -207,7 +207,7 @@ module hulib =
         if !*s.on then return    // if not on, don't draw
         // draw everything
         for k in 0..s.h do
-            let mut idx = s.cl - (i32) k
+            let mut idx = s.cl - k
             if idx < 0 then idx = idx + s.h    // handle queue of lines
             // need a decision made here on whether to skip the draw
             draw_text_line(&s.l[idx], false)    // no cursor, please
@@ -242,7 +242,7 @@ module hu =
 
     let init = () ->
         for k in 0..fontsize do
-            let name = "STCFN%03d{(i32) fontstart + (i32) k}"
+            let name = "STCFN%03d{(i32) fontstart + k}"
             hulib.font[k] = (patch*) w.cache_lump_name(name, pu.static_x)
 
     let stop = () -> headsupactive = false
@@ -582,8 +582,8 @@ module st =
             // 'behold?' power-up cheats
             for k in 0..6 do
                 if cheat.check(&cheat_powerup[k], key) then
-                    if plyr.powers[k] == 0 then ignore p.give_power(plyr, (i32) k)
-                    else if (i32) k != pw.strength then plyr.powers[k] = 1
+                    if plyr.powers[k] == 0 then ignore p.give_power(plyr, k)
+                    else if k != pw.strength then plyr.powers[k] = 1
                     else plyr.powers[k] = 0
                     plyr.message = dstr.ststr_beholdx
             // 'behold' power-up menu
@@ -736,8 +736,8 @@ module st =
         w_ready.data = plyr.readyweapon
         // update keycard multiple widgets
         for k in 0..3 do
-            keyboxes[k] = if plyr.cards[k] then (i32) k else -1
-            if plyr.cards[k + 3] then keyboxes[k] = (i32) k + 3
+            keyboxes[k] = if plyr.cards[k] then k else -1
+            if plyr.cards[k + 3] then keyboxes[k] = k + 3
         // refresh everything if this is him coming back to life
         update_face_widget()
         // used by the w_armsbg widget
@@ -748,7 +748,7 @@ module st =
         st_fragson = ds.deathmatch != 0 && st_statusbaron
         st_fragscount = 0
         for k in 0..dd.maxplayers do
-            if (i32) k != ds.consoleplayer then st_fragscount = st_fragscount + plyr.frags[k]
+            if k != ds.consoleplayer then st_fragscount = st_fragscount + plyr.frags[k]
             else st_fragscount = st_fragscount - plyr.frags[k]
         // get rid of chat window if up because of message
         st_msgcounter = st_msgcounter - 1
@@ -821,19 +821,19 @@ module st =
     let load_graphics = () ->
         // Load the numbers, tall and short
         for k in 0..10 do
-            tallnum[k] = v.patch_named_mut("STTNUM%d{(i32) k}")
-            shortnum[k] = v.patch_named_mut("STYSNUM%d{(i32) k}")
+            tallnum[k] = v.patch_named_mut("STTNUM%d{k}")
+            shortnum[k] = v.patch_named_mut("STYSNUM%d{k}")
         // Load percent key.
         // Note: why not load STMINUS here, too?
         tallpercent = v.patch_named_mut("STTPRCNT")
         // key cards
-        for k in 0..it.numcards do keys[k] = v.patch_named_mut("STKEYS%d{(i32) k}")
+        for k in 0..it.numcards do keys[k] = v.patch_named_mut("STKEYS%d{k}")
         // arms background
         armsbg = v.patch_named_mut("STARMS")
         // arms ownership widgets
         for k in 0..6 do
             // gray #
-            arms[k * 2] = v.patch_named_mut("STGNUM%d{(i32) k + 2}")
+            arms[k * 2] = v.patch_named_mut("STGNUM%d{k + 2}")
             // yellow #
             arms[k * 2 + 1] = shortnum[k + 2]
         // face backgrounds for different color players
@@ -844,13 +844,13 @@ module st =
         let mut facenum = 0
         for k in 0..numpainfaces do
             for j in 0..numstraightfaces do
-                faces[facenum] = v.patch_named_mut("STFST%d{(i32) k}%d{(i32) j}")
+                faces[facenum] = v.patch_named_mut("STFST%d{k}%d{j}")
                 facenum = facenum + 1
-            faces[facenum] = v.patch_named_mut("STFTR%d{(i32) k}0")    // turn right
-            faces[facenum + 1] = v.patch_named_mut("STFTL%d{(i32) k}0")    // turn left
-            faces[facenum + 2] = v.patch_named_mut("STFOUCH%d{(i32) k}")    // ouch!
-            faces[facenum + 3] = v.patch_named_mut("STFEVL%d{(i32) k}")    // evil grin ;)
-            faces[facenum + 4] = v.patch_named_mut("STFKILL%d{(i32) k}")    // pissed off
+            faces[facenum] = v.patch_named_mut("STFTR%d{k}0")    // turn right
+            faces[facenum + 1] = v.patch_named_mut("STFTL%d{k}0")    // turn left
+            faces[facenum + 2] = v.patch_named_mut("STFOUCH%d{k}")    // ouch!
+            faces[facenum + 3] = v.patch_named_mut("STFEVL%d{k}")    // evil grin ;)
+            faces[facenum + 4] = v.patch_named_mut("STFKILL%d{k}")    // pissed off
             facenum = facenum + 5
         faces[facenum] = v.patch_named_mut("STFGOD0")
         faces[facenum + 1] = v.patch_named_mut("STFDEAD0")
@@ -882,8 +882,8 @@ module st =
         stlib.init_bin_icon(&w_armsbg, 104, 168, armsbg, &st_notdeathmatch, &st_statusbaron)
         // weapons owned
         for k in 0..6 do
-            stlib.init_mult_icon(&w_arms[k], 111 + ((i32) k % 3) * 12, 172 + ((i32) k / 3) * 10,
-                                 arms.ptr + (i32) k * 2, iconsource.flag(&plyr.weaponowned[k + 1]), &st_armson)
+            stlib.init_mult_icon(&w_arms[k], 111 + (k % 3) * 12, 172 + (k / 3) * 10,
+                                 arms.ptr + k * 2, iconsource.flag(&plyr.weaponowned[k + 1]), &st_armson)
         // frags sum
         stlib.init_num(&w_frags, 138, 171, tallnum.ptr, &st_fragscount, &st_fragson, 2)
         // faces

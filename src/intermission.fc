@@ -318,7 +318,7 @@ module wi =
             let last = if wbs.last == 8 then wbs.next - 1 else wbs.last
             let splats = patch*[] { splat }
             // draw a splat on taken cities.
-            for k in 0..last + 1 do draw_on_lnode((i32) k, splats)
+            for k in 0..last + 1 do draw_on_lnode(k, splats)
             // splat the secret level?
             if wbs.didsecret then draw_on_lnode(8, splats)
             // draw flashing ptr
@@ -452,9 +452,9 @@ module wi =
         bg = some(b)
         v.draw_patch(0, 0, 1, b)
         if ds.gamemode == gmode.commercial then
-            for k in 0..32 do lnames[k] = v.patch_named_mut("CWILV%02d{(i32) k}")
+            for k in 0..32 do lnames[k] = v.patch_named_mut("CWILV%02d{k}")
         else
-            for k in 0..nummaps do lnames[k] = v.patch_named_mut("WILV%d{wbs.epsd}%d{(i32) k}")
+            for k in 0..nummaps do lnames[k] = v.patch_named_mut("WILV%d{wbs.epsd}%d{k}")
             // you are here
             yah[0] = v.patch_named_mut("WIURH0")
             // you are here (alt.)
@@ -467,12 +467,12 @@ module wi =
                     let a = &anims[j]
                     for k in 0..a.nanims do
                         // MONDO HACK! (E2's ninth animation reuses the fifth's frames)
-                        let pc = if wbs.epsd != 1 || j != 8 then v.patch_named_mut("WIA%d{wbs.epsd}%02d{(i32) j}%02d{(i32) k}")
-                                 else anim_patch(&epsd1animinfo[4], (i32) k)
+                        let pc = if wbs.epsd != 1 || j != 8 then v.patch_named_mut("WIA%d{wbs.epsd}%02d{(i32) j}%02d{k}")
+                                 else anim_patch(&epsd1animinfo[4], k)
                         if k == 0 then a.p0 = pc else if k == 1 then a.p1 = pc else a.p2 = pc
         // More hacks on minus sign.
         wiminus = v.patch_named_mut("WIMINUS")
-        for k in 0..10 do num[k] = v.patch_named_mut("WINUM%d{(i32) k}")
+        for k in 0..10 do num[k] = v.patch_named_mut("WINUM%d{k}")
         // percent sign
         percent = v.patch_named_mut("WIPCNT")
         // "finished"

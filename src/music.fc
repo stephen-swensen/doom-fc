@@ -217,7 +217,7 @@ module musplay =
         if !have_bank then return none(opl_midi.song)
         let mut found = -1
         for k in 0..cache_n do
-            if found == -1 && cache_keys[k] == data.ptr then found = (i32) k
+            if found == -1 && cache_keys[k] == data.ptr then found = k
         if found >= 0 then return some(cache_songs[found])
         match mus_to_song(data) with
         | none -> none(opl_midi.song)

@@ -799,7 +799,7 @@ module r =
             let mut found = -1
             for k in 0..numtextures do
                 if found == -1 && w.name8_eq(mem.name_view(textures[k].name.ptr, 8), name) then
-                    found = (i32) k
+                    found = k
             found
 
     let texture_num_for_name = (name: const str) ->
@@ -1548,7 +1548,7 @@ module r =
         for k in 0..lastvisplane do
             let ck = &visplanes[k]
             if found == -1 && height == ck.height && picnum == ck.picnum && lightlevel == ck.lightlevel then
-                found = (i32) k
+                found = k
         if found >= 0 then &visplanes[found]
         else
             if lastvisplane == maxvisplanes then i.fatal("R_FindPlane: no more visplanes")

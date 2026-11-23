@@ -363,8 +363,8 @@ module m =
         sound_menu[3] = spacer
         sound_def = menudef { numitems = 4, prev = some(&options_def), items = sound_menu.ptr, drawer = some(draw_sound), x = 80, y = 64 }
         for k in 0..6 do
-            load_menu[k] = mi("", load_select, '1' + (i32) k)
-            save_menu[k] = mi("", save_select, '1' + (i32) k)
+            load_menu[k] = mi("", load_select, '1' + k)
+            save_menu[k] = mi("", save_select, '1' + k)
         load_def = menudef { numitems = 6, prev = some(&main_def), items = load_menu.ptr, drawer = some(draw_load), x = 80, y = 54 }
         save_def = menudef { numitems = 6, prev = some(&main_def), items = save_menu.ptr, drawer = some(draw_save), x = 80, y = 54 }
 
@@ -381,14 +381,14 @@ module m =
     // read the strings from the savegame files
     let read_save_strings = () ->
         for k in 0..6 do
-            let name = misc.save_name((i32) k)
+            let name = misc.save_name(k)
             defer free(name)
             match io.open(name, "rb") with
             | err(_) ->
-                set_save_string((i32) k, dstr.emptystring)
+                set_save_string(k, dstr.emptystring)
                 load_menu[k].status = item_status.disabled
             | ok(f) ->
-                let s = save_string((i32) k)
+                let s = save_string(k)
                 ignore io.read(s, (i64) savestringsize, f)
                 ignore io.close(f)
                 load_menu[k].status = item_status.selectable
@@ -396,8 +396,8 @@ module m =
     let draw_load = () ->
         v.draw_patch_direct(72, 28, 0, v.patch_named("M_LOADG"))
         for k in 0..6 do
-            draw_save_load_border(load_def.x, load_def.y + lineheight * (i32) k)
-            write_text(load_def.x, load_def.y + lineheight * (i32) k, save_string_view((i32) k))
+            draw_save_load_border(load_def.x, load_def.y + lineheight * k)
+            write_text(load_def.x, load_def.y + lineheight * k, save_string_view(k))
 
     // Draw border for the savegame description
     let draw_save_load_border = (x0: i32, y: i32) ->
@@ -426,8 +426,8 @@ module m =
     let draw_save = () ->
         v.draw_patch_direct(72, 28, 0, v.patch_named("M_SAVEG"))
         for k in 0..6 do
-            draw_save_load_border(load_def.x, load_def.y + lineheight * (i32) k)
-            write_text(load_def.x, load_def.y + lineheight * (i32) k, save_string_view((i32) k))
+            draw_save_load_border(load_def.x, load_def.y + lineheight * k)
+            write_text(load_def.x, load_def.y + lineheight * k, save_string_view(k))
         if save_string_enter then
             let wd = string_width(save_string_view(save_slot))
             write_text(load_def.x + wd, load_def.y + lineheight * save_slot, "_")
@@ -962,13 +962,13 @@ module m =
             return true
         else
             for k in item_on + 1..current_menu.numitems do
-                if item(current_menu, (i32) k).alphakey == ch then
-                    item_on = (i32) k
+                if item(current_menu, k).alphakey == ch then
+                    item_on = k
                     snd.start_local_sound(sfx.pstop)
                     return true
             for k in 0..item_on + 1 do
-                if item(current_menu, (i32) k).alphakey == ch then
-                    item_on = (i32) k
+                if item(current_menu, k).alphakey == ch then
+                    item_on = k
                     snd.start_local_sound(sfx.pstop)
                     return true
         false
@@ -1009,7 +1009,7 @@ module m =
         let x = current_menu.x
         let mut y = current_menu.y
         for k in 0..current_menu.numitems do
-            let it0 = item(current_menu, (i32) k)
+            let it0 = item(current_menu, k)
             if it0.name.len > 0 then v.draw_patch_direct(x, y, 0, v.patch_named(it0.name))
             y = y + lineheight
         // DRAW SKULL

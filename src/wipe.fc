@@ -80,7 +80,7 @@ module wipe =
                     let mut dy = if ycols[k] < 16 then ycols[k] + 1 else 8
                     if ycols[k] + dy >= height then dy = height - ycols[k]
                     ycols[k] = ycols[k] + dy
-                    draw_melt_column((i32) k, ycols[k])
+                    draw_melt_column(k, ycols[k])
                     done = false
         done
 

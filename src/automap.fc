@@ -277,7 +277,7 @@ module amap =
         st.automap_changed(true)
 
     let load_pics = () ->
-        for k in 0..10 do marknums[k] = v.patch_named_mut("AMMNUM%d{(i32) k}")
+        for k in 0..10 do marknums[k] = v.patch_named_mut("AMMNUM%d{k}")
 
     let clear_marks = () ->
         for k in 0..nummarkpoints do markpoints_x[k] = -1    // means empty
