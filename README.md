@@ -191,11 +191,11 @@ regular stepping that crawls as you move.
 
 Native 4:3 renders the stretch instead of resampling it:
 
-- **3D view.** The vertical projection (`r.projectiony`) is 6/5 of the
-  horizontal one. Every scale the renderer compares or draws with
-  (`rw_scale`, drawseg and vissprite scales, `spryscale`, the flat row
-  distances in `yslope`) is vertical and built from it, and the texture
-  step down a sprite or the sky is the horizontal step times 5/6. Sprite
+- **3D view.** The vertical projection (`r.focaly`) is 6/5 of the
+  horizontal one (`r.focalx`). Every scale the renderer compares or draws
+  with (a wall column's, drawseg and vissprite scales, `spryscale`, the
+  flat row distances) is vertical and built from it, and the texture step
+  down a sprite or the sky is the reciprocal of its vertical scale. Sprite
   x positions and the step across a sprite stay horizontal. Light levels
   divide `hy` back out, so they are unchanged.
 - **2D layer.** Each patch pixel is a `hires` x `hy` block, so the status
@@ -330,10 +330,22 @@ included. These are the deliberate exceptions:
   original's look at any scale, the renderer divides the scale back out of
   its light-level index, sizes the weapon sprite and the sky against 320
   columns, and gives the fuzz effect a block grain one 320x200 pixel across.
-  It also scales the cap on wall scale with the screen, so walls close up
-  are not cut short, and does wall and sprite edge maths in 64 bits, where
-  the higher scales would overflow 32. The visplane rows are 16-bit. At 1x
-  the golden test frames are unchanged.
+  The visplane rows are 16-bit.
+- **Floating-point projection.** linuxdoom projects in 16.16 fixed point
+  through angle tables: 8192 fine angles, a 2048-entry `tantoangle`, a
+  4096-entry `viewangletox`. Past about 6x they run out of resolution.
+  Neighbouring columns share an angle, so wall textures repeat and skip
+  columns, distant wall tops step, and flats swim. doom-fc's renderer
+  projects in `f64` instead. Each column's wall depth and texture column
+  come from intersecting its ray with the seg, each flat span from its
+  row's exact distance, each sprite's edges from its exact projected size,
+  and the BSP's clipping angles from `atan2`. Pixels are sampled at their
+  centres, where linuxdoom used the top or left edge (and, for flats, a
+  mix). The inner column and span loops still step in fixed point, 32.32
+  in an `i64`. The playsim keeps the tables, so demos are unaffected. At
+  1x, frames differ from linuxdoom's by the half-pixel shift and by
+  linuxdoom's own table error (its wall scales are off by up to about
+  0.1%).
 - **Native 4:3 rendering.** At 5x and 10x the renderer can draw square
   pixels with a 6/5 vertical projection, instead of drawing 320x200
   proportions for SDL to stretch. See [Native 4:3](#native-43). The
@@ -347,7 +359,19 @@ included. These are the deliberate exceptions:
 - **Graphic Detail is the render scale.** linuxdoom's low-detail toggle on
   that menu row printed "low detail mode n.a." and did nothing. The row now
   sets the scale factor, and its value is drawn in the HUD font. F5 still
-  behaves as in linuxdoom.
+  behaves as in linuxdoom: it toggles detail, which takes effect at the
+  next change of screen size.
+- **Low detail draws correctly.** linuxdoom's `R_DrawColumnLow` doubles the
+  global `dc_x`, which sends the sprite and masked-wall loops off the
+  screen (an abort here), and `R_DrawSpanLow` counts a span after doubling
+  its ends, so every flat span is drawn twice as wide.
+- **A removed thinker's memory stays until the level ends.** linuxdoom
+  leaves pointers to removed mobjs (`target`, `tracer`, a player's
+  `attacker`) that the playsim goes on reading, and its zone keeps a freed
+  block's contents until it reuses the block. doom-fc unlinks a removed
+  thinker but frees it with the rest of the level, so those reads see the
+  mobj as it was removed. Handing it back to the heap at once would make
+  them depend on the heap's layout.
 - **Not ported:** network games (`d_net` is single player only), the
   multiplayer chat widgets, and the co-op/deathmatch intermission tallies.
   Screenshots are PNG, not PCX. Savegames are not interchangeable with DOS

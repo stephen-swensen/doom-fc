@@ -62,9 +62,11 @@ bugs. The project is GPL v2.
   audio. Its golden file, `tests/soak.golden`, was recorded from this
   port: any refactor must leave it unchanged. Re-record only for an
   intentional playsim, rendering or sound change, and say why.
-- The golden values in `tests/run-tests.sh` were recorded from linuxdoom.
-  Frame hashes pin the headless renderer, at 1x and at `-scale 3`. Update
-  them only for intentional rendering changes. Headless runs render at 1x
+- The demo and playsim golden values in `tests/run-tests.sh` were recorded
+  from linuxdoom. Its frame hashes were recorded from this port (the f64
+  renderer no longer matches linuxdoom's pixels) and pin the headless
+  renderer at 1x, 3x, 12x, 5x native and in low detail. Update them only
+  for intentional rendering changes. Headless runs render at 1x
   unless given `-scale N`. Tests that read screenshots must run under a
   scratch `$DOOM_FC_HOME`, because the user's `default.cfg` (screen size and
   so on) changes frames.
@@ -162,8 +164,15 @@ Doom's C files call each other in every direction, so:
   pause patch, the border patches, HU erase, automap marks), with
   `v.hires` for x and `v.hy` for y. Never write a raw
   320 or 200 against `v.screens`. In the renderer, every "scale" is
-  vertical (built from `r.projectiony`); `r.aspect_y` / `r.aspect_iy`
-  convert horizontal scales and texture steps.
+  vertical, rows per world unit (built from `r.focaly`); only sprite x
+  positions and steps across a sprite use `r.focalx`.
+- **The renderer projects in f64, the playsim in fixed point.** The
+  renderer's view state (`r.fviewx`, `r.fcos`, `r.focalx`, ...) is set in
+  `setup_frame`, and it samples pixels at their centres (`r.pixel_at`).
+  Its clipping angles come from `r.view_point_angle` (atan2), never the
+  table-based `r.point_to_angle`, which stays for the playsim's
+  `point_to_angle2` because demos depend on it. Only the column and span
+  inner loops step in fixed point (32.32 `i64`).
 - **The render scale changes at runtime.** `iv.want_hires` and
   `iv.want_native` are picked from the drawable (Auto) or the
   `scale_factor` setting. `d.apply_hires`

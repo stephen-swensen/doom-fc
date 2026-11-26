@@ -556,9 +556,9 @@ struct drawseg =
     curline: seg*
     x1: i32
     x2: i32
-    scale1: i32
-    scale2: i32
-    scalestep: i32
+    scale1: f64       // vertical scale (rows per world unit) at x1 and x2
+    scale2: f64
+    scalestep: f64
     silhouette: i32
     bsilheight: i32
     tsilheight: i32
@@ -576,10 +576,10 @@ struct vissprite =
     gy: i32
     gz: i32
     gzt: i32
-    startfrac: i32
-    scale: i32
-    xiscale: i32
-    texturemid: i32
+    startfrac: f64    // texture column at x1, and its step per screen column
+    scale: f64        // vertical scale (rows per world unit)
+    xiscale: f64
+    texturemid: f64   // world units from the view height to the sprite's top
     patch: i32
     colormap: const u8*?    // none: a shadow (fuzz) draw
     mobjflags: i32

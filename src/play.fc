@@ -145,11 +145,15 @@ module p =
         loop
             if cur == cap then break
             if cur.function == thinkf.removed then
+                // Unlinked but not freed: the block stays until the level's
+                // Z_FreeTags. linuxdoom leaves pointers to removed mobjs
+                // (target, tracer, attacker) that the playsim goes on
+                // reading, and its zone keeps a freed block's contents until
+                // the block is reused. Handed back to the heap here, what
+                // they read would depend on the heap's layout.
                 cur.next.prev = cur.prev
                 cur.prev.next = cur.next
-                let next = cur.next
-                z.zfree((any*) cur)
-                cur = next
+                cur = cur.next
             else
                 run_thinker(cur)
                 cur = cur.next
