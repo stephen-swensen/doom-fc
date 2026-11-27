@@ -43,6 +43,12 @@ module v =
     // screens[0] is the visible frame, 1 is the wipe/background copy,
     // 2-3 wipe scratch, 4 the status bar background.
     let mut screens = default(u8*[])
+    // Each screen's light plane, pixel for pixel: full_light shows the
+    // palette colour as it is, less darkens it toward black (iv's blit
+    // multiplies). Only the 3D view writes less; every 2D drawer here
+    // writes full_light, and copies carry the light with the pixels.
+    let mut lights = default(u8*[])
+    let full_light = 255u8
     let mut dirtybox = i32[] { len = 4 }
 
     let gamma = (level: i32, v: u8) -> gammatbl.table[level * 256 + (i32) v]
@@ -56,8 +62,13 @@ module v =
     // to black. Callers above this layer redraw whatever lived in them
     // (see d.apply_hires).
     let set_hires = (n: i32, nat: bool) ->
-        if screens.len == 0 then screens = alloc(u8*[] { len = 5 })!
-        else for k in 0..5 do free(screens[k])
+        if screens.len == 0 then
+            screens = alloc(u8*[] { len = 5 })!
+            lights = alloc(u8*[] { len = 5 })!
+        else
+            for k in 0..5 do
+                free(screens[k])
+                free(lights[k])
         hires = n
         native = nat && native_ok(n)
         hy = if native then n * 6 / 5 else n
@@ -65,6 +76,8 @@ module v =
         sh = baseh * hy
         for k in 0..5 do
             screens[k] = alloc(u8, (i64) sw * sh)!
+            lights[k] = alloc(u8, (i64) sw * sh)!
+            mem.memset((any*) lights[k], (i32) full_light, (i64) sw * sh)
 
     let mark_rect = (x: i32, y: i32, width: i32, height: i32) ->
         box.add(dirtybox, x, y)
@@ -78,10 +91,11 @@ module v =
             i.fatal("Bad V_CopyRect")
         mark_rect(destx, desty, width, height)
         let n = hires
-        let mut src = screens[srcscrn] + sw * srcy * hy + srcx * n
-        let mut dest = screens[destscrn] + sw * desty * hy + destx * n
+        let mut src = sw * srcy * hy + srcx * n
+        let mut dest = sw * desty * hy + destx * n
         for _ in 0..height * hy do
-            mem.memcpy((any*) dest, (const any*) src, (i64) width * n)
+            mem.memcpy((any*) (screens[destscrn] + dest), (const any*) (screens[srcscrn] + src), (i64) width * n)
+            mem.memcpy((any*) (lights[destscrn] + dest), (const any*) (lights[srcscrn] + src), (i64) width * n)
             src = src + sw
             dest = dest + sw
 
@@ -91,25 +105,34 @@ module v =
         let n = hires
         let ny = hy
         let pitch = sw
-        let desttop = screens[scrn] + y * ny * pitch + x * n
+        let top = y * ny * pitch + x * n
+        let desttop = screens[scrn] + top
+        let lighttop = lights[scrn] + top
         let mut column = patches.column(p, col)
         loop
             let topdelta = *column
             if topdelta == 0xffu8 then break
             let length = (i32) *(column + 1)
             let mut source = column + 3
-            let mut dest = desttop + (i32) topdelta * ny * pitch
+            let ofs = (i32) topdelta * ny * pitch
+            let mut dest = desttop + ofs
+            let mut ldest = lighttop + ofs
             if n == 1 && ny == 1 then
                 for _ in 0..length do
                     *dest = *source
+                    *ldest = full_light
                     source = source + 1
                     dest = dest + pitch
+                    ldest = ldest + pitch
             else
                 for _ in 0..length do
                     let px = *source
                     for _ in 0..ny do
-                        for k in 0..n do *(dest + k) = px
+                        for k in 0..n do
+                            *(dest + k) = px
+                            *(ldest + k) = full_light
                         dest = dest + pitch
+                        ldest = ldest + pitch
                     source = source + 1
             column = column + length + 4
 
@@ -150,10 +173,17 @@ module v =
                     for px in x0..x1 do *(dest + px) = *(src + (px & 63))
                 else
                     for px in x0..x1 do *(dest + px) = *(src + ((px / n) & 63))
+                mem.memset((any*) (lights[scrn] + py * sw + x0), (i32) full_light, (i64) (x1 - x0))
 
     // Copy a whole screen.
     let copy_screen = (srcscrn: i32, destscrn: i32) ->
         mem.memcpy((any*) screens[destscrn], (const any*) screens[srcscrn], (i64) sw * sh)
+        mem.memcpy((any*) lights[destscrn], (const any*) lights[srcscrn], (i64) sw * sh)
+
+    // Full light over count pixels of screen scrn from offset ofs, for
+    // drawing that writes the screen directly (the automap).
+    let light_full = (scrn: i32, ofs: i32, count: i32) ->
+        mem.memset((any*) (lights[scrn] + ofs), (i32) full_light, (i64) count)
 
     // Patch lookup by lump name, cached.
     let patch_named = (name: const str) ->
@@ -174,6 +204,10 @@ module iv =
     let mut texture = none(any*)    // made by the first sync_texture
     let mut pixels = default(u32[])
     let mut palette = u32[] { len = 256 }
+    // Every (light, index) pair as ARGB, at light * 256 + index: the
+    // palette darkened toward black, gamma-corrected after the multiply.
+    // Row v.full_light is `palette`.
+    let mut lit_palette = u32[] { len = 65536 }
     let mut headless = false
     let mut fullscreen = false
     let mut grabmouse = true
@@ -362,18 +396,49 @@ module iv =
             sdl2.destroy_window(window)
 
     // I_SetPalette: 768 bytes of RGB, gamma-corrected through usegamma.
+    //
+    // The damage, pickup and radiation-suit palettes are the base palette
+    // blended toward a colour (tint = a * base + b per channel, to within
+    // a unit). In the original a dark pixel is a dark palette index, which
+    // the blend tints as strongly as any other, so the light darkens the
+    // base colour and the blend applies after: tint - a * base * (1 - f)
+    // for light fraction f. That is the palette entry itself at full
+    // light, and a is fitted from the two palettes, so any PLAYPAL works.
     let set_palette = (pal: const u8*) ->
-        for k in 0..256 do
-            let r = (u32) v.gamma(ds.usegamma, *(pal + k * 3))
-            let g = (u32) v.gamma(ds.usegamma, *(pal + k * 3 + 1))
-            let b = (u32) v.gamma(ds.usegamma, *(pal + k * 3 + 2))
-            palette[k] = 0xff000000u32 | (r << 16) | (g << 8) | b
+        let base = w.cache_lump_name("PLAYPAL", pu.cache)
+        let slope = f64[] { len = 3 }
+        for c in 0..3 do
+            let mut mx = 0.0
+            let mut my = 0.0
+            for k in 0..256 do
+                mx = mx + (f64) *(base + k * 3 + c)
+                my = my + (f64) *(pal + k * 3 + c)
+            mx = mx / 256.0
+            my = my / 256.0
+            let mut cov = 0.0
+            let mut var = 0.0
+            for k in 0..256 do
+                let dx = (f64) *(base + k * 3 + c) - mx
+                cov = cov + dx * ((f64) *(pal + k * 3 + c) - my)
+                var = var + dx * dx
+            slope[c] = if var > 0.0 then cov / var else 1.0
+        for lt in 0..256 do
+            let dark = 1.0 - (f64) lt / (f64) v.full_light
+            for k in 0..256 do
+                let mut px = 0xff000000u32
+                for c in 0..3 do
+                    let x = (f64) *(pal + k * 3 + c) - slope[c] * (f64) *(base + k * 3 + c) * dark
+                    let q = if x <= 0.0 then 0 else if x >= 255.0 then 255 else (i32) (x + 0.5)
+                    px = px | ((u32) v.gamma(ds.usegamma, (u8) q) << (16u32 - 8u32 * (u32) c))
+                lit_palette[lt * 256 + k] = px
+        for k in 0..256 do palette[k] = lit_palette[(i32) v.full_light * 256 + k]
 
     // The current frame as ARGB, v.sw x v.sh (for screenshots).
     let frame_argb = (out: u32[]) ->
         let src = v.screens[0]
+        let lt = v.lights[0]
         unguarded
-            for k in 0..v.sw * v.sh do out[k] = palette[(i32) *(src + k)]
+            for k in 0..v.sw * v.sh do out[k] = lit_palette[((i32) *(lt + k) << 8) | (i32) *(src + k)]
 
     let set_grab = (want: bool) ->
         if !headless && want != mouse_grabbed then
@@ -386,19 +451,21 @@ module iv =
         else
             sync_texture()
             let src = v.screens[0]
+            let lt = v.lights[0]
             let sw = v.sw
             let sh = v.sh
             let k = present
             let pw = tex_w
             unguarded
                 if k == 1 then
-                    for j in 0..sw * sh do pixels[j] = palette[(i32) *(src + j)]
+                    for j in 0..sw * sh do pixels[j] = lit_palette[((i32) *(lt + j) << 8) | (i32) *(src + j)]
                 else
                     for y in 0..sh do
                         let row = src + y * sw
+                        let lrow = lt + y * sw
                         let base = y * k * pw
                         for x in 0..sw do
-                            let px = palette[(i32) *(row + x)]
+                            let px = lit_palette[((i32) *(lrow + x) << 8) | (i32) *(row + x)]
                             let o = base + x * k
                             for j in 0..k do pixels[o + j] = px
                         for rr in 1..k do
@@ -422,8 +489,8 @@ module iv =
             sdl2.present(renderer)
             dbg_frame_presented()
 
-    let read_screen = (dest: u8*) ->
-        mem.memcpy((any*) dest, (const any*) v.screens[0], (i64) v.sw * v.sh)
+    // The visible frame, light included, into screen scrn.
+    let read_screen = (scrn: i32) -> v.copy_screen(0, scrn)
 
     // ------------------------------------------------------------------
     // Debug overlay (-debug, or the ` key): frame rate, per-frame work

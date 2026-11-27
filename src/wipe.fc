@@ -12,8 +12,9 @@ module wipe =
     let mut wipe_scr = default(u8*)
     let mut ycols = default(i32[])
 
+    // (fades palette indices, so the light stays the start screen's)
     let init_color_xform = (width: i32, height: i32, ticks: i32) ->
-        mem.memcpy((any*) wipe_scr, (const any*) wipe_scr_start, (i64) v.sw * v.sh)
+        v.copy_screen(2, 0)
 
     let do_color_xform = (width: i32, height: i32, ticks: i32) ->
         let mut changed = false
@@ -38,7 +39,7 @@ module wipe =
     // gives the same frames.)
     let init_melt = (width: i32, height: i32, ticks: i32) ->
         // copy start screen to main screen
-        mem.memcpy((any*) wipe_scr, (const any*) wipe_scr_start, (i64) v.sw * v.sh)
+        v.copy_screen(2, 0)
         // setup initial column positions
         // (y<0 => not ready to scroll yet). Like the original this draws
         // `width` positions though the melt uses only the first half,
@@ -60,10 +61,11 @@ module wipe =
         let cw = 2 * n
         let split = drop * v.hy
         for y in 0..v.sh do
-            let dest = wipe_scr + y * pitch + x0
-            let src = if y < split then wipe_scr_end + y * pitch + x0
-                      else wipe_scr_start + (y - split) * pitch + x0
-            mem.memcpy((any*) dest, (const any*) src, (i64) cw)
+            let dest = y * pitch + x0
+            let scrn = if y < split then 3 else 2
+            let src = if y < split then y * pitch + x0 else (y - split) * pitch + x0
+            mem.memcpy((any*) (v.screens[0] + dest), (const any*) (v.screens[scrn] + src), (i64) cw)
+            mem.memcpy((any*) (v.lights[0] + dest), (const any*) (v.lights[scrn] + src), (i64) cw)
 
     let do_melt = (width: i32, height: i32, ticks0: i32) ->
         let mut done = true
@@ -86,11 +88,11 @@ module wipe =
 
     let start_screen = (x: i32, y: i32, width: i32, height: i32) ->
         wipe_scr_start = v.screens[2]
-        iv.read_screen(wipe_scr_start)
+        iv.read_screen(2)
 
     let end_screen = (x: i32, y: i32, width: i32, height: i32) ->
         wipe_scr_end = v.screens[3]
-        iv.read_screen(wipe_scr_end)
+        iv.read_screen(3)
         v.copy_screen(2, 0)    // restore start scr.
 
     let screen_wipe = (wipeno: kind, x: i32, y: i32, width: i32, height: i32, ticks: i32) ->

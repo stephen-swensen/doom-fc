@@ -21,6 +21,17 @@
 // playsim keeps the table versions (point_to_angle2 and friends), since
 // demos depend on them.
 //
+// Light is smooth by default (smooth_lighting). The original lights a
+// pixel by drawing it through one of COLORMAP's 32 maps, picked from the
+// sector's light in 16 steps and the distance in buckets, and each map is
+// the palette darkened and then rounded back to the palette: half the
+// steps between neighbouring maps change no colour at all, and the dark
+// maps keep only a handful. Here the view keeps each texel's own index
+// and writes how lit it is to v.lights, computed from the same formulas
+// unrounded, and the blit multiplies (iv.lit_palette). Light-amp and
+// invulnerability views, and smooth_lighting 0, draw through the maps as
+// the original did, at full light.
+//
 // In native 4:3 (v.hy = v.hires * 6/5) the vertical projection is 6/5 of
 // the horizontal one, which is what the original's stretched display did
 // to it. Every "scale" (a wall column's, drawseg and vissprite scales,
@@ -118,6 +129,14 @@ module r =
     // lateral or vertical offset at depth 1
     let mut focalx = 0.0
     let mut focaly = 0.0
+    // 1 lights the view smoothly, 0 through the colormaps (the
+    // "smooth_lighting" config entry), and -classiclight's 0 for this
+    // session only, or -1
+    let mut smooth_lighting = 1
+    let mut lighting_override = -1
+    let lighting_on = () -> (if lighting_override >= 0 then lighting_override else smooth_lighting) != 0
+    // this frame lights smoothly: smooth_lighting, and no fixed colormap
+    let mut lit = false
     let mut scalelight = u8*[] { len = 16 * 48 }
     let mut scalelightfixed = u8*[] { len = 48 }
     let mut zlight = u8*[] { len = 16 * 128 }
@@ -159,8 +178,11 @@ module r =
     // ---------------------------------------------------------------
 
     let mut ylookup = default(u8*[])
+    // the light plane's rows, as ylookup's
+    let mut lylookup = default(u8*[])
     let mut columnofs = default(i32[])
     let mut dc_colormap = default(u8*)
+    let mut dc_light = 255u8    // the light-plane value a column draws with
     let mut dc_x = 0
     let mut dc_yl = 0
     let mut dc_yh = 0
@@ -175,6 +197,7 @@ module r =
     let mut ds_x1 = 0
     let mut ds_x2 = 0
     let mut ds_colormap = default(u8*)
+    let mut ds_light = 255u8
     // 32.32 flat coordinates at ds_x1, and their steps per column
     let mut ds_xfrac = 0i64
     let mut ds_yfrac = 0i64
@@ -251,6 +274,7 @@ module r =
     let mut seg_len = 0.0     // |D|
     let mut seg_uofs = 0.0    // texture column at v1
     let mut walllights = default(u8**)
+    let mut wallmap = 0.0    // the smooth start_map of the seg being drawn
     let mut maskedtexturecol = default(i16*)
 
     // ---------------------------------------------------------------
@@ -269,6 +293,7 @@ module r =
     let mut ceilingclip = default(i16[])
     let mut spanstart = default(i32[])
     let mut planezlight = default(u8**)
+    let mut planemap = 0.0
     let mut planeheight = 0.0    // world units between the view and the plane
 
     // ---------------------------------------------------------------
@@ -279,6 +304,7 @@ module r =
     let mut pspritescale = 0.0
     let mut pspritescaley = 0.0
     let mut spritelights = default(u8**)
+    let mut spritemap = 0.0
     let mut negonearray = default(i16[])
     let mut screenheightarray = default(i16[])
     let mut sprites = default(spritedef[])
@@ -350,6 +376,40 @@ module r =
         else if idx < 0.0 then 0
         else (i32) idx
 
+    // Smooth lighting works in colormap levels, unrounded: map m is the
+    // palette scaled by (32 - m) / 32 (COLORMAP is that, rounded to the
+    // palette), so this is m's light-plane value.
+    let light_of_map = (m: f64) ->
+        let mm = if !(m > 0.0) then 0.0 else if m > (f64) (numcolormaps - 1) then (f64) (numcolormaps - 1) else m
+        (u8) (i32) ((f64) v.full_light * ((f64) numcolormaps - mm) / (f64) numcolormaps + 0.5)
+
+    // The map a light level starts from before distance brightens it:
+    // ((LIGHTLEVELS-1 - lightnum) * 2) * NUMCOLORMAPS / LIGHTLEVELS, with
+    // lightnum the sector's light / 16 unrounded, plus the extra light and
+    // fake contrast (whole levels).
+    let start_map = (lightlevel: i32, levels: i32) ->
+        let mut k = (f64) lightlevel / (f64) (1 << lightsegshift) + (f64) (extralight + levels)
+        if k < 0.0 then k = 0.0
+        if k > (f64) (lightlevels - 1) then k = (f64) (lightlevels - 1)
+        ((f64) (lightlevels - 1) - k) * 2.0 * (f64) numcolormaps / (f64) lightlevels
+
+    // How many maps brighter a wall column or sprite is at scalelight
+    // index j (unrounded, so at scale_light_index's scale * 16 / hy).
+    let index_brightening = (j: f64) ->
+        let jj = if j > (f64) (maxlightscale - 1) then (f64) (maxlightscale - 1) else j
+        jj * (f64) v.sw / (f64) (ds.viewwidth << detailshift) / (f64) distmap
+
+    let scale_brightening = (scale: f64) -> index_brightening(scale * 16.0 / (f64) v.hy)
+
+    // zlight's brightening for a flat at distance d: 160 / (d / 16 + 1),
+    // over DISTMAP.
+    let distance_brightening = (d: f64) ->
+        160.0 / (d / (f64) (1 << (lightzshift - 16)) + 1.0) / (f64) distmap
+
+    // The fake contrast of a seg along an axis, in light levels.
+    let seg_contrast = (ln: const seg*) ->
+        if ln.v1.y == ln.v2.y then -1 else if ln.v1.x == ln.v2.x then 1 else 0
+
     // Allocate everything sized by the screen; called at startup and when
     // the render scale changes (with a view size reset to follow).
     let init_resolution = () ->
@@ -358,6 +418,7 @@ module r =
         if xtoviewangle.len > 0 then
             free(xtoviewangle)
             free(ylookup)
+            free(lylookup)
             free(columnofs)
             free(openings)
             free(floorclip)
@@ -372,6 +433,7 @@ module r =
                 free(visplanes[k].bottom)
         xtoviewangle = alloc(u32[] { len = w + 1 })!
         ylookup = alloc(u8*[] { len = h })!
+        lylookup = alloc(u8*[] { len = h })!
         columnofs = alloc(i32[] { len = w })!
         openings = alloc(i16[] { len = w * 64 })!
         floorclip = alloc(i16[] { len = w })!
@@ -555,6 +617,7 @@ module r =
             for k in 0..maxlightscale do scalelightfixed[k] = cm
         else
             fixedcolormap = none(u8*)
+        lit = lighting_on() && fixedcolormap.is_none
         framecount = framecount + 1
         ds.validcount = ds.validcount + 1
 
@@ -796,13 +859,17 @@ module r =
                 i.fatal(alloca("R_DrawColumn: %d{dc_yl} to %d{dc_yh} at %d{dc_x}"))
             let pitch = v.sw
             let mut dest = ylookup[dc_yl] + columnofs[dc_x]
+            let mut ldest = lylookup[dc_yl] + columnofs[dc_x]
             let fracstep = frac64(dc_iscale)
             let mut frac = column_frac()
             let src = dc_source
             let cmap = dc_colormap
+            let light = dc_light
             for _ in 0..count + 1 do
                 *dest = *(cmap + (i32) *(src + ((i32) (frac >> 32) & 127)))
+                *ldest = light
                 dest = dest + pitch
+                ldest = ldest + pitch
                 frac = frac + fracstep
 
     let draw_column_low = () ->
@@ -814,21 +881,26 @@ module r =
             // masked-seg loops (that step dc_x) off the screen
             let x = dc_x << 1
             let mut dest = ylookup[dc_yl] + columnofs[x]
-            let mut dest2 = ylookup[dc_yl] + columnofs[x + 1]
+            let mut ldest = lylookup[dc_yl] + columnofs[x]
             let pitch = v.sw
             let fracstep = frac64(dc_iscale)
             let mut frac = column_frac()
+            let light = dc_light
             for _ in 0..count + 1 do
                 let px = *(dc_colormap + (i32) *(dc_source + ((i32) (frac >> 32) & 127)))
                 *dest = px
-                *dest2 = px
+                *(dest + 1) = px
+                *ldest = light
+                *(ldest + 1) = light
                 dest = dest + pitch
-                dest2 = dest2 + pitch
+                ldest = ldest + pitch
                 frac = frac + fracstep
 
     // At hires the fuzz keeps the original's grain: each table step covers
     // hy rows, reads hy rows away, and every column of a hires-wide block
-    // replays the same steps.
+    // replays the same steps. Lit smoothly, it copies the pixel and its
+    // light and darkens the light by colormap 6's (32 - 6) / 32, where the
+    // original drew the pixel through colormap 6.
     let draw_fuzz_column = () ->
         let n = v.hy
         let nx = v.hires
@@ -845,13 +917,20 @@ module r =
             if nx > 1 then
                 if dc_x % nx == 0 then fuzzblockpos = fuzzpos else fuzzpos = fuzzblockpos
             let mut dest = ylookup[dc_yl] + columnofs[dc_x]
+            let mut ldest = lylookup[dc_yl] + columnofs[dc_x]
             let mut y = dc_yl
             for _ in 0..count + 1 do
-                *dest = *(colormaps + 6 * 256 + (i32) *(dest + fuzzoffset[fuzzpos] * step))
+                let ofs = fuzzoffset[fuzzpos] * step
+                if lit then
+                    *dest = *(dest + ofs)
+                    *ldest = (u8) (((i32) *(ldest + ofs) * (numcolormaps - 6)) / numcolormaps)
+                else
+                    *dest = *(colormaps + 6 * 256 + (i32) *(dest + ofs))
                 if n == 1 || (y + 1) % n == 0 then
                     fuzzpos = fuzzpos + 1
                     if fuzzpos == 50 then fuzzpos = 0
                 dest = dest + pitch
+                ldest = ldest + pitch
                 y = y + 1
 
     let draw_translated_column = () ->
@@ -861,11 +940,15 @@ module r =
                 i.fatal(alloca("R_DrawColumn: %d{dc_yl} to %d{dc_yh} at %d{dc_x}"))
             let pitch = v.sw
             let mut dest = ylookup[dc_yl] + columnofs[dc_x]
+            let mut ldest = lylookup[dc_yl] + columnofs[dc_x]
             let fracstep = frac64(dc_iscale)
             let mut frac = column_frac()
+            let light = dc_light
             for _ in 0..count + 1 do
                 *dest = *(dc_colormap + (i32) *(dc_translation + (i32) *(dc_source + (i32) (frac >> 32))))
+                *ldest = light
                 dest = dest + pitch
+                ldest = ldest + pitch
                 frac = frac + fracstep
 
     let call_colfunc = () ->
@@ -903,6 +986,7 @@ module r =
             dest = dest + 1
             xfrac = xfrac + xstep
             yfrac = yfrac + ystep
+        mem.memset((any*) (lylookup[ds_y] + columnofs[ds_x1]), (i32) ds_light, (i64) (count + 1))
 
     let draw_span_low = () ->
         if ds_x2 < ds_x1 || ds_x1 < 0 || ds_x2 >= v.sw || ds_y < 0 || ds_y > v.sh then
@@ -921,6 +1005,7 @@ module r =
             dest = dest + 2
             xfrac = xfrac + ds_xstep
             yfrac = yfrac + ds_ystep
+        mem.memset((any*) (lylookup[ds_y] + columnofs[ds_x1 << 1]), (i32) ds_light, 2i64 * (count + 1))
 
     let call_spanfunc = () ->
         if detailshift == 0 then draw_span() else draw_span_low()
@@ -929,7 +1014,9 @@ module r =
         ds.viewwindowx = (v.sw - width) >> 1
         for k in 0..width do columnofs[k] = ds.viewwindowx + k
         ds.viewwindowy = if width == v.sw then 0 else (v.sh - sbarheight * v.hy - height) >> 1
-        for k in 0..height do ylookup[k] = v.screens[0] + (k + ds.viewwindowy) * v.sw
+        for k in 0..height do
+            ylookup[k] = v.screens[0] + (k + ds.viewwindowy) * v.sw
+            lylookup[k] = v.lights[0] + (k + ds.viewwindowy) * v.sw
 
     let fill_back_screen = () ->
         if ds.scaledviewwidth == v.sw then void()
@@ -962,6 +1049,7 @@ module r =
 
     let video_erase = (ofs: i32, count: i32) ->
         mem.memcpy((any*) (v.screens[0] + ofs), (const any*) (v.screens[1] + ofs), (i64) count)
+        mem.memcpy((any*) (v.lights[0] + ofs), (const any*) (v.lights[1] + ofs), (i64) count)
 
     let draw_view_border = () ->
         let sw = v.sw
@@ -1192,10 +1280,8 @@ module r =
         // only two-sided lines have masked textures
         let bs = backsector!
         let texnum = texturetranslation[curline.sidedef.midtexture]
-        let mut lightnum = (fs.lightlevel >> lightsegshift) + extralight
-        if curline.v1.y == curline.v2.y then lightnum = lightnum - 1
-        else if curline.v1.x == curline.v2.x then lightnum = lightnum + 1
-        set_walllights(lightnum)
+        set_walllights((fs.lightlevel >> lightsegshift) + extralight + seg_contrast(curline))
+        wallmap = start_map(fs.lightlevel, seg_contrast(curline))
         // a masked seg has all three (R_StoreWallRange)
         maskedtexturecol = dsg.maskedtexturecol!
         mfloorclip = dsg.sprbottomclip!
@@ -1208,16 +1294,18 @@ module r =
             let base = if fs.ceilingheight < bs.ceilingheight then fs.ceilingheight else bs.ceilingheight
             mid = base - viewz
         dc_texturemid = unit(mid + curline.sidedef.rowoffset)
+        dc_light = v.full_light
         match fixedcolormap with
         | some(cm) -> dc_colormap = cm
-        | none -> void()
+        | none -> if lit then dc_colormap = colormaps
         dc_x = x1
         loop
             if dc_x > x2 then break
             if *(maskedtexturecol + dc_x) != (i16) maxshort then
                 // 1/depth is linear across the screen, so this is exact
                 spryscale = dsg.scale1 + (f64) (dc_x - dsg.x1) * dsg.scalestep
-                if fixedcolormap.is_none then
+                if lit then dc_light = light_of_map(wallmap - scale_brightening(spryscale))
+                else if fixedcolormap.is_none then
                     dc_colormap = *(walllights + scale_light_index(spryscale))
                 sprtopscreen = fcentery - dc_texturemid * spryscale
                 dc_iscale = 1.0 / spryscale
@@ -1268,7 +1356,12 @@ module r =
                 if !(along > 0.0) then along = 0.0
                 if along > 1.0 then along = 1.0
                 texturecolumn = (i32) math.floor(along * seg_len + seg_uofs)
-                dc_colormap = *(walllights + scale_light_index(sc))
+                if lit then
+                    dc_colormap = colormaps
+                    dc_light = light_of_map(wallmap - scale_brightening(sc))
+                else
+                    dc_colormap = *(walllights + scale_light_index(sc))
+                    dc_light = v.full_light
                 dc_x = rw_x
                 dc_iscale = 1.0 / sc
             if midtexture != 0 then
@@ -1426,10 +1519,8 @@ module r =
         segtextured = midtexture != 0 || toptexture != 0 || bottomtexture != 0 || maskedtexture
         if segtextured then
             if fixedcolormap.is_none then
-                let mut lightnum = (fs.lightlevel >> lightsegshift) + extralight
-                if curline.v1.y == curline.v2.y then lightnum = lightnum - 1
-                else if curline.v1.x == curline.v2.x then lightnum = lightnum + 1
-                set_walllights(lightnum)
+                set_walllights((fs.lightlevel >> lightsegshift) + extralight + seg_contrast(curline))
+                wallmap = start_map(fs.lightlevel, seg_contrast(curline))
         if fs.floorheight >= viewz then markfloor = false
         if fs.ceilingheight <= viewz && fs.ceilingpic != ds.skyflatnum then markceiling = false
         fworldtop = unit(worldtop)
@@ -1480,12 +1571,17 @@ module r =
         ds_yfrac = frac64(flat_wrap(0.0 - py))
         ds_xstep = frac64(flat_wrap(step * fsin))
         ds_ystep = frac64(flat_wrap(step * fcos))
+        ds_light = v.full_light
         match fixedcolormap with
         | some(cm) -> ds_colormap = cm
         | none ->
-            // distance >> LIGHTZSHIFT in fixed point
-            let index = distance / 16.0
-            ds_colormap = *(planezlight + (if index >= (f64) (maxlightz - 1) then maxlightz - 1 else (i32) index))
+            if lit then
+                ds_colormap = colormaps
+                ds_light = light_of_map(planemap - distance_brightening(distance))
+            else
+                // distance >> LIGHTZSHIFT in fixed point
+                let index = distance / 16.0
+                ds_colormap = *(planezlight + (if index >= (f64) (maxlightz - 1) then maxlightz - 1 else (i32) index))
         ds_y = y
         ds_x1 = x1
         ds_x2 = x2
@@ -1597,6 +1693,7 @@ module r =
                     // sky flat
                     dc_iscale = 1.0 / pspritescaley
                     dc_colormap = colormaps
+                    dc_light = v.full_light
                     dc_texturemid = skytexturemid
                     for x in pl.minx..pl.maxx + 1 do
                         dc_yl = (i32) pl.top[x + 1]
@@ -1613,6 +1710,7 @@ module r =
                     if light >= lightlevels then light = lightlevels - 1
                     if light < 0 then light = 0
                     planezlight = zlight.ptr + light * maxlightz
+                    planemap = start_map(pl.lightlevel, 0)
                     pl.top[pl.maxx + 2] = 0xffffu16
                     pl.top[pl.minx] = 0xffffu16
                     let stop = pl.maxx + 1
@@ -1733,6 +1831,7 @@ module r =
 
     let draw_vis_sprite = (vis: vissprite*, x1: i32, x2: i32) ->
         let p = (const patch*) w.cache_lump_num(vis.patch + firstspritelump, pu.cache)
+        dc_light = vis.light
         match vis.colormap with
         | none -> colfunc = col_fuzz
         | some(cm) ->
@@ -1811,24 +1910,30 @@ module r =
         vis.gzt = thing.z + spritetopoffset[lump]
         vis.texturemid = unit(vis.gzt) - unit(viewz)
         set_sprite_columns(vis, lump, sx1, xscale, flip)
+        vis.light = v.full_light
         if (thing.flags & mf.shadow) != 0 then
             vis.colormap = none(const u8*)
         else if fixedcolormap.is_some then
             vis.colormap = fixedcolormap
         else if (thing.frame & ps.ff_fullbright) != 0 then
             vis.colormap = some((const u8*) colormaps)
+        else if lit then
+            vis.colormap = some((const u8*) colormaps)
+            vis.light = light_of_map(spritemap - scale_brightening(vis.scale))
         else
             vis.colormap = some((const u8*) *(spritelights + scale_light_index(vis.scale)))
 
-    let set_spritelights = (lightnum: i32) ->
+    let set_spritelights = (lightlevel: i32) ->
+        let lightnum = (lightlevel >> lightsegshift) + extralight
         spritelights = if lightnum < 0 then scalelight.ptr
                        else if lightnum >= lightlevels then scalelight.ptr + (lightlevels - 1) * maxlightscale
                        else scalelight.ptr + lightnum * maxlightscale
+        spritemap = start_map(lightlevel, 0)
 
     let add_sprites = (sec: sector*) ->
         if sec.validcount != ds.validcount then
             sec.validcount = ds.validcount
-            set_spritelights((sec.lightlevel >> lightsegshift) + extralight)
+            set_spritelights(sec.lightlevel)
             let mut cur = sec.thinglist
             loop
                 match cur with
@@ -1858,6 +1963,7 @@ module r =
         vis.texturemid = baseycenter - (unit(psp.sy) - unit(spritetopoffset[lump]))
         vis.scale = pspritescaley
         set_sprite_columns(vis, lump, sx1, pspritescale, flip)
+        vis.light = v.full_light
         let invis = viewplayer.powers[pw.invisibility]
         if invis > 4 * 32 || (invis & 8) != 0 then
             vis.colormap = none(const u8*)
@@ -1865,13 +1971,15 @@ module r =
             vis.colormap = fixedcolormap
         else if (st.frame & ps.ff_fullbright) != 0 then
             vis.colormap = some((const u8*) colormaps)
+        else if lit then
+            vis.colormap = some((const u8*) colormaps)
+            vis.light = light_of_map(spritemap - index_brightening((f64) (maxlightscale - 1)))
         else
             vis.colormap = some((const u8*) *(spritelights + (maxlightscale - 1)))
         draw_vis_sprite(vis, vis.x1, vis.x2)
 
     let draw_player_sprites = () ->
-        let lightnum = (viewplayer.mo!.subsector.sector.lightlevel >> lightsegshift) + extralight
-        set_spritelights(lightnum)
+        set_spritelights(viewplayer.mo!.subsector.sector.lightlevel)
         mfloorclip = screenheightarray.ptr
         mceilingclip = negonearray.ptr
         for k in 0..ps.numpsprites do

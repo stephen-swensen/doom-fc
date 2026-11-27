@@ -65,7 +65,8 @@ bugs. The project is GPL v2.
 - The demo and playsim golden values in `tests/run-tests.sh` were recorded
   from linuxdoom. Its frame hashes were recorded from this port (the f64
   renderer no longer matches linuxdoom's pixels) and pin the headless
-  renderer at 1x, 3x, 12x, 5x native and in low detail. Update them only
+  renderer at 1x, 3x, 12x, 5x native and in low detail, with smooth
+  lighting, and at 3x with `-classiclight`. Update them only
   for intentional rendering changes. Headless runs render at 1x
   unless given `-scale N`. Tests that read screenshots must run under a
   scratch `$DOOM_FC_HOME`, because the user's `default.cfg` (screen size and
@@ -173,6 +174,13 @@ Doom's C files call each other in every direction, so:
   table-based `r.point_to_angle`, which stays for the playsim's
   `point_to_angle2` because demos depend on it. Only the column and span
   inner loops step in fixed point (32.32 `i64`).
+- **Every screen has a light plane** (`v.lights[k]`, same layout as
+  `v.screens[k]`). The blit multiplies each pixel's palette colour by it
+  (`iv.lit_palette`). Only the 3D view writes less than `v.full_light`
+  (smooth lighting); every 2D drawer writes full light, and copies carry
+  the light with the pixels. Anything new that writes a screen directly,
+  as the automap and the wipe do, must write its light plane too, or old
+  3D light shows through.
 - **The render scale changes at runtime.** `iv.want_hires` and
   `iv.want_native` are picked from the drawable (Auto) or the
   `scale_factor` setting. `d.apply_hires`

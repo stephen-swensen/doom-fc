@@ -116,16 +116,31 @@ if have DOOM.WAD; then
     run -doom1 -shotdir "$TMP" -quitat 60 -script "w40 s:title" >/dev/null
     assert_eq "title screen frame" 486c60240384f0c184fdf17ac6df4e67 "$(md5sum < "$TMP/title.png" | cut -c1-32)"
     run -doom1 -warp 1 1 -shotdir "$TMP" -quitat 60 -script "w40 s:e1m1" >/dev/null
-    assert_eq "E1M1 start frame" 43d968230f8c2d8eab55c21ea5a283e9 "$(md5sum < "$TMP/e1m1.png" | cut -c1-32)"
+    assert_eq "E1M1 start frame" fe0bbc40cecc0b0f82a57ae75f7e5ae8 "$(md5sum < "$TMP/e1m1.png" | cut -c1-32)"
     # hires: the same frame rendered at 3x (960x600)
     run -doom1 -scale 3 -warp 1 1 -shotdir "$TMP" -quitat 60 -script "w40 s:e1m1x3" >/dev/null
-    assert_eq "E1M1 start frame at 3x" 7b80e35de286dc75c2a1b6072bc4af8b "$(md5sum < "$TMP/e1m1x3.png" | cut -c1-32)"
+    assert_eq "E1M1 start frame at 3x" 37335fa754685daa79e151bd62b4c2a6 "$(md5sum < "$TMP/e1m1x3.png" | cut -c1-32)"
     # and at 12x (3840x2400), past where linuxdoom's angle tables ran out
     run -doom1 -scale 12 -warp 1 1 -shotdir "$TMP" -quitat 60 -script "w40 s:e1m1x12" >/dev/null
-    assert_eq "E1M1 start frame at 12x" f4172d2d02fa0471bb129bcdecbb46f0 "$(md5sum < "$TMP/e1m1x12.png" | cut -c1-32)"
+    assert_eq "E1M1 start frame at 12x" 401eeb37c6aec81b874995fd6f86ed88 "$(md5sum < "$TMP/e1m1x12.png" | cut -c1-32)"
     # low detail (F5, applied at the next screen size change) at 3x
     run -doom1 -scale 3 -warp 1 1 -shotdir "$TMP" -quitat 60 -script "w30 pf5 w2 pminus w2 pequals w6 s:e1m1low" >/dev/null
-    assert_eq "E1M1 start frame in low detail" 625ca4f05845b32cf287d0fafc69ba14 "$(md5sum < "$TMP/e1m1low.png" | cut -c1-32)"
+    assert_eq "E1M1 start frame in low detail" 2814fff157c2133a4aed44f7aa3b2e87 "$(md5sum < "$TMP/e1m1low.png" | cut -c1-32)"
+    # -classiclight draws through the colormaps, as the original did
+    run -doom1 -scale 3 -classiclight -warp 1 1 -shotdir "$TMP" -quitat 60 -script "w40 s:e1m1cl" >/dev/null
+    assert_eq "E1M1 start frame at 3x, colormap lighting" 7b80e35de286dc75c2a1b6072bc4af8b "$(md5sum < "$TMP/e1m1cl.png" | cut -c1-32)"
+    # Options -> Lighting switches to the colormaps at once: the same
+    # moves through the menu, toggling it or under -classiclight, give
+    # the same frame, and not the smooth one
+    lt="w40 pesc w2 pdown w2 penter w3 pup w2"
+    run -doom1 -scale 2 -warp 1 1 -shotdir "$TMP" -quitat 80 -script "$lt penter w2 pesc w3 s:lt1" >/dev/null
+    run -doom1 -scale 2 -classiclight -warp 1 1 -shotdir "$TMP" -quitat 80 -script "$lt pdown w2 pesc w3 s:lt2" >/dev/null
+    run -doom1 -scale 2 -warp 1 1 -shotdir "$TMP" -quitat 80 -script "$lt pdown w2 pesc w3 s:lt3" >/dev/null
+    if cmp -s "$TMP/lt1.png" "$TMP/lt2.png" && ! cmp -s "$TMP/lt1.png" "$TMP/lt3.png"; then
+        ok "Options -> Lighting switches to colormap lighting"
+    else
+        bad "Options -> Lighting switches to colormap lighting"
+    fi
     # Options -> Graphic Detail changes the render scale mid-game: 2x, then
     # 3x, then back down to Auto (1x headless)
     run -doom1 -scale 2 -warp 1 1 -shotdir "$TMP" -quitat 120 \
@@ -134,7 +149,7 @@ if have DOOM.WAD; then
         "$(png_w "$TMP/sc2.png") $(png_w "$TMP/sc3.png") $(png_w "$TMP/scauto.png")"
     # native 4:3: the same frame at 5x with square pixels (1600x1200)
     run -doom1 -scale 5n -warp 1 1 -shotdir "$TMP" -quitat 60 -script "w40 s:e1m1x5n" >/dev/null
-    assert_eq "E1M1 start frame at 5x native 4:3" b21c7d8e05bbb164b0464ccd7e758bce "$(md5sum < "$TMP/e1m1x5n.png" | cut -c1-32)"
+    assert_eq "E1M1 start frame at 5x native 4:3" a5657de82df8a3cb4f43b0611ea54fb0 "$(md5sum < "$TMP/e1m1x5n.png" | cut -c1-32)"
     # the picker puts 5X 4:3 between 5X and 6X, both ways
     run -doom1 -scale 4 -warp 1 1 -shotdir "$TMP" -quitat 160 \
         -script "w40 pesc w2 pdown w2 penter w3 pdown w1 pdown w2 pright w2 s:p5 pright w2 s:p5n pright w2 s:p6 pleft w2 s:q5n pleft w2 s:q5" >/dev/null
@@ -157,7 +172,7 @@ if have DOOM.WAD; then
     done
     # a frame half way through a keyboard turn
     run -doom1 -warp 1 1 -shotdir "$TMP" -quitat 50 -interptest -script "w40 dleft w5 s:turnmid" >/dev/null
-    assert_eq "blended frame mid-turn" 0b5dc3855686da43bf08aa7bdc72a089 "$(md5sum < "$TMP/turnmid.png" | cut -c1-32)"
+    assert_eq "blended frame mid-turn" acb2b95a687a3eafcf93093483c721f2 "$(md5sum < "$TMP/turnmid.png" | cut -c1-32)"
 else
     skp "DOOM.WAD not in $DATA"
 fi

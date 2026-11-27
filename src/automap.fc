@@ -439,7 +439,9 @@ module amap =
         // AM_updateLightLev();
 
     // Clear automap frame buffer.
-    let clear_fb = (color: i32) -> mem.memset((any*) fb, color, (i64) f_w * f_h)
+    let clear_fb = (color: i32) ->
+        mem.memset((any*) fb, color, (i64) f_w * f_h)
+        v.light_full(0, 0, f_w * f_h)
 
     let c_left = 1
     let c_right = 2

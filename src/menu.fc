@@ -83,7 +83,7 @@ module misc =
         "key_fire", "key_use", "key_strafe", "key_speed",
         "use_mouse", "mouseb_fire", "mouseb_strafe", "mouseb_forward",
         "screenblocks", "detaillevel", "snd_channels", "usegamma",
-        "scale_factor"
+        "scale_factor", "smooth_lighting"
     }
 
     let default_ptr = (k: i32) ->
@@ -110,7 +110,8 @@ module misc =
         | 19 -> &ds.detail_level
         | 20 -> &snd_channels
         | 21 -> &ds.usegamma
-        | _ -> &iv.scale_factor
+        | 22 -> &iv.scale_factor
+        | _ -> &r.smooth_lighting
 
     let default_values = i32[] {
         5, 8, 8, 1,
@@ -118,7 +119,7 @@ module misc =
         dd.key_rctrl, ' ', dd.key_ralt, dd.key_rshift,
         1, 0, 1, 2,
         9, 0, 8, 0,
-        0
+        0, 1
     }
 
     let save_defaults = () ->
@@ -298,7 +299,7 @@ module m =
     let mut main_menu = menuitem[] { len = 6 }
     let mut episode_menu = menuitem[] { len = 4 }
     let mut new_game_menu = menuitem[] { len = 5 }
-    let mut options_menu = menuitem[] { len = 8 }
+    let mut options_menu = menuitem[] { len = 9 }
     let mut read_menu1 = menuitem[] { len = 1 }
     let mut read_menu2 = menuitem[] { len = 1 }
     let mut sound_menu = menuitem[] { len = 4 }
@@ -325,6 +326,7 @@ module m =
     let scrnsize = 3
     let mousesens = 5
     let soundvol = 7
+    let lighting = 8
     // sound items
     let sfx_vol = 0
     let music_vol = 2
@@ -369,7 +371,10 @@ module m =
         options_menu[5] = slider("M_MSENS", change_sensitivity, 'm')
         options_menu[6] = spacer
         options_menu[7] = mi("M_SVOL", sound, 's')
-        options_def = menudef { numitems = 8, prev = some(&main_def), items = options_menu.ptr, drawer = some(draw_options), x = 60, y = 37 }
+        // doom-fc: smooth or colormap lighting (no patch; draw_options
+        // writes it)
+        options_menu[8] = slider("", change_lighting, 'l')
+        options_def = menudef { numitems = 9, prev = some(&main_def), items = options_menu.ptr, drawer = some(draw_options), x = 60, y = 29 }
         read_menu1[0] = mi("", read_this2, 0)
         read_def1 = menudef { numitems = 1, prev = some(&main_def), items = read_menu1.ptr, drawer = some(draw_read_this1), x = 280, y = 185 }
         read_menu2[0] = mi("", finish_read_this, 0)
@@ -599,7 +604,8 @@ module m =
         setup_next_menu(&new_def)
 
     let draw_options = () ->
-        v.draw_patch_direct(108, 15, 0, v.patch_named("M_OPTTTL"))
+        // (8 higher than linuxdoom's, as is the menu, to fit Lighting)
+        v.draw_patch_direct(108, 7, 0, v.patch_named("M_OPTTTL"))
         // the render scale, in the HUD font (there are no patches for it)
         let pref = iv.effective_pref()
         let code = if pref != 0 then iv.clamp_code(pref)
@@ -612,6 +618,10 @@ module m =
                             v.patch_named(msg_names[ds.show_messages]))
         draw_thermo(options_def.x, options_def.y + lineheight * (mousesens + 1), 10, ds.mouse_sensitivity)
         draw_thermo(options_def.x, options_def.y + lineheight * (scrnsize + 1), 9, screen_size)
+        // centred on the row, and clear of the status bar (which keeps
+        // whatever is drawn over it until it next changes)
+        write_text(options_def.x, options_def.y + lineheight * lighting + 4,
+                   if r.lighting_on() then "LIGHTING: SMOOTH" else "LIGHTING: CLASSIC")
 
     let options = (choice: i32) -> setup_next_menu(&options_def)
 
@@ -673,6 +683,11 @@ module m =
         iv.scale_factor = iv.next_code(iv.effective_pref(), dir)
         iv.scale_override = -1
         iv.repick()
+
+    // Smooth lighting or the original's colormaps; any key toggles it.
+    let change_lighting = (choice: i32) ->
+        r.smooth_lighting = if r.lighting_on() then 0 else 1
+        r.lighting_override = -1
 
     let change_detail = (choice: i32) ->
         ds.detail_level = 1 - ds.detail_level

@@ -66,6 +66,8 @@ and back on the mouse are off by default; `-mousemove` turns them on, and
 
 **Options → Graphic Detail** sets the render scale: Auto, or 1x to 12x, plus
 5x 4:3 and 10x 4:3 for native 4:3 rendering (see [Display](#display)).
+**Options → Lighting** switches between smooth lighting (the default) and
+the original's colormap lighting (see [Smooth lighting](#smooth-lighting)).
 
 Keys are configurable in `~/.doom-fc/default.cfg` (linuxdoom's format and
 names, Doom key codes).
@@ -87,6 +89,7 @@ II), `-skill N`, `-episode N`, `-nomonsters`, `-respawn`, `-fast`,
 | `-nomouse`, `-mousemove` | see Controls |
 | `-scale N` | render at N times 320x200 for this session (0 = Auto, 1..12), overriding the saved setting; `5n` or `10n` renders native 4:3 |
 | `-maxscale N` | cap Auto's pick (default 6) |
+| `-classiclight` | light the view through the colormaps, as linuxdoom does, for this session (see [Smooth lighting](#smooth-lighting)) |
 | `-debug` | start with the debug overlay on |
 | `-nointerp` | draw one frame per tic, as linuxdoom does, instead of interpolating frames at the display's refresh rate (see [Frame interpolation](#frame-interpolation)) |
 
@@ -129,8 +132,9 @@ tests/soak.golden`) only for an intentional playsim change.
 ## Display
 
 The game draws into 8-bit screens of `hires` times 320x200 (`v.hires`,
-`v.sw` x `v.sh`). Each frame goes through the palette into one ARGB
-streaming texture. SDL stretches that texture to 4:3, which restores the
+`v.sw` x `v.sh`), each with a light plane of the same size (`v.lights`).
+Each frame goes through the palette, darkened by each pixel's light, into
+one ARGB streaming texture. SDL stretches that texture to 4:3, which restores the
 original's tall pixels, and letterboxes it into the window. Video work in
 SDL stops at that one texture.
 
@@ -179,6 +183,46 @@ These are the Auto picks for some full-screen drawables:
 Outside native 4:3 the texture is 200 rows per factor and is shown at 240,
 so the 4:3 stretch is a 5:6 vertical resample: pinned 5X on a 1920x1200
 panel shows 1000 rows as 1200, though its columns map 1:1.
+
+### Smooth lighting
+
+linuxdoom lights a pixel by drawing it through one of the 32 maps in the
+`COLORMAP` lump. The map comes from the sector's light, in 16 steps, and
+the distance, in buckets (48 of scale for walls and sprites, 128 of 16
+units for flats). Each map is the palette scaled toward black by
+(32 - m) / 32 and then rounded to the nearest palette colour. That
+rounding is the coarse part. Half the entries are unchanged from one map
+to the next, map 28 keeps 14 distinct colours and map 31 keeps 3, and dim
+colours change hue as they snap to whichever ramp is nearest. At 1x the
+texture noise hides it. At high scales a floor fading into the dark
+becomes flat bands with hard edges.
+
+With smooth lighting (the default, saved as `smooth_lighting`) the view
+keeps each texel's own palette index and writes how lit it is, 0-255, to
+the light plane. The light comes from linuxdoom's formulas, unrounded:
+the sector's light divided by 16 without truncating, the extra light and
+fake contrast in whole levels, and the distance term without its
+buckets. On E1M1's opening view, at every scale tested, the smooth
+frame's mean brightness is within 0.25% of the colormap frame's. The blit then multiplies, through a 256 x 256 table
+(`iv.lit_palette`) built when the palette changes, with gamma applied
+after the multiply. Walls have one depth down a column and flats one
+along a row, so a light per column or span is exact.
+
+- **Fuzz** (partial invisibility) copies a nearby pixel and its light,
+  and darkens the light by colormap 6's 26/32.
+- **Light amp and invulnerability** keep their fixed colormaps, at full
+  light, so they look as they always have.
+- **Damage, pickup and radiation-suit palettes** are the base palette
+  blended toward a colour. In linuxdoom a dark pixel is a dark index, which
+  the blend tints as strongly as any other. The table darkens the base
+  colour and then applies the blend, fitted per channel from the two
+  palettes, so the flash stays as strong in dark rooms.
+- Everything 2D (status bar, menus, HUD, automap) draws at full light.
+  Copies such as the border, the status bar background and the wipe carry
+  the light with the pixels.
+
+`-classiclight`, or Options → Lighting, draws through the colormaps at
+full light. Its frames are bit-identical to the colormap renderer's.
 
 ### Native 4:3
 
@@ -361,6 +405,12 @@ included. These are the deliberate exceptions:
   sets the scale factor, and its value is drawn in the HUD font. F5 still
   behaves as in linuxdoom: it toggles detail, which takes effect at the
   next change of screen size.
+- **Smooth lighting.** linuxdoom's light falls off in 32 colormaps, each
+  rounded to the palette. doom-fc multiplies the palette colour by a
+  continuous light instead. See [Smooth lighting](#smooth-lighting).
+  Options gains a Lighting row for it, below Sound Volume. The menu is 8
+  pixels higher to make room, and the status bar is redrawn when the menu
+  closes, since the new row and its skull reach over it.
 - **Low detail draws correctly.** linuxdoom's `R_DrawColumnLow` doubles the
   global `dc_x`, which sends the sprite and masked-wall loops off the
   screen (an abort here), and `R_DrawSpanLow` counts a span after doubling

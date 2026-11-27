@@ -582,6 +582,7 @@ struct vissprite =
     texturemid: f64   // world units from the view height to the sprite's top
     patch: i32
     colormap: const u8*?    // none: a shadow (fuzz) draw
+    light: u8               // its light-plane value (r.smooth_lighting)
     mobjflags: i32
 
 struct spriteframe =
