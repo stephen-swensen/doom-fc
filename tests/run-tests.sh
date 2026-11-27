@@ -129,22 +129,22 @@ if have DOOM.WAD; then
     # -classiclight draws through the colormaps, as the original did
     run -doom1 -scale 3 -classiclight -warp 1 1 -shotdir "$TMP" -quitat 60 -script "w40 s:e1m1cl" >/dev/null
     assert_eq "E1M1 start frame at 3x, colormap lighting" 7b80e35de286dc75c2a1b6072bc4af8b "$(md5sum < "$TMP/e1m1cl.png" | cut -c1-32)"
-    # Options -> Lighting switches to the colormaps at once: the same
-    # moves through the menu, toggling it or under -classiclight, give
-    # the same frame, and not the smooth one
-    lt="w40 pesc w2 pdown w2 penter w3 pup w2"
+    # Options -> Graphic Detail -> Lighting switches to the colormaps at
+    # once: the same moves through the menu, toggling it or under
+    # -classiclight, give the same frame, and not the smooth one
+    lt="w40 pesc w2 pdown w2 penter w3 pdown w1 pdown w2 penter w3 pdown w2"
     run -doom1 -scale 2 -warp 1 1 -shotdir "$TMP" -quitat 80 -script "$lt penter w2 pesc w3 s:lt1" >/dev/null
     run -doom1 -scale 2 -classiclight -warp 1 1 -shotdir "$TMP" -quitat 80 -script "$lt pdown w2 pesc w3 s:lt2" >/dev/null
     run -doom1 -scale 2 -warp 1 1 -shotdir "$TMP" -quitat 80 -script "$lt pdown w2 pesc w3 s:lt3" >/dev/null
     if cmp -s "$TMP/lt1.png" "$TMP/lt2.png" && ! cmp -s "$TMP/lt1.png" "$TMP/lt3.png"; then
-        ok "Options -> Lighting switches to colormap lighting"
+        ok "Graphic Detail -> Lighting switches to colormap lighting"
     else
-        bad "Options -> Lighting switches to colormap lighting"
+        bad "Graphic Detail -> Lighting switches to colormap lighting"
     fi
-    # Options -> Graphic Detail changes the render scale mid-game: 2x, then
-    # 3x, then back down to Auto (1x headless)
+    # Options -> Graphic Detail -> Scale changes the render scale
+    # mid-game: 2x, then 3x, then back down to Auto (1x headless)
     run -doom1 -scale 2 -warp 1 1 -shotdir "$TMP" -quitat 120 \
-        -script "w40 s:sc2 pesc w2 pdown w2 penter w3 pdown w1 pdown w2 pright w2 s:sc3 pleft w2 pleft w2 pleft w2 pesc w3 s:scauto" >/dev/null
+        -script "w40 s:sc2 pesc w2 pdown w2 penter w3 pdown w1 pdown w2 penter w3 pright w2 s:sc3 pleft w2 pleft w2 pleft w2 pesc w3 s:scauto" >/dev/null
     assert_eq "render scale switches 2x -> 3x -> auto" "640 960 320" \
         "$(png_w "$TMP/sc2.png") $(png_w "$TMP/sc3.png") $(png_w "$TMP/scauto.png")"
     # native 4:3: the same frame at 5x with square pixels (1600x1200)
@@ -152,7 +152,7 @@ if have DOOM.WAD; then
     assert_eq "E1M1 start frame at 5x native 4:3" a5657de82df8a3cb4f43b0611ea54fb0 "$(md5sum < "$TMP/e1m1x5n.png" | cut -c1-32)"
     # the picker puts 5X 4:3 between 5X and 6X, both ways
     run -doom1 -scale 4 -warp 1 1 -shotdir "$TMP" -quitat 160 \
-        -script "w40 pesc w2 pdown w2 penter w3 pdown w1 pdown w2 pright w2 s:p5 pright w2 s:p5n pright w2 s:p6 pleft w2 s:q5n pleft w2 s:q5" >/dev/null
+        -script "w40 pesc w2 pdown w2 penter w3 pdown w1 pdown w2 penter w3 pright w2 s:p5 pright w2 s:p5n pright w2 s:p6 pleft w2 s:q5n pleft w2 s:q5" >/dev/null
     sizes=""
     for f in p5 p5n p6 q5n q5; do sizes="$sizes $(png_w "$TMP/$f.png")x$(png_h "$TMP/$f.png")"; done
     assert_eq "render scale switches 5x -> 5x 4:3 -> 6x and back" " 1600x1000 1600x1200 1920x1200 1600x1200 1600x1000" "$sizes"

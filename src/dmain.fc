@@ -80,9 +80,6 @@ module d =
                 if ds.automapactive then amap.drawer()
                 if wipe_now || (ds.viewheight != v.sh && fullscreen) then redrawsbar = true
                 if inhelpscreensstate && !ds.inhelpscreens then redrawsbar = true    // just put away the help screen
-                // and the menu, whose Options -> Lighting row (doom-fc's)
-                // and its skull reach over the status bar
-                if menuactivestate && !ds.menuactive then redrawsbar = true
                 st.drawer(ds.viewheight == v.sh, redrawsbar)
                 fullscreen = ds.viewheight == v.sh
         | intermission -> wi.drawer()

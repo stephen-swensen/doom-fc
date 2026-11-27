@@ -64,10 +64,13 @@ and back on the mouse are off by default; `-mousemove` turns them on, and
 `-nomouse` disables the mouse. **Alt+Enter** toggles fullscreen. **`**
 (backquote) toggles the debug overlay.
 
-**Options → Graphic Detail** sets the render scale: Auto, or 1x to 12x, plus
-5x 4:3 and 10x 4:3 for native 4:3 rendering (see [Display](#display)).
-**Options → Lighting** switches between smooth lighting (the default) and
-the original's colormap lighting (see [Smooth lighting](#smooth-lighting)).
+**Options → Graphic Detail** opens the graphics settings. Left and right
+change the highlighted one:
+
+- **Scale** sets the render scale: Auto, or 1x to 12x, plus 5x 4:3 and
+  10x 4:3 for native 4:3 rendering (see [Display](#display)).
+- **Lighting** switches between smooth lighting (the default) and the
+  original's colormap lighting (see [Smooth lighting](#smooth-lighting)).
 
 Keys are configurable in `~/.doom-fc/default.cfg` (linuxdoom's format and
 names, Doom key codes).
@@ -154,7 +157,8 @@ and nothing is resampled in either axis. See
   `v.copy_rect` as before, and those drawers scale each patch pixel into a
   `hires` x `hy` block. The automap and the wipe work in screen pixels.
   Automap lines get thicker as the scale rises.
-- **Scale factor** (Options → Graphic Detail, saved as `scale_factor`).
+- **Scale factor** (Options → Graphic Detail → Scale, saved as
+  `scale_factor`).
   Auto picks the largest integer factor whose 4:3 output fits the drawable
   in both axes, capped at 6 (`-maxscale N` raises or lowers the cap), and
   renders native 4:3 when that factor is 5 or 10. The picker runs Auto, 1X
@@ -221,8 +225,9 @@ along a row, so a light per column or span is exact.
   Copies such as the border, the status bar background and the wipe carry
   the light with the pixels.
 
-`-classiclight`, or Options → Lighting, draws through the colormaps at
-full light. Its frames are bit-identical to the colormap renderer's.
+`-classiclight`, or Options → Graphic Detail → Lighting, draws through the
+colormaps at full light. Its frames are bit-identical to the colormap
+renderer's.
 
 ### Native 4:3
 
@@ -400,17 +405,17 @@ included. These are the deliberate exceptions:
   [Frame interpolation](#frame-interpolation). `-nointerp` restores one
   frame per tic. Mouse events also add up between ticcmds instead of the
   last one winning.
-- **Graphic Detail is the render scale.** linuxdoom's low-detail toggle on
-  that menu row printed "low detail mode n.a." and did nothing. The row now
-  sets the scale factor, and its value is drawn in the HUD font. F5 still
-  behaves as in linuxdoom: it toggles detail, which takes effect at the
-  next change of screen size.
+- **Graphic Detail opens a graphics menu.** linuxdoom's low-detail toggle
+  on that Options row printed "low detail mode n.a." and did nothing. The
+  row now opens a submenu with pickers for the scale factor and the
+  lighting, written in the HUD font (there are no patches for them). Its
+  title, and the Options row, draw the `M_DETAIL` patch without its colon.
+  F5 still behaves as in linuxdoom: it toggles detail, which takes effect
+  at the next change of screen size.
 - **Smooth lighting.** linuxdoom's light falls off in 32 colormaps, each
   rounded to the palette. doom-fc multiplies the palette colour by a
   continuous light instead. See [Smooth lighting](#smooth-lighting).
-  Options gains a Lighting row for it, below Sound Volume. The menu is 8
-  pixels higher to make room, and the status bar is redrawn when the menu
-  closes, since the new row and its skull reach over it.
+  It is picked under Options → Graphic Detail → Lighting.
 - **Low detail draws correctly.** linuxdoom's `R_DrawColumnLow` doubles the
   global `dc_x`, which sends the sprite and masked-wall loops off the
   screen (an abort here), and `R_DrawSpanLow` counts a span after doubling

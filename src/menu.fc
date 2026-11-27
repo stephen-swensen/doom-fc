@@ -299,7 +299,8 @@ module m =
     let mut main_menu = menuitem[] { len = 6 }
     let mut episode_menu = menuitem[] { len = 4 }
     let mut new_game_menu = menuitem[] { len = 5 }
-    let mut options_menu = menuitem[] { len = 9 }
+    let mut options_menu = menuitem[] { len = 8 }
+    let mut graphics_menu = menuitem[] { len = 2 }
     let mut read_menu1 = menuitem[] { len = 1 }
     let mut read_menu2 = menuitem[] { len = 1 }
     let mut sound_menu = menuitem[] { len = 4 }
@@ -310,6 +311,7 @@ module m =
     let mut epi_def = default(menudef)
     let mut new_def = default(menudef)
     let mut options_def = default(menudef)
+    let mut graphics_def = default(menudef)
     let mut read_def1 = default(menudef)
     let mut read_def2 = default(menudef)
     let mut sound_def = default(menudef)
@@ -326,7 +328,9 @@ module m =
     let scrnsize = 3
     let mousesens = 5
     let soundvol = 7
-    let lighting = 8
+    // graphics items
+    let gscale = 0
+    let glighting = 1
     // sound items
     let sfx_vol = 0
     let music_vol = 2
@@ -363,18 +367,19 @@ module m =
         new_def = menudef { numitems = 5, prev = some(&epi_def), items = new_game_menu.ptr, drawer = some(draw_new_game), x = 48, y = 63, laston = 2 }
         options_menu[0] = mi("M_ENDGAM", end_game, 'e')
         options_menu[1] = mi("M_MESSG", change_messages, 'm')
-        // doom-fc: Graphic Detail sets the render scale (linuxdoom's
-        // low-detail toggle here did nothing)
-        options_menu[2] = slider("M_DETAIL", change_scale, 'g')
+        // doom-fc: Graphic Detail opens the graphics settings (linuxdoom's
+        // low-detail toggle here did nothing). draw_options writes it.
+        options_menu[2] = mi("", graphics, 'g')
         options_menu[3] = slider("M_SCRNSZ", size_display, 's')
         options_menu[4] = spacer
         options_menu[5] = slider("M_MSENS", change_sensitivity, 'm')
         options_menu[6] = spacer
         options_menu[7] = mi("M_SVOL", sound, 's')
-        // doom-fc: smooth or colormap lighting (no patch; draw_options
-        // writes it)
-        options_menu[8] = slider("", change_lighting, 'l')
-        options_def = menudef { numitems = 9, prev = some(&main_def), items = options_menu.ptr, drawer = some(draw_options), x = 60, y = 29 }
+        options_def = menudef { numitems = 8, prev = some(&main_def), items = options_menu.ptr, drawer = some(draw_options), x = 60, y = 37 }
+        // no patches for these; draw_graphics writes them
+        graphics_menu[gscale] = slider("", change_scale, 's')
+        graphics_menu[glighting] = slider("", change_lighting, 'l')
+        graphics_def = menudef { numitems = 2, prev = some(&options_def), items = graphics_menu.ptr, drawer = some(draw_graphics), x = 80, y = 64 }
         read_menu1[0] = mi("", read_this2, 0)
         read_def1 = menudef { numitems = 1, prev = some(&main_def), items = read_menu1.ptr, drawer = some(draw_read_this1), x = 280, y = 185 }
         read_menu2[0] = mi("", finish_read_this, 0)
@@ -604,26 +609,58 @@ module m =
         setup_next_menu(&new_def)
 
     let draw_options = () ->
-        // (8 higher than linuxdoom's, as is the menu, to fit Lighting)
-        v.draw_patch_direct(108, 7, 0, v.patch_named("M_OPTTTL"))
-        // the render scale, in the HUD font (there are no patches for it)
+        v.draw_patch_direct(108, 15, 0, v.patch_named("M_OPTTTL"))
+        v.draw_patch_direct(options_def.x + 120, options_def.y + lineheight * messages, 0,
+                            v.patch_named(msg_names[ds.show_messages]))
+        draw_detail(options_def.x, options_def.y + lineheight * detail)
+        draw_thermo(options_def.x, options_def.y + lineheight * (mousesens + 1), 10, ds.mouse_sensitivity)
+        draw_thermo(options_def.x, options_def.y + lineheight * (scrnsize + 1), 9, screen_size)
+
+    let options = (choice: i32) -> setup_next_menu(&options_def)
+
+    // How many of M_DETAIL's ("Graphic Detail:") columns come before its
+    // colon: those before the last gap.
+    let detail_width = () ->
+        let p = v.patch_named("M_DETAIL")
+        let w = (i32) p.width
+        let blank = (col: i32) -> *patches.column(p, col) == 0xffu8
+        // back from col over columns that are (or aren't) blank
+        let back = (col: i32, want: bool) ->
+            let mut k = col
+            loop
+                if k == 0 || blank(k - 1) != want then break
+                k = k - 1
+            k
+        let cut = back(back(back(w, true), false), true)
+        if cut > 0 then cut else w
+
+    // M_DETAIL without its colon, now that a submenu follows it
+    let draw_detail = (x0: i32, y0: i32) ->
+        let p = v.patch_named("M_DETAIL")
+        let x = x0 - p.leftoffset
+        let y = y0 - p.topoffset
+        let w = detail_width()
+        v.mark_rect(x, y, w, (i32) p.height)
+        for col in 0..w do v.draw_patch_column(x + col, y, 0, p, col)
+
+    // The pickers, in the HUD font: a name, then its setting
+    let draw_graphics = () ->
+        // laid out as the sound menu is
+        draw_detail(60, 38)
         let pref = iv.effective_pref()
         let code = if pref != 0 then iv.clamp_code(pref)
                    else if iv.want_native then iv.native_code + iv.want_hires else iv.want_hires
         let n = iv.code_factor(code)
         let suffix = iv.code_suffix(code)
-        let label = if pref == 0 then alloca("AUTO %d{n}X%s{suffix}") else alloca("%d{n}X%s{suffix}")
-        write_text(options_def.x + 177, options_def.y + lineheight * detail + 6, label)
-        v.draw_patch_direct(options_def.x + 120, options_def.y + lineheight * messages, 0,
-                            v.patch_named(msg_names[ds.show_messages]))
-        draw_thermo(options_def.x, options_def.y + lineheight * (mousesens + 1), 10, ds.mouse_sensitivity)
-        draw_thermo(options_def.x, options_def.y + lineheight * (scrnsize + 1), 9, screen_size)
-        // centred on the row, and clear of the status bar (which keeps
-        // whatever is drawn over it until it next changes)
-        write_text(options_def.x, options_def.y + lineheight * lighting + 4,
-                   if r.lighting_on() then "LIGHTING: SMOOTH" else "LIGHTING: CLASSIC")
+        let scale = if pref == 0 then alloca("AUTO (%d{n}X%s{suffix})") else alloca("%d{n}X%s{suffix}")
+        let row = (k: i32, name: const str, setting: const str) ->
+            let y = graphics_def.y + lineheight * k + 1
+            write_text(graphics_def.x, y, name)
+            write_text(graphics_def.x + 80, y, setting)
+        row(gscale, "SCALE", scale)
+        row(glighting, "LIGHTING", if r.lighting_on() then "SMOOTH" else "CLASSIC")
 
-    let options = (choice: i32) -> setup_next_menu(&options_def)
+    let graphics = (choice: i32) -> setup_next_menu(&graphics_def)
 
     // Toggle messages on/off
     let change_messages = (choice: i32) ->
