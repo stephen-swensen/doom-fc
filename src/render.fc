@@ -181,6 +181,9 @@ module r =
     // the light plane's rows, as ylookup's
     let mut lylookup = default(u8*[])
     let mut columnofs = default(i32[])
+    // the view's size in screen pixels, as init_buffer last set it
+    let mut bufwidth = 0
+    let mut bufheight = 0
     let mut dc_colormap = default(u8*)
     let mut dc_light = 255u8    // the light-plane value a column draws with
     let mut dc_x = 0
@@ -203,6 +206,84 @@ module r =
     let mut ds_yfrac = 0i64
     let mut ds_xstep = 0i64
     let mut ds_ystep = 0i64
+
+    // Deferred light. The solid phase (walls, flats, sky) draws every view
+    // pixel exactly once, and each column's light changes only where a new
+    // wall piece, span or sky column starts. So while defer_light is set
+    // the drawers skip the light plane, which as a second store a pitch
+    // apart per pixel roughly doubled a column's cache traffic, and record
+    // where each run starts instead: row y, view columns x1..x2, light.
+    // Runs are bucketed by row in drawing order, and fill_light_runs walks
+    // the rows top to bottom, applying each row's runs to one row of
+    // current light and copying it into the plane. Masked walls and
+    // sprites overdraw and have holes, so they write the plane directly.
+    let mut defer_light = false
+    let mut lrun_x1 = default(i32[])
+    let mut lrun_x2 = default(i32[])
+    let mut lrun_light = default(u8[])
+    let mut lrun_next = default(i32[])  // the next run in its row, or -1
+    let mut lrun_n = 0
+    let mut lrun_head = default(i32[])  // per view row, the first run or -1
+    let mut lrun_tail = default(i32[])
+    let mut lightrow = default(u8[])    // the current light of each column
+
+    let begin_light_runs = () ->
+        if lrun_x1.len == 0 then
+            let n = 16384
+            lrun_x1 = alloc(i32[] { len = n })!
+            lrun_x2 = alloc(i32[] { len = n })!
+            lrun_light = alloc(u8[] { len = n })!
+            lrun_next = alloc(i32[] { len = n })!
+        lrun_n = 0
+        mem.memset((any*) lrun_head.ptr, -1, (i64) bufheight * 4)
+        defer_light = true
+
+    let grow_light_runs = () ->
+        let n = lrun_x1.len * 2
+        let x1 = alloc(i32[] { len = n })!
+        let x2 = alloc(i32[] { len = n })!
+        let lt = alloc(u8[] { len = n })!
+        let nx = alloc(i32[] { len = n })!
+        let m = (i64) lrun_n
+        mem.memcpy((any*) x1.ptr, (const any*) lrun_x1.ptr, m * 4)
+        mem.memcpy((any*) x2.ptr, (const any*) lrun_x2.ptr, m * 4)
+        mem.memcpy((any*) lt.ptr, (const any*) lrun_light.ptr, m)
+        mem.memcpy((any*) nx.ptr, (const any*) lrun_next.ptr, m * 4)
+        free(lrun_x1)
+        free(lrun_x2)
+        free(lrun_light)
+        free(lrun_next)
+        lrun_x1 = x1
+        lrun_x2 = x2
+        lrun_light = lt
+        lrun_next = nx
+
+    // Light from view row y down, in view columns x1..x2.
+    let push_light_run = (y: i32, x1: i32, x2: i32, light: u8) ->
+        if lrun_n == lrun_x1.len then grow_light_runs()
+        let e = lrun_n
+        lrun_n = e + 1
+        lrun_x1[e] = x1
+        lrun_x2[e] = x2
+        lrun_light[e] = light
+        lrun_next[e] = -1
+        if lrun_head[y] < 0 then lrun_head[y] = e else lrun_next[lrun_tail[y]] = e
+        lrun_tail[y] = e
+
+    let fill_light_runs = () ->
+        defer_light = false
+        let row = lightrow.ptr
+        mem.memset((any*) row, (i32) v.full_light, (i64) bufwidth)
+        for y in 0..bufheight do
+            let mut e = lrun_head[y]
+            loop
+                if e < 0 then break
+                let x1 = lrun_x1[e]
+                let x2 = lrun_x2[e]
+                if x1 == x2 then *(row + x1) = lrun_light[e]
+                else mem.memset((any*) (row + x1), (i32) lrun_light[e], (i64) (x2 - x1 + 1))
+                e = lrun_next[e]
+            mem.memcpy((any*) (lylookup[y] + ds.viewwindowx), (const any*) row, (i64) bufwidth)
     let mut ds_source = default(u8*)
     let mut fuzzpos = 0
 
@@ -419,6 +500,9 @@ module r =
             free(xtoviewangle)
             free(ylookup)
             free(lylookup)
+            free(lrun_head)
+            free(lrun_tail)
+            free(lightrow)
             free(columnofs)
             free(openings)
             free(floorclip)
@@ -434,6 +518,9 @@ module r =
         xtoviewangle = alloc(u32[] { len = w + 1 })!
         ylookup = alloc(u8*[] { len = h })!
         lylookup = alloc(u8*[] { len = h })!
+        lrun_head = alloc(i32[] { len = h })!
+        lrun_tail = alloc(i32[] { len = h })!
+        lightrow = alloc(u8[] { len = w })!
         columnofs = alloc(i32[] { len = w })!
         openings = alloc(i16[] { len = w * 64 })!
         floorclip = alloc(i16[] { len = w })!
@@ -627,8 +714,10 @@ module r =
         ds_p = 0
         clear_planes()
         vissprite_p = 0
+        begin_light_runs()
         render_bsp_node(numnodes - 1)
         draw_planes()
+        fill_light_runs()
         draw_masked()
 
     // ===============================================================
@@ -865,12 +954,19 @@ module r =
             let src = dc_source
             let cmap = dc_colormap
             let light = dc_light
-            for _ in 0..count + 1 do
-                *dest = *(cmap + (i32) *(src + ((i32) (frac >> 32) & 127)))
-                *ldest = light
-                dest = dest + pitch
-                ldest = ldest + pitch
-                frac = frac + fracstep
+            if defer_light then
+                push_light_run(dc_yl, dc_x, dc_x, light)
+                for _ in 0..count + 1 do
+                    *dest = *(cmap + (i32) *(src + ((i32) (frac >> 32) & 127)))
+                    dest = dest + pitch
+                    frac = frac + fracstep
+            else
+                for _ in 0..count + 1 do
+                    *dest = *(cmap + (i32) *(src + ((i32) (frac >> 32) & 127)))
+                    *ldest = light
+                    dest = dest + pitch
+                    ldest = ldest + pitch
+                    frac = frac + fracstep
 
     let draw_column_low = () ->
         let count = dc_yh - dc_yl
@@ -886,15 +982,26 @@ module r =
             let fracstep = frac64(dc_iscale)
             let mut frac = column_frac()
             let light = dc_light
-            for _ in 0..count + 1 do
-                let px = *(dc_colormap + (i32) *(dc_source + ((i32) (frac >> 32) & 127)))
-                *dest = px
-                *(dest + 1) = px
-                *ldest = light
-                *(ldest + 1) = light
-                dest = dest + pitch
-                ldest = ldest + pitch
-                frac = frac + fracstep
+            let src = dc_source
+            let cmap = dc_colormap
+            if defer_light then
+                push_light_run(dc_yl, x, x + 1, light)
+                for _ in 0..count + 1 do
+                    let px = *(cmap + (i32) *(src + ((i32) (frac >> 32) & 127)))
+                    *dest = px
+                    *(dest + 1) = px
+                    dest = dest + pitch
+                    frac = frac + fracstep
+            else
+                for _ in 0..count + 1 do
+                    let px = *(cmap + (i32) *(src + ((i32) (frac >> 32) & 127)))
+                    *dest = px
+                    *(dest + 1) = px
+                    *ldest = light
+                    *(ldest + 1) = light
+                    dest = dest + pitch
+                    ldest = ldest + pitch
+                    frac = frac + fracstep
 
     // At hires the fuzz keeps the original's grain: each table step covers
     // hy rows, reads hy rows away, and every column of a hires-wide block
@@ -986,7 +1093,8 @@ module r =
             dest = dest + 1
             xfrac = xfrac + xstep
             yfrac = yfrac + ystep
-        mem.memset((any*) (lylookup[ds_y] + columnofs[ds_x1]), (i32) ds_light, (i64) (count + 1))
+        if defer_light then push_light_run(ds_y, ds_x1, ds_x2, ds_light)
+        else mem.memset((any*) (lylookup[ds_y] + columnofs[ds_x1]), (i32) ds_light, (i64) (count + 1))
 
     let draw_span_low = () ->
         if ds_x2 < ds_x1 || ds_x1 < 0 || ds_x2 >= v.sw || ds_y < 0 || ds_y > v.sh then
@@ -1005,12 +1113,15 @@ module r =
             dest = dest + 2
             xfrac = xfrac + ds_xstep
             yfrac = yfrac + ds_ystep
-        mem.memset((any*) (lylookup[ds_y] + columnofs[ds_x1 << 1]), (i32) ds_light, 2i64 * (count + 1))
+        if defer_light then push_light_run(ds_y, ds_x1 << 1, (ds_x1 << 1) + 2 * count + 1, ds_light)
+        else mem.memset((any*) (lylookup[ds_y] + columnofs[ds_x1 << 1]), (i32) ds_light, 2i64 * (count + 1))
 
     let call_spanfunc = () ->
         if detailshift == 0 then draw_span() else draw_span_low()
 
     let init_buffer = (width: i32, height: i32) ->
+        bufwidth = width
+        bufheight = height
         ds.viewwindowx = (v.sw - width) >> 1
         for k in 0..width do columnofs[k] = ds.viewwindowx + k
         ds.viewwindowy = if width == v.sw then 0 else (v.sh - sbarheight * v.hy - height) >> 1

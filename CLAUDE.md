@@ -180,7 +180,12 @@ Doom's C files call each other in every direction, so:
   (smooth lighting); every 2D drawer writes full light, and copies carry
   the light with the pixels. Anything new that writes a screen directly,
   as the automap and the wipe do, must write its light plane too, or old
-  3D light shows through.
+  3D light shows through. In the 3D view's solid phase (walls, flats,
+  sky) the drawers don't write the plane: while `r.defer_light` is set
+  they record where each run's light starts (`r.push_light_run`), and
+  `r.fill_light_runs` fills the plane row by row before the masked phase.
+  The plane store, a pitch apart per pixel, had cost columns about a
+  quarter of the frame. A new solid-phase drawer must push its runs.
 - **The render scale changes at runtime.** `iv.want_hires` and
   `iv.want_native` are picked from the drawable (Auto) or the
   `scale_factor` setting. `d.apply_hires`
